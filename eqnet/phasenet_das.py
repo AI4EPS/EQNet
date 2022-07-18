@@ -6,9 +6,6 @@ import torch.nn.functional as F
 from torch.nn.modules.loss import _WeightedLoss
 from functools import partial
 
-from detectron2.modeling import BACKBONE_REGISTRY, Backbone, ShapeSpec
-
-
 class WeightedLoss(_WeightedLoss):
     def __init__(self, weight=None):
         super().__init__(weight=weight)
@@ -109,16 +106,12 @@ def spectrogram(
         return stft
 
 
-class UNet(Backbone):
-    """[summary]
+class PhaseNetDAS():
 
-    Args:
-        Backbone ([type]): [description]
-    """
-    def __init__(self, in_channels=3, out_channels=3, init_features=32, use_stft=False, 
-                 encoder_kernel_size = (3, 3), decoder_kernel_size = (3, 3),
-                 encoder_stride = (2, 2), decoder_stride = (2, 2),
-                 encoder_padding = (1, 1), decoder_padding = (1, 1), **kwargs):
+    def __init__(self, in_channels=1, out_channels=3, init_features=32, use_stft=False, 
+                 encoder_kernel_size = (5, 5), decoder_kernel_size = (5, 5),
+                 encoder_stride = (2, 4), decoder_stride = (2, 4),
+                 encoder_padding = (2, 2), decoder_padding = (2, 2), **kwargs):
         
         super().__init__()
         self._out_features = ["out"]
@@ -137,32 +130,32 @@ class UNet(Backbone):
         features = init_features
         if use_stft:
             in_channels *= 2  ## real amd imagenary parts
-        self.encoder1 = UNet._block(
+        self.encoder1 = self._block(
             in_channels, features, kernel_size=encoder_kernel_size, padding=encoder_padding, activation=self.activation, name="enc1"
         )
         self.pool1 = nn.MaxPool2d(kernel_size=encoder_stride, stride=encoder_stride)
         if use_stft:
             self.fc1 = nn.Sequential(nn.Linear(kwargs["n_freq"], 1), self.activation)
-        self.encoder2 = UNet._block(
+        self.encoder2 = self._block(
             features, features * 2, kernel_size=encoder_kernel_size, padding=encoder_padding, activation=self.activation, name="enc2"
         )
         self.pool2 = nn.MaxPool2d(kernel_size=encoder_stride, stride=encoder_stride)
         if use_stft:
             self.fc2 = nn.Sequential(nn.Linear(kwargs["n_freq"] // 2, 1), self.activation)
-        self.encoder3 = UNet._block(
+        self.encoder3 = self._block(
             features * 2, features * 4, kernel_size=encoder_kernel_size, padding=encoder_padding, activation=self.activation, name="enc3"
         )
         self.pool3 = nn.MaxPool2d(kernel_size=encoder_stride, stride=encoder_stride)
         if use_stft:
             self.fc3 = nn.Sequential(nn.Linear(kwargs["n_freq"] // 2 ** 2, 1), self.activation)
-        self.encoder4 = UNet._block(
+        self.encoder4 = self._block(
             features * 4, features * 8, kernel_size=encoder_kernel_size, padding=encoder_padding, activation=self.activation, name="enc4"
         )
         self.pool4 = nn.MaxPool2d(kernel_size=encoder_stride, stride=encoder_stride)
         if use_stft:
             self.fc4 = nn.Sequential(nn.Linear(kwargs["n_freq"] // 2 ** 3, 1), self.activation)
 
-        self.bottleneck = UNet._block(
+        self.bottleneck = self._block(
             features * 8, features * 16, kernel_size=encoder_kernel_size, padding=encoder_padding, activation=self.activation, name="bottleneck"
         )
         if use_stft:
@@ -173,7 +166,7 @@ class UNet(Backbone):
         #     nn.ReLU(inplace=True),
         # )
         self.upconv4 = nn.Upsample(scale_factor=tuple(decoder_stride), mode='bilinear', align_corners=False)
-        self.decoder4 = UNet._block(
+        self.decoder4 = self._block(
             (features * 8) * 3, features * 8, kernel_size=decoder_kernel_size, padding=decoder_padding, activation=self.activation, name="dec4"
         )
         # self.upconv3 = nn.Sequential(
@@ -181,7 +174,7 @@ class UNet(Backbone):
         #     nn.ReLU(inplace=True),
         # )
         self.upconv3 = nn.Upsample(scale_factor=tuple(decoder_stride), mode='bilinear', align_corners=False)
-        self.decoder3 = UNet._block(
+        self.decoder3 = self._block(
             (features * 4) * 3, features * 4, kernel_size=decoder_kernel_size, padding=decoder_padding, activation=self.activation, name="dec3"
         )
         # self.upconv2 = nn.Sequential(
@@ -189,7 +182,7 @@ class UNet(Backbone):
         #     nn.ReLU(inplace=True),
         # )
         self.upconv2 = nn.Upsample(scale_factor=tuple(decoder_stride), mode='bilinear', align_corners=False)
-        self.decoder2 = UNet._block(
+        self.decoder2 = self._block(
             (features * 2) * 3, features * 2, kernel_size=decoder_kernel_size, padding=decoder_padding, activation=self.activation, name="dec2"
         )
         # self.upconv1 = nn.Sequential(
@@ -197,7 +190,7 @@ class UNet(Backbone):
         #     nn.ReLU(inplace=True),
         # )
         self.upconv1 = nn.Upsample(scale_factor=tuple(decoder_stride), mode='bilinear', align_corners=False)
-        self.decoder1 = UNet._block(
+        self.decoder1 = self._block(
             features * 3, features, kernel_size=decoder_kernel_size, padding=decoder_padding, activation=self.activation, name="dec1"
         )
 
@@ -298,25 +291,3 @@ class UNet(Backbone):
                 ]
             )
         )
-
-
-@BACKBONE_REGISTRY.register()
-def build_unet_backbone(cfg, input_shape):
-
-    in_channels   = cfg.MODEL.UNET.IN_CHANNELS
-    out_channels  = cfg.MODEL.UNET.OUT_CHANNELS
-    init_features = cfg.MODEL.UNET.INIT_FEATURES
-    use_stft      = cfg.MODEL.UNET.USE_STFT
-
-    kargs = {
-        "encoder_kernel_size": cfg.MODEL.UNET.ENCODER_KERNEL_SIZE,
-        "decoder_kernel_size": cfg.MODEL.UNET.DECODER_KERNEL_SIZE,
-        "encoder_stride":      cfg.MODEL.UNET.ENCODER_STRIDE,
-        "decoder_stride":      cfg.MODEL.UNET.DECODER_STRIDE,
-        "encoder_padding":     cfg.MODEL.UNET.ENCODER_PADDING,
-        "decoder_padding":     cfg.MODEL.UNET.DECODER_PADDING,
-    }
-
-    return UNet(
-        in_channels=in_channels, out_channels=out_channels, init_features=init_features, use_stft=use_stft, **kargs
-    )

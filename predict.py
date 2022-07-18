@@ -13,24 +13,18 @@ from torch import nn
 import torch.nn.functional as F
 import torch.utils.data
 import torchvision
-from detectron2.checkpoint import DetectionCheckpointer
-from detectron2.config import get_cfg
-from detectron2.engine import default_argument_parser, default_setup
-from detectron2.modeling import build_model
-from detectron2.projects.deeplab import add_deeplab_config
 
 import utils_train as utils
-from mask2former import add_maskformer2_config
-from mask2former.modeling.backbone.unet import log_transform, normalize_local
 from utils import DASDataset, DASIterableDataset, detect_peaks, extract_picks, plot_das
 from torch.utils import model_zoo
+import eqnet
 
 import warnings
 warnings.filterwarnings("ignore", ".*Length of IterableDataset.*")
 
 logger = logging.getLogger("EQNet")
 
-def pred_fn(cfg, model, data_loader, args):
+def pred_fn(model, data_loader, args):
 
 
     if args.result_path is None:
@@ -129,20 +123,6 @@ def pred_fn(cfg, model, data_loader, args):
     return 0
 
 
-def setup(args):
-    """
-    Create configs and perform basic setups.
-    """
-    cfg = get_cfg()
-    add_deeplab_config(cfg)
-    add_maskformer2_config(cfg)
-    cfg.merge_from_file(args.config_file)
-    cfg.merge_from_list(args.opts)
-    cfg.freeze()
-    default_setup(cfg, args)
-    return cfg
-
-
 def main(args):
 
     utils.init_distributed_mode(args)
@@ -150,8 +130,7 @@ def main(args):
 
     device = torch.device(args.device)
 
-    cfg = setup(args)
-    model = build_model(cfg)
+    model = eqnet.__dict__[args.model]()
     logger.info("Model:\n{}".format(model))
     
     model.to(device)
@@ -189,7 +168,7 @@ def main(args):
     )
 
 
-    pred_fn(cfg, model, data_loader, args)
+    pred_fn(model, data_loader, args)
 
 
 def get_args_parser(add_help=True):
@@ -199,7 +178,7 @@ def get_args_parser(add_help=True):
 
     parser.add_argument("--data-path", default="/datasets01/COCO/022719/", type=str, help="dataset path")
     parser.add_argument("--dataset", default="coco", type=str, help="dataset name")
-    parser.add_argument("--model", default="fcn_resnet101", type=str, help="model name")
+    parser.add_argument("--model", default="PhaseNetDAS", type=str, help="model name")
     parser.add_argument("--aux-loss", action="store_true", help="auxiliar loss")
     parser.add_argument("--device", default="cuda", type=str, help="device (Use cuda or cpu Default: cuda)")
     parser.add_argument(
@@ -276,18 +255,6 @@ For python-based LazyConfig, use "path.key=value".
 
     return parser
 
-def setup(args):
-    """
-    Create configs and perform basic setups.
-    """
-    cfg = get_cfg()
-    add_deeplab_config(cfg)
-    add_maskformer2_config(cfg)
-    cfg.merge_from_file(args.config_file)
-    cfg.merge_from_list(args.opts)
-    cfg.freeze()
-    default_setup(cfg, args)
-    return cfg
 
 if __name__ == "__main__":
     args = get_args_parser().parse_args()
