@@ -106,7 +106,7 @@ def spectrogram(
         return stft
 
 
-class PhaseNetDAS():
+class PhaseNetDAS(nn.Module):
 
     def __init__(self, in_channels=1, out_channels=3, init_features=32, use_stft=False, 
                  encoder_kernel_size = (5, 5), decoder_kernel_size = (5, 5),
