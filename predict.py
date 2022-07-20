@@ -15,8 +15,9 @@ import torch.nn.functional as F
 import torch.utils.data
 import torchvision
 
-import utils_train as utils
-from utils import DASDataset, DASIterableDataset, detect_peaks, extract_picks, plot_das
+import utils
+from eqnet.data import DASDataset, DASIterableDataset
+from eqnet.postprocess import detect_peaks, extract_picks, plot_das
 import eqnet
 
 import warnings
@@ -144,11 +145,11 @@ def main(args):
 
     if args.resume:
         checkpoint = torch.load(args.resume, map_location="cpu")
-        model_without_ddp.load_state_dict(checkpoint["model"], strict=not args.test_only)
+        model_without_ddp.load_state_dict(checkpoint["model"], strict=False)
     else:
         model_url = "https://github.com/AI4EPS/models/releases/download/PhaseNet-DAS-v2/model_99.pth"
         state_dict = torch.hub.load_state_dict_from_url(model_url, model_dir="./", progress=True, check_hash=True, map_location="cpu")
-        model_without_ddp.load_state_dict(state_dict["model"], strict=not args.test_only)
+        model_without_ddp.load_state_dict(state_dict["model"], strict=False)
 
     dataset = DASIterableDataset(
         data_path = args.data_path,

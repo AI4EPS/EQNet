@@ -11,10 +11,10 @@ import torch.nn.functional as F
 import torch.utils.data
 import torchvision
 
-import utils_train as utils
-from eqnet import log_transform, normalize_local
+import utils
 import eqnet
-from utils import DASDataset, DASIterableDataset
+from eqnet import log_transform, normalize_local
+from eqnet.data import DASDataset, DASIterableDataset
 
 import matplotlib
 matplotlib.use('agg')
