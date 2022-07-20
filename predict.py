@@ -5,7 +5,8 @@ import sys
 import time
 import pandas as pd
 from tqdm import tqdm
-
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -238,18 +239,6 @@ def get_args_parser(add_help=True):
 
     # Mixed precision training parameters
     parser.add_argument("--amp", action="store_true", help="Use torch.cuda.amp for mixed precision training")
-
-    parser.add_argument("--config-file", default="", metavar="FILE", help="path to config file")
-    parser.add_argument(
-        "opts",
-        help="""
-Modify config options at the end of the command. For Yacs configs, use
-space-separated "PATH.KEY VALUE" pairs.
-For python-based LazyConfig, use "path.key=value".
-        """.strip(),
-        default=None,
-        nargs=argparse.REMAINDER,
-    )
 
 
     return parser
