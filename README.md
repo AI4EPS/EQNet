@@ -15,6 +15,7 @@ torchrun --standalone --nproc_per_node=4 train.py --output-dir output
 ```bash
 python predict.py --data_path /path_to_data --result_path ./result
 ```
+Add the **--plot_figure** argument to plot results. 
 
 - Using the local pretrained model
 ```bash
