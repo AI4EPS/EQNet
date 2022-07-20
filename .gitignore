@@ -1,0 +1,6 @@
+*.pyc
+*.pth
+
+models/
+swarm_south_debug/
+

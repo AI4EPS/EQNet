@@ -10,15 +10,10 @@ from torch import nn
 import torch.nn.functional as F
 import torch.utils.data
 import torchvision
-from detectron2.checkpoint import DetectionCheckpointer
-from detectron2.config import get_cfg
-from detectron2.engine import default_argument_parser, default_setup
-from detectron2.modeling import build_model
-from detectron2.projects.deeplab import add_deeplab_config
 
 import utils_train as utils
-from mask2former import add_maskformer2_config
-from mask2former.modeling.backbone.unet import log_transform, normalize_local
+from eqnet import log_transform, normalize_local
+import eqnet
 from utils import DASDataset, DASIterableDataset
 
 import matplotlib
@@ -99,8 +94,8 @@ def train_one_epoch(model, criterion, optimizer, data_loader, lr_scheduler, devi
         with torch.cuda.amp.autocast(enabled=scaler is not None):
             # output = model(data)
             # loss = criterion(output, target)
-            loss_dict = model(meta)
-            loss = sum(loss_dict.values())
+            loss = model(meta)
+            # loss = sum(loss_dict.values())
 
         optimizer.zero_grad()
         if scaler is not None:
@@ -203,12 +198,8 @@ def main(args):
     #         weights=args.weights, num_classes=num_classes, aux_loss=args.aux_loss
     #     )
 
-    cfg = setup(args)
-    model = build_model(cfg)
+    model = eqnet.__dict__[args.model]()
     logger.info("Model:\n{}".format(model))
-    DetectionCheckpointer(model, save_dir=cfg.OUTPUT_DIR).resume_or_load(
-        cfg.MODEL.WEIGHTS, resume=args.resume
-    )
     
     model.to(device)
     if args.distributed:
@@ -221,8 +212,8 @@ def main(args):
 
     params_to_optimize = [
         {"params": [p for p in model_without_ddp.backbone.parameters() if p.requires_grad], "lr": args.lr},
-        # {"params": [p for p in model_without_ddp.classifier.parameters() if p.requires_grad]},
-        {"params": [p for p in model_without_ddp.sem_seg_head.parameters() if p.requires_grad]},
+        {"params": [p for p in model_without_ddp.classifier.parameters() if p.requires_grad]},
+        # {"params": [p for p in model_without_ddp.sem_seg_head.parameters() if p.requires_grad]},
     ]
     if args.aux_loss:
         params = [p for p in model_without_ddp.aux_classifier.parameters() if p.requires_grad]
@@ -309,7 +300,7 @@ def get_args_parser(add_help=True):
 
     parser.add_argument("--data-path", default="/datasets01/COCO/022719/", type=str, help="dataset path")
     parser.add_argument("--dataset", default="coco", type=str, help="dataset name")
-    parser.add_argument("--model", default="fcn_resnet101", type=str, help="model name")
+    parser.add_argument("--model", default="phasenet_das", type=str, help="model name")
     parser.add_argument("--aux-loss", action="store_true", help="auxiliar loss")
     parser.add_argument("--device", default="cuda", type=str, help="device (Use cuda or cpu Default: cuda)")
     parser.add_argument(
@@ -357,33 +348,10 @@ def get_args_parser(add_help=True):
     # Mixed precision training parameters
     parser.add_argument("--amp", action="store_true", help="Use torch.cuda.amp for mixed precision training")
 
-    parser.add_argument("--config-file", default="", metavar="FILE", help="path to config file")
-    parser.add_argument(
-        "opts",
-        help="""
-Modify config options at the end of the command. For Yacs configs, use
-space-separated "PATH.KEY VALUE" pairs.
-For python-based LazyConfig, use "path.key=value".
-        """.strip(),
-        default=None,
-        nargs=argparse.REMAINDER,
-    )
 
 
     return parser
 
-def setup(args):
-    """
-    Create configs and perform basic setups.
-    """
-    cfg = get_cfg()
-    add_deeplab_config(cfg)
-    add_maskformer2_config(cfg)
-    cfg.merge_from_file(args.config_file)
-    cfg.merge_from_list(args.opts)
-    cfg.freeze()
-    default_setup(cfg, args)
-    return cfg
 
 if __name__ == "__main__":
     args = get_args_parser().parse_args()

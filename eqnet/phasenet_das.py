@@ -5,6 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.modules.loss import _WeightedLoss
 from functools import partial
+from ._utils import _SimpleSegmentationModel
 
 class WeightedLoss(_WeightedLoss):
     def __init__(self, weight=None):
@@ -106,9 +107,9 @@ def spectrogram(
         return stft
 
 
-class PhaseNetDAS(nn.Module):
+class UNet(nn.Module):
 
-    def __init__(self, in_channels=1, out_channels=3, init_features=32, use_stft=False, 
+    def __init__(self, in_channels=1, out_channels=3, init_features=8, use_stft=False, 
                  encoder_kernel_size = (5, 5), decoder_kernel_size = (5, 5),
                  encoder_stride = (2, 4), decoder_stride = (2, 4),
                  encoder_padding = (2, 2), decoder_padding = (2, 2), **kwargs):
@@ -291,3 +292,41 @@ class PhaseNetDAS(nn.Module):
                 ]
             )
         )
+
+class UNetHead(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, features, targets=None):
+        x = features["out"]
+        if self.training:
+            return None, self.losses(x, targets)
+        return x, {}
+
+    def losses(self, inputs, targets):
+
+        inputs = inputs.float()  # https://github.com/pytorch/pytorch/issues/48163
+        # loss = F.cross_entropy(
+        #     inputs, targets, reduction="mean", ignore_index=self.ignore_value
+        # )
+        # loss = F.kl_div(F.log_softmax(inputs, dim=1), targets, reduction="mean")
+        # loss = F.mse_loss(inputs, targets, reduction="mean")
+        # loss = F.l1_loss(inputs, targets, reduction="mean")
+        loss = torch.sum(-targets * F.log_softmax(inputs, dim=1), dim=1).mean()
+
+        return loss
+
+class PhaseNetDAS(_SimpleSegmentationModel):
+    pass
+
+
+def phasenet_das(
+) -> PhaseNetDAS:
+    
+    backbone = UNet(in_channels=1, out_channels=3, init_features=8, use_stft=False, 
+                    encoder_kernel_size = (5, 5), decoder_kernel_size = (5, 5),
+                    encoder_stride = (2, 4), decoder_stride = (2, 4),
+                    encoder_padding = (2, 2), decoder_padding = (2, 2))
+    classifier = UNetHead()
+
+    return PhaseNetDAS(backbone, classifier)

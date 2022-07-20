@@ -16,7 +16,6 @@ import torchvision
 
 import utils_train as utils
 from utils import DASDataset, DASIterableDataset, detect_peaks, extract_picks, plot_das
-from torch.utils import model_zoo
 import eqnet
 
 import warnings
@@ -146,8 +145,8 @@ def main(args):
         checkpoint = torch.load(args.resume, map_location="cpu")
         model_without_ddp.load_state_dict(checkpoint["model"], strict=not args.test_only)
     else:
-        model_url = "https://github.com/AI4EPS/models/releases/download/PhaseNet-DAS-v1/model_99.pth"
-        state_dict = model_zoo.load_url(model_url, progress=True, map_location="cpu")
+        model_url = "https://github.com/AI4EPS/models/releases/download/PhaseNet-DAS-v2/model_99.pth"
+        state_dict = torch.hub.load_state_dict_from_url(model_url, model_dir="./", progress=True, check_hash=True, map_location="cpu")
         model_without_ddp.load_state_dict(state_dict["model"], strict=not args.test_only)
 
     dataset = DASIterableDataset(
@@ -178,7 +177,7 @@ def get_args_parser(add_help=True):
 
     parser.add_argument("--data-path", default="/datasets01/COCO/022719/", type=str, help="dataset path")
     parser.add_argument("--dataset", default="coco", type=str, help="dataset name")
-    parser.add_argument("--model", default="PhaseNetDAS", type=str, help="model name")
+    parser.add_argument("--model", default="phasenet_das", type=str, help="model name")
     parser.add_argument("--aux-loss", action="store_true", help="auxiliar loss")
     parser.add_argument("--device", default="cuda", type=str, help="device (Use cuda or cpu Default: cuda)")
     parser.add_argument(

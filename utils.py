@@ -292,7 +292,7 @@ def stack_noise(data, noise, snr):
     # return data + noise * snr * 0.5
 
 
-def stack_event(data1, target1, data2, target2, min_shift=500, max_shift=3000 // 512 * 512 - 500):
+def stack_event(data1, target1, data2, target2, snr=1, min_shift=500, max_shift=3000 // 512 * 512 - 500):
 
     tries = 0
     max_tries = 10
@@ -307,7 +307,7 @@ def stack_event(data1, target1, data2, target2, min_shift=500, max_shift=3000 //
         target2_[:, shift:, :] = target2[:, :-shift, :]
         target2_[:, :shift, :] = target2[:, -shift:, :]
 
-        data = data1 + data2_
+        data = data1 + data2_ * (1 + max(0, snr - 1.0) * torch.rand(1))
         target = torch.zeros_like(target1)
         target[1:, :, :] = target1[1:, :, :] + target2_[1:, :, :]
         tmp = torch.sum(target[1:, :, :], axis=0)
@@ -516,7 +516,7 @@ class DASIterableDataset(IterableDataset):
                 snr = calc_snr(data, meta["p_picks"])
                 with_event = False
                 if (snr > 3) and (np.random.rand() < 0.3):
-                    data, targets = stack_event(data, targets, data, targets)
+                    data, targets = stack_event(data, targets, data, targets, snr)
                     with_event = True
                 for ii in range(sum([len(x) for x in picks]) // self.min_picks * 10):
                     pre_nt = 255
@@ -727,7 +727,7 @@ class DASDataset(Dataset):
             snr = calc_snr(data, meta["p_picks"])
             with_event = False
             if (snr > 3) and (np.random.rand() < 0.3):
-                data, targets = stack_event(data, targets, data, targets)
+                data, targets = stack_event(data, targets, data, targets, snr)
                 with_event = True
             pre_nt = 255
             data, targets = cut_data(data, targets, pre_nt=pre_nt)
