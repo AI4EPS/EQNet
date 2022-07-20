@@ -1,3 +1,10 @@
+## Install
+
+- Pytorch
+```
+conda install pytorch torchvision torchaudio cudatoolkit=11.3 -c pytorch
+```
+
 ## Training
 ```bash
 torchrun --standalone --nproc_per_node=4 train.py --output-dir output
