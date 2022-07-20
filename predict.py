@@ -17,7 +17,7 @@ import torchvision
 
 import utils
 from eqnet.data import DASDataset, DASIterableDataset
-from eqnet.postprocess import detect_peaks, extract_picks, plot_das
+from eqnet.utils import detect_peaks, extract_picks, plot_das
 import eqnet
 
 import warnings
@@ -131,7 +131,7 @@ def main(args):
 
     device = torch.device(args.device)
 
-    model = eqnet.__dict__[args.model]()
+    model = eqnet.models.__dict__[args.model]()
     logger.info("Model:\n{}".format(model))
     
     model.to(device)

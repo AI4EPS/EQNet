@@ -13,7 +13,7 @@ import torchvision
 
 import utils
 import eqnet
-from eqnet import log_transform, normalize_local
+from eqnet.models import log_transform, normalize_local
 from eqnet.data import DASDataset, DASIterableDataset
 
 import matplotlib
@@ -198,7 +198,7 @@ def main(args):
     #         weights=args.weights, num_classes=num_classes, aux_loss=args.aux_loss
     #     )
 
-    model = eqnet.__dict__[args.model]()
+    model = eqnet.models.__dict__[args.model]()
     logger.info("Model:\n{}".format(model))
     
     model.to(device)
