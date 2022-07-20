@@ -5,6 +5,12 @@ pip install -r requirements.txt
 ```
 
 ## Training
+- Using Single GPU/CPU
+```bash
+python train.py --output-dir output
+```
+
+- Using Multi-GPUs
 ```bash
 torchrun --standalone --nproc_per_node=4 train.py --output-dir output
 ```
