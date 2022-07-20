@@ -6,15 +6,15 @@ import pandas as pd
 from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
 
-def plot_das(data, pred, picks=None, file_names=None, figure_dir="./figures", epoch=0, **kwargs):
+def plot_das(data, pred, picks=None, file_name=None, figure_dir="./figures", epoch=0, **kwargs):
 
     ## pytorch BCHW => BHWC
     data = np.transpose(data, [0, 2, 3, 1])
     pred = np.transpose(pred, [0, 2, 3, 1])
 
-    if file_names is None:
-        file_names = [f"{epoch:03d}_{i:03d}" for i in range(len(data))]
-    file_names = [x if isinstance(x, str) else x.decode() for x in file_names]
+    if file_name is None:
+        file_name = [f"{epoch:03d}_{i:03d}" for i in range(len(data))]
+    file_name = [x if isinstance(x, str) else x.decode() for x in file_name]
 
     if "dx" in kwargs:
         if type(kwargs["dx"]) is list:
@@ -31,14 +31,14 @@ def plot_das(data, pred, picks=None, file_names=None, figure_dir="./figures", ep
     else:
         dt = [0.01 for i in range(len(data))]
 
-    if ("begin_channel_indexs" in kwargs) and (kwargs["begin_channel_indexs"] is not None):
-        begin_channel_indexs = [x.item() for x in kwargs["begin_channel_indexs"]]
+    if ("begin_channel_index" in kwargs) and (kwargs["begin_channel_index"] is not None):
+        begin_channel_index = [x.item() for x in kwargs["begin_channel_index"]]
     else:
-        begin_channel_indexs = [0 for i in range(len(data))]
-    if ("begin_time_indexs" in kwargs) and (kwargs["begin_time_indexs"] is not None):
-        begin_time_indexs = [x.item() for x in kwargs["begin_time_indexs"]]
+        begin_channel_index = [0 for i in range(len(data))]
+    if ("begin_time_index" in kwargs) and (kwargs["begin_time_index"] is not None):
+        begin_time_index = [x.item() for x in kwargs["begin_time_index"]]
     else:
-        begin_time_indexs = [0 for i in range(len(data))]
+        begin_time_index = [0 for i in range(len(data))]
 
     nt, nx = data.shape[1], data.shape[2]
     # x = np.arange(nx) * dx
@@ -54,8 +54,8 @@ def plot_das(data, pred, picks=None, file_names=None, figure_dir="./figures", ep
         # fig, axs = plt.subplots(1, 1, sharex=True, figsize=(8, 6))
         fig, axs = plt.subplots(1, 1)
         im = axs.pcolormesh(
-            (np.arange(nx) + begin_channel_indexs[i]) * dx[i] / 1e3, #km
-            (np.arange(nt) + begin_time_indexs[i]) * dt[i],
+            (np.arange(nx) + begin_channel_index[i]) * dx[i] / 1e3, #km
+            (np.arange(nt) + begin_time_index[i]) * dt[i],
             data[i, :, :, 0],
             vmin=-std,
             vmax=std,
@@ -151,14 +151,14 @@ def plot_das(data, pred, picks=None, file_names=None, figure_dir="./figures", ep
 
         try:
             fig.savefig(
-                os.path.join(figure_dir, file_names[i] + ".png"),
+                os.path.join(figure_dir, file_name[i] + ".png"),
                 bbox_inches="tight",
                 dpi=300,
             )
         except FileNotFoundError:
-            os.makedirs(os.path.dirname(os.path.join(figure_dir, file_names[i])), exist_ok=True)
+            os.makedirs(os.path.dirname(os.path.join(figure_dir, file_name[i])), exist_ok=True)
             fig.savefig(
-                os.path.join(figure_dir, file_names[i] + ".png"),
+                os.path.join(figure_dir, file_name[i] + ".png"),
                 bbox_inches="tight",
                 dpi=300,
             )

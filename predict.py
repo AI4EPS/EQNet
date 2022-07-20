@@ -17,7 +17,7 @@ import torchvision
 
 import utils
 from eqnet.data import DASDataset, DASIterableDataset
-from eqnet.utils import detect_peaks, extract_picks, plot_das
+from eqnet.utils import detect_peaks, extract_picks, merge_picks, plot_das
 import eqnet
 
 import warnings
@@ -72,10 +72,10 @@ def pred_fn(model, data_loader, args):
                 picks_ = extract_picks(
                     topk_inds,
                     topk_scores,
-                    file_names=meta["file_name"],
-                    begin_times=meta["begin_time"] if "begin_time" in meta else None,
-                    begin_time_indexs=meta["begin_time_index"] if "begin_time_index" in meta else None,
-                    begin_channel_indexs=meta["begin_channel_index"] if "begin_channel_index" in meta else None,
+                    file_name=meta["file_name"],
+                    begin_time=meta["begin_time"] if "begin_time" in meta else None,
+                    begin_time_index=meta["begin_time_index"] if "begin_time_index" in meta else None,
+                    begin_channel_index=meta["begin_channel_index"] if "begin_channel_index" in meta else None,
                     dt = meta["dt_s"] if "dt_s" in meta else 0.01,
                     dx = meta["dx_m"] if "dx_m" in meta else 0.01,
                     vmin=vmin,
@@ -103,9 +103,9 @@ def pred_fn(model, data_loader, args):
                     meta["data"].cpu().numpy(),
                     scores.cpu().numpy(),
                     picks=picks_,
-                    file_names=meta["file_name"],
-                    begin_time_indexs=meta["begin_time_index"] if "begin_time_index" in meta else None,
-                    begin_channel_indexs=meta["begin_channel_index"] if "begin_channel_index" in meta else None,
+                    file_name=meta["file_name"],
+                    begin_time_index=meta["begin_time_index"] if "begin_time_index" in meta else None,
+                    begin_channel_index=meta["begin_channel_index"] if "begin_channel_index" in meta else None,
                     dt = meta["dt_s"] if "dt_s" in meta else torch.tensor(0.01),
                     dx = meta["dx_m"] if "dx_m" in meta else torch.tensor(10.0),
                     figure_dir=figures_path,
@@ -115,6 +115,8 @@ def pred_fn(model, data_loader, args):
                 picks.extend(x)
         pbar.close()
 
+
+    merge_picks(picks_path)
 
     picks_df = pd.DataFrame.from_records(picks)
     picks_df["channel_index"] = picks_df["station_name"].apply(lambda x: int(x))

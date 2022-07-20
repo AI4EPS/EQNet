@@ -5,6 +5,9 @@ import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
+from collections import defaultdict
+from tqdm import tqdm
+from pathlib import Path
 
 def detect_peaks(scores, vmin=0.3, kernel=101, K=0):
 
@@ -23,11 +26,11 @@ def detect_peaks(scores, vmin=0.3, kernel=101, K=0):
 
 
 def extract_picks(
-    topk_inds,
-    topk_scores,
-    file_names=None,
-    begin_times=None,
-    station_names=None,
+    topk_index,
+    topk_score,
+    file_name=None,
+    begin_time=None,
+    station_name=None,
     vmin=0.3,
     dt=0.01,
     phases=["P", "S"],
@@ -45,52 +48,52 @@ def extract_picks(
         picks [type]: {file_name, station_name, pick_time, pick_prob, pick_type}
     """
 
-    batch, nch, nst, ntopk = topk_scores.shape
+    batch, nch, nst, ntopk = topk_score.shape
     assert nch == len(phases)
     picks = []
     if isinstance(dt, float):
         dt = [dt for i in range(batch)]
     else:
         dt = [dt[i].item() for i in range(batch)]
-    if ("begin_channel_indexs" in kwargs) and (kwargs["begin_channel_indexs"] is not None):
-        begin_channel_indexs = [x.item() for x in kwargs["begin_channel_indexs"]]
+    if ("begin_channel_index" in kwargs) and (kwargs["begin_channel_index"] is not None):
+        begin_channel_index = [x.item() for x in kwargs["begin_channel_index"]]
     else:
-        begin_channel_indexs = [0 for i in range(batch)]
-    if ("begin_time_indexs" in kwargs) and (kwargs["begin_time_indexs"] is not None):
-        begin_time_indexs = [x.item() for x in kwargs["begin_time_indexs"]]
+        begin_channel_index = [0 for i in range(batch)]
+    if ("begin_time_index" in kwargs) and (kwargs["begin_time_index"] is not None):
+        begin_time_index = [x.item() for x in kwargs["begin_time_index"]]
     else:
-        begin_time_indexs = [0 for i in range(batch)]
+        begin_time_index = [0 for i in range(batch)]
     # raise
     for i in range(batch):
         picks_per_file = []
-        if file_names is None:
-            file_name = f"{i:04d}"
+        if file_name is None:
+            file_i = f"{i:04d}"
         else:
-            file_name = file_names[i] if isinstance(file_names[i], str) else file_names[i].decode()
+            file_i = file_name[i] if isinstance(file_name[i], str) else file_name[i].decode()
 
-        if begin_times is None:
-            begin_time = "1970-01-01T00:00:00.000"
+        if begin_time is None:
+            begin_i = "1970-01-01T00:00:00.000"
         else:
-            begin_time = begin_times[i] if isinstance(begin_times[i], str) else begin_times[i].decode()
-            if len(begin_time) == 0:
-                begin_time = "1970-01-01T00:00:00.000"
-        begin_time = datetime.fromisoformat(begin_time)
+            begin_i = begin_time[i] if isinstance(begin_time[i], str) else begin_time[i].decode()
+            if len(begin_i) == 0:
+                begin_i = "1970-01-01T00:00:00.000"
+        begin_i = datetime.fromisoformat(begin_i)
 
         for j in range(nch):
             for k in range(nst):
-                if station_names is None:
-                    station_name = f"{k + begin_channel_indexs[i]:04d}"
+                if station_name is None:
+                    station_i = f"{k + begin_channel_index[i]:04d}"
                 else:
-                    station_name = station_names[k] if isinstance(station_names[k], str) else station_names[k].decode()
+                    station_i = station_name[k] if isinstance(station_name[k], str) else station_name[k].decode()
 
-                for index, score in zip(topk_inds[i, j, k], topk_scores[i, j, k]):
+                for index, score in zip(topk_index[i, j, k], topk_score[i, j, k]):
                     if score > vmin:
-                        pick_time = (begin_time + timedelta(seconds=index.item() * dt[i])).isoformat(timespec="milliseconds")
+                        pick_time = (begin_i + timedelta(seconds=index.item() * dt[i])).isoformat(timespec="milliseconds")
                         picks_per_file.append(
                             {
-                                "file_name": file_name,
-                                "station_name": station_name,
-                                "phase_index": index.item() + begin_time_indexs[i],
+                                "file_name": file_i,
+                                "station_name": station_i,
+                                "phase_index": index.item() + begin_time_index[i],
                                 "phase_score": f"{score.item():.3f}",
                                 "phase_type": phases[j],
                                 "phase_time": pick_time,
@@ -100,3 +103,45 @@ def extract_picks(
 
         picks.append(picks_per_file)
     return picks
+
+
+def merge_picks(raw_folder="picks_phasenet", merged_folder=None):
+
+    in_path = Path(raw_folder)
+
+    rename_folder = False
+    if merged_folder is None:
+        out_path = Path(raw_folder + "_merged")
+        rename_folder = True
+    else:
+        out_path = Path(merged_folder)
+
+    if not out_path.exists():
+        out_path.mkdir()
+
+    files = in_path.glob("*_*_*.csv")
+
+    file_group = defaultdict(list)
+    for file in files:
+        file_group[file.stem.split("_")[0]].append(file) ## event_id
+
+    num_picks = 0
+    for k in tqdm(file_group, desc=f"{out_path}"):
+        picks = []
+        for i, file in enumerate(sorted(file_group[k])):
+            with open(file, "r") as f:
+                tmp = f.readlines()
+                if i == 0:
+                    picks.extend(tmp)
+                else:
+                    picks.extend(tmp[1:]) ## wihout header
+        with open(out_path.joinpath(f"{k}.csv"), "w") as f:
+            f.writelines(picks)
+        num_picks += len(picks)
+
+    if rename_folder:
+        in_path.rename(raw_folder + "_raw")
+        out_path.rename(raw_folder)
+
+    print(f"Number of picks: {num_picks}")
+    return 0
