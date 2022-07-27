@@ -35,7 +35,7 @@ with h5py.File(h5_file, "r") as fp_in:
             group = fp_out.create_group(f"{event_id:06d}")
             group.attrs["event_id"] = event_id
             group.attrs["event_time"] = event_time.isoformat(timespec='milliseconds')
-            group.attrs["event_time_index"] = 3000
+            group.attrs["event_time_index"] = pre_window
             group.attrs["event_latitude"] = event_latitude
             group.attrs["event_longitude"] = event_longitude
             group.attrs["event_depth_km"] = event_depth_km
@@ -53,7 +53,8 @@ with h5py.File(h5_file, "r") as fp_in:
                 begin_index = trace.attrs["p_idx"] - p_arrival_index
                 end_index = begin_index + pre_window + post_window
 
-                waveform = trace[begin_index:end_index,:]
+                waveform = np.zeros([pre_window + post_window, 3])
+                waveform[:trace[begin_index:end_index,:].shape[0], :] = trace[begin_index:end_index,:]
                 network = trace.attrs["network"]
                 station = trace.attrs["station"]
                 location = trace.attrs["location_code"] if trace.attrs["location_code"] != "--" else ""
