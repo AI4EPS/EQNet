@@ -1,11 +1,11 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from resnet import ResNet, BasicBlock, Bottleneck
 
 def _log_transform(x):
     x = F.relu(x)
     return torch.log(1 + x)
-
 
 def log_transform(x):
     yp = _log_transform(x)
@@ -51,13 +51,13 @@ def spectrogram(
         else:
             if log_transform:
                 stft = torch.log(1 + F.relu(stft)) - torch.log(1 + F.relu(-stft))
-        return stft.clamp(-10, 10)
+        return stft
 
 
 class FeatureExtractor(nn.Module):
-    def __init__(self, channels=(3, 16, 32, 64, 128), strides=(4, 2, 2, 2), bn=True,
-                 pool=nn.MaxPool1d(2), kernel_sizes=[7,5,5,5], dropout=nn.Dropout2d(0.2),
-                 nonlin=nn.LeakyReLU(0.1)):
+    def __init__(self, channels=(3,16,32,64,128,128), strides=(2,2,2,2,2), bn=True,
+                 pool=nn.MaxPool1d(2), kernel_sizes=[7,5,3,3,3], dropout=nn.Dropout2d(0.2),
+                 nonlin=nn.ReLU()):
         """Temporal convolutional network that extracts features for each station independently."""
         super().__init__()
         self.channels = channels
@@ -67,7 +67,6 @@ class FeatureExtractor(nn.Module):
         self.dropout = dropout
         self.kernel_sizes = kernel_sizes
         self.nonlin = nonlin
-        # self.padding = nn.ReflectionPad1d(kernel_size // 2)
         self.paddings = nn.ModuleList([nn.ReflectionPad1d(k // 2) for k in kernel_sizes])
         if self.bn:
             self.bn_layers = nn.ModuleList([nn.BatchNorm1d(c) for c in channels[1:]])
@@ -77,7 +76,7 @@ class FeatureExtractor(nn.Module):
             conv_bias = True
         self.conv_layers = nn.ModuleList([
                              nn.Conv1d(channels[i], channels[i + 1], 
-                                       kernel_sizes[i], stride=strides[i], 
+                                       kernel_sizes[i], #stride=strides[i], 
                                        bias=conv_bias) 
                              for i in range(len(channels) - 1)])
 
@@ -85,20 +84,19 @@ class FeatureExtractor(nn.Module):
     def forward(self, x):
         """input shape [batch, num_stations, in_channels, time_steps]
            output shape [batch, num_stations, out_channels, time_steps]"""
-        x = log_transform(x).clamp(-10, 10)
+        x = log_transform(x)#.clamp(-10, 10)
         out = x.view(-1, *x.shape[-2:])
         for i, (pad, conv, bn) in enumerate(zip(self.paddings, self.conv_layers, self.bn_layers)):
-            # out = self.padding(out)
             out = pad(out)
             out = bn(conv(out))
-            # out = self.pool(out)
             # if i == 0:
             #     out = torch.tanh(out)
-            # el
+            # else
             if i < len(self.conv_layers) - 1:
                 out = self.nonlin(out)
+                out = self.pool(out)
         out = out.view(*x.shape[:2], out.shape[1], -1)
-        out = self.dropout(out)
+        # out = self.dropout(out)
         return out
 
 
@@ -138,7 +136,7 @@ class ResNetFeatureExtractor(nn.Module):
             t_hop_length=32,
             filter_multiplier=32, 
             block_depth=1, 
-            nonlin=nn.LeakyReLU(0.1), 
+            nonlin=nn.ReLU(), 
             bn_momentum=0.01):
         super().__init__()
         self.output_dim = output_dim
@@ -171,7 +169,7 @@ class ResNetFeatureExtractor(nn.Module):
            output shape [batch, num_stations, out_channels, time_steps]"""
         with torch.cuda.amp.autocast(enabled=autocast):
             shape = x.shape
-            sgram = spectrogram(x.view(-1, x.shape[-1]), n_fft=self.input_freq_dim*2, hop_length=self.t_hop_length)
+            sgram = spectrogram(x.view(-1, x.shape[-1]), n_fft=self.input_freq_dim*2, hop_length=self.t_hop_length)#.clamp(-10, 10)
             sgram = sgram.view(-1, self.input_channels, *sgram.shape[-2:])
             out = self.conv(sgram)
             out = self.block1(out)
@@ -185,7 +183,7 @@ class ResNetFeatureExtractor(nn.Module):
 
 
 class Classifier(nn.Module):
-    def __init__(self, channels=(128, 64), bn=True, nonlin=nn.LeakyReLU(0.1)):
+    def __init__(self, channels=[128, 64, 32], bn=True, nonlin=nn.ReLU()):
         super().__init__()
         self.channels = channels
         self.bn = bn
@@ -198,8 +196,8 @@ class Classifier(nn.Module):
             self.bn_layers = [lambda x: x for c in channels[1:]]
             conv_bias = True
         self.conv_layers = nn.ModuleList([
-            nn.Conv1d(channels[i], channels[i+1], 3, padding=1, padding_mode='reflect', bias=conv_bias) 
-            for i in range(len(channels) - 1)])
+            nn.Conv1d(channels[i], channels[i+1], kernel_size=3, padding=1, padding_mode='reflect', bias=conv_bias) 
+                for i in range(len(channels) - 1)])
         self.conv_out = nn.Conv1d(channels[-1], 1, kernel_size=3, padding=1, padding_mode='reflect')
 
     def forward(self, x):
@@ -208,22 +206,21 @@ class Classifier(nn.Module):
         out = x
         for conv, bn in zip(self.conv_layers, self.bn_layers):
             out = self.nonlin(bn(conv(out)))
-        out = self.conv_out(out).squeeze(1)
+        out = self.conv_out(out)#.squeeze(1)
         return out
 
+
 class ClassifierWide(nn.Module):
-    def __init__(self, channels=(128, 64, 32, 16), dilations=(2, 2, 2), bn=True, 
-                 pool=nn.MaxPool1d(2), kernel_size=3, 
-                 nonlin=nn.LeakyReLU(0.1)):
+    def __init__(self, channels=[128, 64, 32, 16], bn=True, dilations=(1, 2, 4, 1), 
+                 kernel_size=3, nonlin=nn.ReLU(), num_phase=2):
         super().__init__()
         self.channels = channels
         self.dilations = dilations
         self.bn = bn
-        self.pool = pool
         self.kernel_size = kernel_size
         self.nonlin = nonlin
-        self.paddings = nn.ModuleList([nn.ReflectionPad1d(((kernel_size-1)*d+1) // 2) for d in dilations])
-        self.padding_out = nn.ReflectionPad1d(((kernel_size-1)*2+1) // 2)
+        self.paddings = nn.ModuleList([nn.ReflectionPad1d(((kernel_size-1)*d+1) // 2) for d in dilations[:-1]])
+        self.padding_out = nn.ReflectionPad1d(((kernel_size-1)*dilations[-1]+1) // 2)
 
         if self.bn:
             self.bn_layers = nn.ModuleList([nn.BatchNorm1d(c) for c in channels[1:]])
@@ -231,12 +228,11 @@ class ClassifierWide(nn.Module):
         else:
             self.bn_layers = [lambda x: x for c in channels[1:]]
             conv_bias = True
+
         self.conv_layers = nn.ModuleList([
-                             nn.Conv1d(channels[i], channels[i + 1], 
-                                       kernel_size, dilation=dilations[i],
-                                       bias=conv_bias) 
-                             for i in range(len(channels) - 1)])
-        self.conv_out = nn.Conv1d(channels[-1], 1, kernel_size=kernel_size, dilation=2, bias=True)
+            nn.Conv1d(channels[i], channels[i + 1], kernel_size, dilation=dilations[i], bias=conv_bias) 
+                for i in range(len(channels) - 1)])
+        self.conv_out = nn.Conv1d(channels[-1], 1, kernel_size=kernel_size, dilation=dilations[-1], bias=True)
 
     def forward(self, x):
         """input shape [batch, in_channels, time_steps]
@@ -246,26 +242,100 @@ class ClassifierWide(nn.Module):
             out = pad(out)
             out = self.nonlin(bn(conv(out)))
         out = self.padding_out(out)
-        out = self.conv_out(out).squeeze(1)
+        out = self.conv_out(out)#.squeeze(1)
         return out
 
+
+class Picker(nn.Module):
+    def __init__(self, channels=[64, 32, 16], bn=True, nonlin=nn.ReLU()):
+        super().__init__()
+        self.channels = channels
+        self.bn = bn
+        self.nonlin = nonlin
+
+        if self.bn:
+            self.bn_layers = nn.ModuleList([nn.BatchNorm1d(c) for c in channels])
+            conv_bias = False
+        else:
+            self.bn_layers = [lambda x: x for c in channels]
+            conv_bias = True
+        self.conv_layers = nn.ModuleList([
+            nn.Conv1d(channels[i], channels[i+1], kernel_size=3, padding=1, padding_mode='reflect', bias=conv_bias) 
+                for i in range(len(channels) - 1)])
+        self.conv_out = nn.Conv1d(channels[-1], 1, kernel_size=3, padding=1, padding_mode='reflect')
+        # self.conv_layers = nn.ModuleList([
+        #     nn.ConvTranspose1d(channels[i], channels[i+1], kernel_size=5, stride=4, padding=1, output_padding=1, bias=conv_bias) 
+        #         for i in range(len(channels) - 1)])
+        # self.conv_out = nn.ConvTranspose1d(channels[-1], 1, kernel_size=5, stride=4, padding=1, output_padding=1)
+
+    def forward(self, x):
+        """input shape [batch, in_channels, time_steps]
+           output shape [batch, time_steps]"""
+        bt, st, ch, nt = x.shape #batch, station, channel, time
+        x = x.view(bt*st, ch, nt)
+        # x = self.nonlin(self.bn_layers[0](x))
+        # x = F.interpolate(x, scale_factor=4, mode='linear', align_corners=False)
+        for conv, bn in zip(self.conv_layers, self.bn_layers[1:]):
+            x = self.nonlin(bn(conv(x)))
+            x = F.interpolate(x, scale_factor=4, mode='linear', align_corners=False)
+        x = self.conv_out(x)
+        x = x.view(bt, st, x.shape[2])
+        return x
+
 class End2End(nn.Module):
-    def __init__(self, spectrogram=True):
+    def __init__(self, spectrogram=False):
         super().__init__()
         if spectrogram:
             self.feature_extractor = ResNetFeatureExtractor()
             self.classifier = Classifier()
             # self.classifier = ClassifierWide()
         else:
-            self.feature_extractor = FeatureExtractor()
-            self.classifier = ClassifierWide()
-    
+            # self.feature_extractor = FeatureExtractor()
+            self.feature_extractor = ResNet(BasicBlock, [2, 2, 2, 2]) #ResNet18
+            # self.feature_extractor = ResNet(BasicBlock, [3, 4, 6, 3]) #ResNet34
+            # self.feature_extractor = ResNet(Bottleneck, [3, 4, 6, 3]) #ResNet50
+            self.classifier = Classifier()
+            # self.classifier = ClassifierWide(num_phase=num_phase)
+        self.picker = nn.ModuleList([Picker(), Picker()])    
+
+
+    @torch.cuda.amp.autocast()
     def forward(self, x, decays=None):
-        features = self.feature_extractor(x)
+        """input shape [batch, p/s phase, num_stations, in_channels, time_steps]
+           output shape [batch, time_steps]"""
+        bt, ph, st, ch, nt = x.shape #batch, p/s, station, channel, time
+
+        ## feature extraction
+        features = []
+        picks = []
+        x = x.transpose(0,1).contiguous()
+        for i, c in enumerate(x):
+            feature = self.feature_extractor(c) #batch, station, channel, time
+            nch = feature.shape[-2]
+            feature = feature[:,:,i*nch//ph:(i+1)*nch//ph,:]
+            features.append(feature)
+            ## phase picking
+            pick = self.picker[i](feature)
+            pick = F.interpolate(pick, size=(nt), mode='linear', align_corners=False)
+            picks.append(pick)
+
+        features = torch.cat(features, dim=-2) #batch, station, p/s+channel, time
+        pick_logits = torch.stack(picks, dim=1) #batch, p/s+channel, station, time
+
+        ## distance decay
         if decays is not None:
-            decays = decays.unsqueeze(2).unsqueeze(3)
-            features = (features * decays).mean(1)
-        else:
-            features = features.mean(1)
-        logits = self.classifier(features)
-        return logits
+            features = (features * decays)
+
+        ## station dropout
+        # if self.training:
+        #     num_station = torch.randint(low=3, high=features.shape[1], size=(1,))
+        #     idx_station = torch.randperm(features.shape[1])[:num_station+1]
+        #     features = features[:, idx_station, ...]
+        
+        ## event classification 
+        features = features.mean(1) #batch, p/s+channel, time
+        event_logits = self.classifier(features)#.squeeze(1) #batch, time
+        
+        event_logits = F.interpolate(event_logits, size=(nt), mode='linear', align_corners=False).squeeze(1)
+
+        return event_logits, pick_logits, features
