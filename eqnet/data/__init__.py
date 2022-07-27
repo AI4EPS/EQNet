@@ -1,1 +1,1 @@
-from .das import DASDataset, DASIterableDataset
+from .das import DASDataset, DASIterableDataset, AutoEncoderIterableDataset

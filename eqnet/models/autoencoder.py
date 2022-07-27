@@ -200,7 +200,7 @@ class UNet(nn.Module):
     def forward(self, x):
         
         bt, ch, nt, nsta = x.shape
-        x = normalize_local(x)
+        # x = normalize_local(x)
         # x = pad_input(x, ratio=self.encoder_stride)
 
         if self.use_stft:
@@ -323,7 +323,7 @@ class AutoEncoder(_SimpleSegmentationModel):
 def autoencoder(
 ) -> AutoEncoder:
     
-    backbone = UNet(in_channels=1, out_channels=3, init_features=8, use_stft=False, 
+    backbone = UNet(in_channels=1, out_channels=1, init_features=8, use_stft=False, 
                     encoder_kernel_size = (5, 5), decoder_kernel_size = (5, 5),
                     encoder_stride = (2, 4), decoder_stride = (2, 4),
                     encoder_padding = (2, 2), decoder_padding = (2, 2))

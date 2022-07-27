@@ -2,4 +2,6 @@
 *.pth
 
 swarm_south_debug/
+Trash
+autoencoder/
 

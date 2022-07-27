@@ -178,7 +178,9 @@ def flip_lr(data, targets=None):
     data = data.flip(-1)
     if targets is not None:
         targets = targets.flip(-1)
-    return data, targets
+        return data, targets
+    else:
+        return data
 
 
 def roll_by_gather(data, dim, shifts: torch.LongTensor):
@@ -544,6 +546,85 @@ class DASIterableDataset(IterableDataset):
                         "width": data_.shape[-1],
                     }
 
+            else:
+                sample["data"] = data
+                if self.nt is None:
+                    self.nt = data.shape[1]
+                if self.nx is None:
+                    self.nx = data.shape[2]
+                for i in list(range(0, data.shape[1], self.nt)):
+                    if (self.nt + i + 512 >= data.shape[1]):
+                        tn = data.shape[1]
+                    else:
+                        tn = i + self.nt
+                    for j in list(range(0, data.shape[2], self.nx)):
+                        if (self.nx + j + 512 >= data.shape[2]):
+                            xn = data.shape[2]
+                        else:
+                            xn = j + self.nx
+                        yield {
+                            "data": data[:, i:tn, j:xn],
+                            "file_name": os.path.splitext(file.split("/")[-1])[0]+f"_{i:04d}_{j:04d}",
+                            "begin_time": (sample["begin_time"] + timedelta(i * sample["dt_s"])).isoformat(timespec="milliseconds"),
+                            "begin_time_index": i,
+                            "begin_channel_index": j,
+                            "dt_s": sample["dt_s"] if "dt_s" in sample else self.dt,
+                            "dx_m": sample["dx_m"] if "dx_m" in sample else self.dx,
+                        }
+                        if (xn == data.shape[2]):
+                            break
+                    if (tn == data.shape[1]):
+                        break
+
+
+class AutoEncoderIterableDataset(DASIterableDataset):
+    def __init__(self, data_path="./", noise_path=None, format="npz", prefix="", suffix="", training=False, stack_noise=False, filtering=False, **kwargs):
+        super().__init__(data_path, noise_path, format=format, training=training)
+
+    def sample(self, file_list):
+        sample = {}
+        # for file in file_list:
+        idx = 0
+        while True:
+            if self.training:
+                file = file_list[np.random.randint(0, len(file_list))]
+            else:
+                if idx >= len(file_list):
+                    break
+                file = file_list[idx]
+                idx += 1
+
+            if self.training and (self.format == "h5"):
+                with h5py.File(file, "r") as f:
+                    data = f["data"][()]
+                    data = data[np.newaxis, :, :]  # nchn, nt, nsta
+                    data = torch.from_numpy(data.astype(np.float32))
+            else:
+                raise (f"Unsupported format: {self.format}")
+
+            data = data - np.median(data, axis=2, keepdims=True)
+            data = normalize(data)  # nch, nt, nsta
+
+            if self.training:
+                for ii in range(10):
+                    pre_nt = 255
+                    data_ = cut_data(data, pre_nt=pre_nt)
+                    if data_ is None:
+                        continue
+                    if np.random.rand() < 0.5:
+                        data_ = add_moveout(data_)
+                    data_ = data_[:, pre_nt:, :]
+                    if np.random.rand() < 0.5:
+                        data_ = flip_lr(data_)
+                    data_ = data_ - np.median(data_, axis=2, keepdims=True)
+
+                    yield {
+                        "data": data_,
+                        "targets": data_,
+                        "file_name": os.path.splitext(file.split("/")[-1])[0] + f"_{ii:02d}",
+                        "height": data_.shape[-2],
+                        "width": data_.shape[-1],
+                    }
             else:
                 sample["data"] = data
                 if self.nt is None:

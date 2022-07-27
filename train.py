@@ -14,7 +14,7 @@ import torchvision
 import utils
 import eqnet
 from eqnet.models import log_transform, normalize_local
-from eqnet.data import DASDataset, DASIterableDataset
+from eqnet.data import DASDataset, DASIterableDataset, AutoEncoderIterableDataset
 
 import matplotlib
 matplotlib.use('agg')
@@ -39,9 +39,11 @@ def visualize(meta, preds, epoch, figure_dir="figures"):
 
         fig, ax = plt.subplots(2,2, figsize=(12, 12), sharex=False, sharey=False)
         ax[0, 0].imshow((raw_data[i]-np.mean(raw_data[i])), vmin=raw_vmin, vmax=raw_vmax, interpolation='none', cmap="seismic", aspect='auto')
-        ax[1, 0].imshow((data[i]-np.mean(data[i])), vmin=vmin, vmax=vmax, interpolation='none', cmap="seismic", aspect='auto')
+        # ax[1, 0].imshow((data[i]-np.mean(data[i])), vmin=vmin, vmax=vmax, interpolation='none', cmap="seismic", aspect='auto')
         ax[0, 1].imshow(y[i], vmin=0, vmax=1, interpolation='none', aspect='auto')
         ax[1, 1].imshow(targets[i],  vmin=0, vmax=1, interpolation='none', aspect='auto')
+        # ax[0, 1].imshow(y[i], interpolation='none', aspect='auto')
+        # ax[1, 1].imshow(targets[i], interpolation='none', aspect='auto')
         
         if "LOCAL_RANK" in os.environ:
             local_rank = int(os.environ["LOCAL_RANK"])
@@ -112,10 +114,11 @@ def train_one_epoch(model, criterion, optimizer, data_loader, lr_scheduler, devi
 
         i += 1
         # if i > len(data_loader):
-        # if i > 200:
+        if i > 200:
+            break
         if i > iters_per_epoch:
             break
-        # break
+        
 
     model.eval()
     with torch.inference_mode():
@@ -154,20 +157,27 @@ def main(args):
     # else:
     #     train_sampler = torch.utils.data.RandomSampler(dataset)
     #     test_sampler = torch.utils.data.SequentialSampler(dataset_test)
+    if args.model == "phasenet_das":
+        dataset = DASIterableDataset(
+            # data_path="/net/kuafu/mnt/tank/data/EventData/Mammoth_north/data", 
+            #  noise_path="/net/kuafu/mnt/tank/data/EventData/Mammoth_north/data",
+            # label_path="/net/kuafu/mnt/tank/data/EventData/Mammoth_north/picks_phasenet_filtered/",
+            label_path=["/net/kuafu/mnt/tank/data/EventData/Mammoth_north/picks_phasenet_filtered/",
+                        "/net/kuafu/mnt/tank/data/EventData/Mammoth_south/picks_phasenet_filtered/",
+                        "/net/kuafu/mnt/tank/data/EventData/Ridgecrest/picks_phasenet_filtered/",
+                        "/net/kuafu/mnt/tank/data/EventData/Ridgecrest_South/picks_phasenet_filtered/"],
+            format="h5",
+            training=True,
+        )
+        train_sampler = None
+    elif args.model == "autoencoder":
+        dataset = AutoEncoderIterableDataset(
+            data_path = "/net/kuafu/mnt/tank/data/EventData/Ridgecrest/data",
+            format="h5",
+            training=True,
+        )
+        train_sampler = None
 
-    dataset = DASIterableDataset(
-        # data_path="/net/kuafu/mnt/tank/data/EventData/Mammoth_north/data", 
-        #  noise_path="/net/kuafu/mnt/tank/data/EventData/Mammoth_north/data",
-        # label_path="/net/kuafu/mnt/tank/data/EventData/Mammoth_north/picks_phasenet_filtered/",
-        label_path=["/net/kuafu/mnt/tank/data/EventData/Mammoth_north/picks_phasenet_filtered/",
-                    "/net/kuafu/mnt/tank/data/EventData/Mammoth_south/picks_phasenet_filtered/",
-                    "/net/kuafu/mnt/tank/data/EventData/Ridgecrest/picks_phasenet_filtered/",
-                    "/net/kuafu/mnt/tank/data/EventData/Ridgecrest_South/picks_phasenet_filtered/"],
-        format="h5",
-        training=True,
-    )
-    train_sampler = None
-    
     dataset_test = dataset
     test_sampler = None
 
