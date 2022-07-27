@@ -9,11 +9,6 @@ from tqdm import tqdm
 plt.rcParams['figure.facecolor'] = 'white'
 
 # %%
-output_path = Path('ncedc_dataset')
-if not output_path.exists():
-    output_path.mkdir()
-
-# %%
 h5_file = "ncedc.h5"
 event_csv = pd.read_hdf(h5_file, "events")
 phase_csv = pd.read_hdf(h5_file, "catalog")
@@ -31,8 +26,8 @@ with h5py.File(h5_file, "r") as fp_in:
 
         for i, (_, event) in tqdm(enumerate(event_csv.iterrows()), total=len(event_csv)):
 
-            event_time = datetime.strptime(event["time"], "%Y-%m-%dT%H:%M:%S.%f")
             event_id = event["index"]
+            event_time = datetime.strptime(event["time"], "%Y-%m-%dT%H:%M:%S.%f")
             event_latitude = event["latitude"]
             event_longitude = event["longitude"]
             event_depth_km = event["depth_km"]
@@ -40,6 +35,7 @@ with h5py.File(h5_file, "r") as fp_in:
             group = fp_out.create_group(f"{event_id:06d}")
             group.attrs["event_id"] = event_id
             group.attrs["event_time"] = event_time.isoformat(timespec='milliseconds')
+            group.attrs["event_time_index"] = 3000
             group.attrs["event_latitude"] = event_latitude
             group.attrs["event_longitude"] = event_longitude
             group.attrs["event_depth_km"] = event_depth_km
@@ -78,6 +74,7 @@ with h5py.File(h5_file, "r") as fp_in:
                 phase_type = ["P", "S"]
                 phase_index = [p_arrival_index, s_arrival_index]
                 phase_time = [p_time.isoformat(timespec='milliseconds'), s_time.isoformat(timespec='milliseconds')]
+                phase_score = [phase["p_weight"], phase["s_weight"]]
                 phase_remark = [phase["p_remark"], phase["s_remark"]]
                 assert(dt_s == 1.0/sampling_rate)
                 
@@ -103,6 +100,7 @@ with h5py.File(h5_file, "r") as fp_in:
                 attrs["phase_type"] = phase_type
                 attrs["phase_index"] = phase_index
                 attrs["phase_time"] = phase_time
+                attrs["phase_score"] = phase_score
                 attrs["phase_remark"] = phase_remark
 
                 # print(begin_time, end_time)
