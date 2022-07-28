@@ -14,7 +14,7 @@ import torchvision
 import utils
 import eqnet
 from eqnet.models import log_transform, normalize_local
-from eqnet.data import DASDataset, DASIterableDataset, AutoEncoderIterableDataset
+from eqnet.data import DASDataset, DASIterableDataset, AutoEncoderIterableDataset, SeismicNetworkIterableDataset
 
 import matplotlib
 matplotlib.use('agg')
@@ -177,6 +177,9 @@ def main(args):
             training=True,
         )
         train_sampler = None
+    elif args.model == "eqnet":
+        dataset = SeismicNetworkIterableDataset("/Users/weiqiang/Research/EQNet/datasets/NCEDC/ncedc_event.h5")
+        train_sampler = None
 
     dataset_test = dataset
     test_sampler = None
@@ -220,14 +223,15 @@ def main(args):
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
         model_without_ddp = model.module
 
-    params_to_optimize = [
-        {"params": [p for p in model_without_ddp.backbone.parameters() if p.requires_grad], "lr": args.lr},
-        {"params": [p for p in model_without_ddp.classifier.parameters() if p.requires_grad]},
-        # {"params": [p for p in model_without_ddp.sem_seg_head.parameters() if p.requires_grad]},
-    ]
-    if args.aux_loss:
-        params = [p for p in model_without_ddp.aux_classifier.parameters() if p.requires_grad]
-        params_to_optimize.append({"params": params, "lr": args.lr * 10})
+    # params_to_optimize = [
+    #     {"params": [p for p in model_without_ddp.backbone.parameters() if p.requires_grad], "lr": args.lr},
+    #     {"params": [p for p in model_without_ddp.classifier.parameters() if p.requires_grad]},
+    #     # {"params": [p for p in model_without_ddp.sem_seg_head.parameters() if p.requires_grad]},
+    # ]
+    params_to_optimize = {"params": [p for p in model_without_ddp.parameters() if p.requires_grad]}
+    # if args.aux_loss:
+    #     params = [p for p in model_without_ddp.aux_classifier.parameters() if p.requires_grad]
+    #     params_to_optimize.append({"params": params, "lr": args.lr * 10})
     # optimizer = torch.optim.SGD(params_to_optimize, lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
     optimizer = torch.optim.AdamW(params_to_optimize, lr=args.lr, weight_decay=args.weight_decay)
 

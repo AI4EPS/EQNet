@@ -36,9 +36,12 @@ class EventDetector(nn.Module):
         """input shape [batch, in_channels, time_steps]
            output shape [batch, time_steps]"""
         x = features["out"]
+        bt, st, ch, nt = x.shape #batch, station, channel, time
+        x = x.view(bt*st, ch, nt)
         for conv, bn in zip(self.conv_layers, self.bn_layers):
             x = self.nonlin(bn(conv(x)))
-        x = self.conv_out(x)#.squeeze(1)
+        x = self.conv_out(x)
+        x = x.view(bt, st, x.shape[2])
         if self.training:
             return None, self.losses(x, targets)
         return x, {}
@@ -68,7 +71,7 @@ class PhasePicker(nn.Module):
         self.conv_layers = nn.ModuleList([
             nn.Conv1d(channels[i], channels[i+1], kernel_size=3, padding=1, padding_mode='reflect', bias=conv_bias) 
                 for i in range(len(channels) - 1)])
-        self.conv_out = nn.Conv1d(channels[-1], 1, kernel_size=3, padding=1, padding_mode='reflect')
+        self.conv_out = nn.Conv1d(channels[-1], 3, kernel_size=3, padding=1, padding_mode='reflect')
         # self.conv_layers = nn.ModuleList([
         #     nn.ConvTranspose1d(channels[i], channels[i+1], kernel_size=5, stride=4, padding=1, output_padding=1, bias=conv_bias) 
         #         for i in range(len(channels) - 1)])
