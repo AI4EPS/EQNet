@@ -15,48 +15,7 @@ def log_transform(x):
     return yp - yn
 
 class EventDetector(nn.Module):
-    def __init__(self, channels=[128, 64, 32], bn=True, nonlin=nn.ReLU()):
-        super().__init__()
-        self.channels = channels
-        self.bn = bn
-        self.nonlin = nonlin
-
-        if self.bn:
-            self.bn_layers = nn.ModuleList([nn.BatchNorm1d(c) for c in channels[1:]])
-            conv_bias = False
-        else:
-            self.bn_layers = [lambda x: x for c in channels[1:]]
-            conv_bias = True
-        self.conv_layers = nn.ModuleList([
-            nn.Conv1d(channels[i], channels[i+1], kernel_size=3, padding=1, padding_mode='reflect', bias=conv_bias) 
-                for i in range(len(channels) - 1)])
-        self.conv_out = nn.Conv1d(channels[-1], 1, kernel_size=3, padding=1, padding_mode='reflect')
-
-    def forward(self, features, targets=None):
-        """input shape [batch, in_channels, time_steps]
-           output shape [batch, time_steps]"""
-        x = features["out"]
-        bt, st, ch, nt = x.shape #batch, station, channel, time
-        x = x.view(bt*st, ch, nt)
-        for conv, bn in zip(self.conv_layers, self.bn_layers):
-            x = self.nonlin(bn(conv(x)))
-        x = self.conv_out(x)
-        x = x.view(bt, st, x.shape[2])
-        if self.training:
-            return None, self.losses(x, targets)
-        return x, {}
-
-    def losses(self, inputs, targets):
-
-        inputs = inputs.float()  # https://github.com/pytorch/pytorch/issues/48163
-        # loss = torch.sum(-targets * F.log_softmax(inputs, dim=1), dim=1).mean()
-        loss = F.binary_cross_entropy_with_logits(inputs, targets)
-
-        return loss
-
-
-class PhasePicker(nn.Module):
-    def __init__(self, channels=[128, 64, 32], bn=True, nonlin=nn.ReLU()):
+    def __init__(self, channels=[128, 64, 32, 16, 8], bn=True, dilations=[1, 2, 4, 8, 16], kernel_size=5, nonlin=nn.ReLU()):
         super().__init__()
         self.channels = channels
         self.bn = bn
@@ -68,14 +27,57 @@ class PhasePicker(nn.Module):
         else:
             self.bn_layers = [lambda x: x for c in channels]
             conv_bias = True
+
         self.conv_layers = nn.ModuleList([
-            nn.Conv1d(channels[i], channels[i+1], kernel_size=3, padding=1, padding_mode='reflect', bias=conv_bias) 
+            nn.Conv1d(channels[i], channels[i+1], kernel_size=kernel_size, dilation=dilations[i], padding=((kernel_size-1)*dilations[i]+1)//2, padding_mode='reflect', bias=conv_bias) 
                 for i in range(len(channels) - 1)])
-        self.conv_out = nn.Conv1d(channels[-1], 3, kernel_size=3, padding=1, padding_mode='reflect')
-        # self.conv_layers = nn.ModuleList([
-        #     nn.ConvTranspose1d(channels[i], channels[i+1], kernel_size=5, stride=4, padding=1, output_padding=1, bias=conv_bias) 
-        #         for i in range(len(channels) - 1)])
-        # self.conv_out = nn.ConvTranspose1d(channels[-1], 1, kernel_size=5, stride=4, padding=1, output_padding=1)
+        self.conv_out = nn.Conv1d(channels[-1], 1, kernel_size=kernel_size, dilation=dilations[-1], padding=((kernel_size-1)*dilations[-1]+1)//2, padding_mode='reflect')
+
+
+    def forward(self, features, targets=None, *args, **kwargs):
+        """input shape [batch, in_channels, time_steps]
+           output shape [batch, time_steps]"""
+        x = features["out"]
+        bt, st, ch, nt = x.shape #batch, station, channel, time
+        x = x.view(bt*st, ch, nt)
+        x = self.nonlin(self.bn_layers[0](x))
+        for conv, bn in zip(self.conv_layers, self.bn_layers[1:]):
+            x = self.nonlin(bn(conv(x)))
+        x = self.conv_out(x)
+        x = F.interpolate(x, scale_factor=2, mode='linear', align_corners=False)
+        x = x.view(bt, st, x.shape[2]) #chn = 1
+        x = x.permute(0, 2, 1)
+
+        if self.training:
+            return None, self.losses(x, targets)
+        return x, {}
+
+    def losses(self, inputs, targets):
+
+        inputs = inputs.float()  # https://github.com/pytorch/pytorch/issues/48163
+        loss = F.binary_cross_entropy_with_logits(inputs, targets)
+
+        return loss
+
+
+class PhasePicker(nn.Module):
+    def __init__(self, channels=[128, 64, 32, 16, 8], bn=True, kernel_size=5, nonlin=nn.ReLU()):
+        super().__init__()
+        self.channels = channels
+        self.bn = bn
+        self.nonlin = nonlin
+
+        if self.bn:
+            self.bn_layers = nn.ModuleList([nn.BatchNorm1d(c) for c in channels])
+            conv_bias = False
+        else:
+            self.bn_layers = [lambda x: x for c in channels]
+            conv_bias = True
+
+        self.conv_layers = nn.ModuleList([
+            nn.Conv1d(channels[i], channels[i+1], kernel_size=kernel_size, padding=kernel_size//2, padding_mode='reflect', bias=conv_bias)
+                for i in range(len(channels) - 1)])
+        self.conv_out = nn.Conv1d(channels[-1], 3, kernel_size=kernel_size, padding=kernel_size//2, padding_mode='reflect')
 
 
     def forward(self, features, targets=None):
@@ -84,20 +86,21 @@ class PhasePicker(nn.Module):
         x = features["out"]
         bt, st, ch, nt = x.shape #batch, station, channel, time
         x = x.view(bt*st, ch, nt)
-        # x = self.nonlin(self.bn_layers[0](x))
-        # x = F.interpolate(x, scale_factor=4, mode='linear', align_corners=False)
+        x = self.nonlin(self.bn_layers[0](x))
         for conv, bn in zip(self.conv_layers, self.bn_layers[1:]):
             x = self.nonlin(bn(conv(x)))
-            x = F.interpolate(x, scale_factor=4, mode='linear', align_corners=False)
+            x = F.interpolate(x, scale_factor=2, mode='linear', align_corners=False)
         x = self.conv_out(x)
-        x = x.view(bt, st, x.shape[2])
+        x = F.interpolate(x, scale_factor=2, mode='linear', align_corners=False)
+        x = x.view(bt, st, x.shape[1], x.shape[2])
+        x = x.permute(0, 2, 3, 1)
 
         if self.training:
             return None, self.losses(x, targets)
         return x, {}
 
     def losses(self, inputs, targets):
-
+        
         inputs = inputs.float()  # https://github.com/pytorch/pytorch/issues/48163
         loss = torch.sum(-targets * F.log_softmax(inputs, dim=1), dim=1).mean()
 
@@ -119,7 +122,7 @@ class EQNet(nn.Module):
 
     def forward(self, batched_inputs: Tensor) -> Dict[str, Tensor]:
 
-        waveforms = batched_inputs["waveforms"].to(self.device)
+        waveform = batched_inputs["waveform"].to(self.device)
         relative_position = batched_inputs["relative_position"].to(self.device)
         if self.training:
             phase_pick = batched_inputs["phase_pick"].to(self.device)
@@ -129,7 +132,7 @@ class EQNet(nn.Module):
         else:
             phase_pick, center_heatmap, event_location, event_location_mask = None, None, None, None
 
-        features = self.backbone(waveforms)
+        features = self.backbone(waveform)
 
         output_phase, loss_phase = self.phase_picker(features, phase_pick)
         output_event, loss_event = self.event_detector(features, center_heatmap, event_location, event_location_mask)
@@ -137,7 +140,7 @@ class EQNet(nn.Module):
         if self.training:
             return loss_phase + loss_event
         else:
-            return output_event.update(output_phase)
+            return {"phase": output_phase, "event": output_event}
 
 
 def eqnet(
