@@ -147,8 +147,8 @@ class PatchMerging(nn.Module):
     def __init__(self, dim: int, norm_layer: Callable[..., nn.Module] = nn.LayerNorm):
         super().__init__()
         self.dim = dim
-        self.reduction = nn.Linear(4 * dim, 2 * dim, bias=False)
-        self.norm = norm_layer(4 * dim)
+        # self.reduction = nn.Linear(4 * dim, 2 * dim, bias=False)
+        # self.norm = norm_layer(4 * dim)
 
     def forward(self, x: Tensor):
         """
@@ -171,7 +171,7 @@ class PatchMerging(nn.Module):
         ## for seismic time series
         x0 = x[..., 0::2, :, :]  # ... H/2 W/2 C
         x1 = x[..., 1::2, :, :]  # ... H/2 W/2 C
-        x = torch.cat([x0, x1], -1)  # ... H/2 W/2 4*C 
+        x = torch.cat([x0, x1], -1)  # ... H/2 W/2 2*C 
         return x
 
 
@@ -497,8 +497,8 @@ class SwinTransformer(nn.Module):
 
         num_features = embed_dim * 2 ** (len(depths) - 1)
         self.norm = norm_layer(num_features)
-        self.avgpool = nn.AdaptiveAvgPool2d(1)
-        self.head = nn.Linear(num_features, num_classes)
+        # self.avgpool = nn.AdaptiveAvgPool2d(1)
+        # self.head = nn.Linear(num_features, num_classes)
 
         for m in self.modules():
             if isinstance(m, nn.Linear):

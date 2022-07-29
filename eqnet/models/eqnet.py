@@ -23,10 +23,10 @@ class EventDetector(nn.Module):
         self.nonlin = nonlin
 
         if self.bn:
-            self.bn_layers = nn.ModuleList([nn.BatchNorm1d(c) for c in channels])
+            self.bn_layers = nn.ModuleList([nn.BatchNorm1d(c) for c in channels[1:]])
             conv_bias = False
         else:
-            self.bn_layers = [lambda x: x for c in channels]
+            self.bn_layers = [lambda x: x for c in channels[1:]]
             conv_bias = True
 
         self.conv_layers = nn.ModuleList([
@@ -43,7 +43,8 @@ class EventDetector(nn.Module):
         x = x.view(bt*st, ch, nt)
         # x = self.nonlin(self.bn_layers[0](x))
         # x = self.nonlin(x)
-        for conv, bn in zip(self.conv_layers, self.bn_layers[1:]):
+        # for conv, bn in zip(self.conv_layers, self.bn_layers[1:]):
+        for conv, bn in zip(self.conv_layers, self.bn_layers):
             x = self.nonlin(bn(conv(x)))
         x = self.conv_out(x)
         x = F.interpolate(x, scale_factor=2, mode='linear', align_corners=False)
@@ -70,10 +71,10 @@ class PhasePicker(nn.Module):
         self.nonlin = nonlin
 
         if self.bn:
-            self.bn_layers = nn.ModuleList([nn.BatchNorm1d(c) for c in channels])
+            self.bn_layers = nn.ModuleList([nn.BatchNorm1d(c) for c in channels[1:]])
             conv_bias = False
         else:
-            self.bn_layers = [lambda x: x for c in channels]
+            self.bn_layers = [lambda x: x for c in channels[1:]]
             conv_bias = True
 
         self.conv_layers = nn.ModuleList([
@@ -90,7 +91,8 @@ class PhasePicker(nn.Module):
         x = x.view(bt*st, ch, nt)
         # x = self.nonlin(self.bn_layers[0](x))
         # x = self.nonlin(x)
-        for conv, bn in zip(self.conv_layers, self.bn_layers[1:]):
+        # for conv, bn in zip(self.conv_layers, self.bn_layers[1:]):
+        for conv, bn in zip(self.conv_layers, self.bn_layers):
             x = self.nonlin(bn(conv(x)))
             x = F.interpolate(x, scale_factor=2, mode='linear', align_corners=False)
         x = self.conv_out(x)
