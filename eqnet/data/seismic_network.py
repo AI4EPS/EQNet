@@ -45,57 +45,72 @@ class SeismicNetworkIterableDataset(IterableDataset):
         return len(self.event_ids)
 
     def sample(self, event_ids):
+        
+        num_station = 10
+        while True:
 
-        idx = np.random.randint(0, len(event_ids))
-        event_id = event_ids[idx]
-        station_ids = list(self.hdf5_fp[event_id].keys())
-        waveforms = np.zeros([3, self.nt, len(station_ids)])
-        phase_pick = np.zeros([3, self.nt, len(station_ids)])
-        center_heatmap = np.zeros([self.feature_nt, len(station_ids)])
-        event_location = np.zeros([4, self.feature_nt, len(station_ids)])
-        event_location_mask = np.zeros([self.feature_nt, len(station_ids)])
-        relative_position = np.zeros([3, len(station_ids), len(station_ids)])
+            idx = np.random.randint(0, len(event_ids))
+            event_id = event_ids[idx]
+            station_ids = list(self.hdf5_fp[event_id].keys())
+            if len(station_ids) < num_station:
+                continue
+            else:
+                station_ids = np.random.choice(station_ids, num_station, replace=False)
 
-        for i, sta_id in enumerate(station_ids):
+            waveforms = np.zeros([3, self.nt, len(station_ids)])
+            phase_pick = np.zeros([3, self.nt, len(station_ids)])
+            center_heatmap = np.zeros([self.feature_nt, len(station_ids)])
+            event_location = np.zeros([4, self.feature_nt, len(station_ids)])
+            event_location_mask = np.zeros([self.feature_nt, len(station_ids)])
+            relative_position = np.zeros([3, len(station_ids), len(station_ids)])
 
-            waveforms[:, :, i] = self.hdf5_fp[event_id+'/'+sta_id][:self.nt,:].T
-            attrs = self.hdf5_fp[event_id+'/'+sta_id].attrs
-            p_picks = attrs["phase_index"][attrs["phase_type"] == "P"]
-            s_picks = attrs["phase_index"][attrs["phase_type"] == "S"]
-            phase_pick[:, :, i] = generate_label([p_picks, s_picks], nt=self.nt)
+            for i, sta_id in enumerate(station_ids):
+                
+                if self.hdf5_fp[event_id+'/'+sta_id][()].shape != (9000, 3):
+                    continue
 
-            ## TODO: how to deal with multiple phases
-            # center = (self.hdf5_fp[event_id+'/'+sta_id].attrs["phase_index"][::2] + self.hdf5_fp[event_id+'/'+sta_id].attrs["phase_index"][1::2])/2.0
-            ## assuming only one event with both P and S picks
-            c0 = np.mean(self.hdf5_fp[event_id+'/'+sta_id].attrs["phase_index"]).item()
-            dx = round((self.hdf5_fp[event_id].attrs["event_longitude"] - self.hdf5_fp[event_id+'/'+sta_id].attrs["station_longitude"]) * np.cos(np.radians(self.hdf5_fp[event_id].attrs["event_latitude"])) * self.degree2km, 2)
-            dy = round((self.hdf5_fp[event_id].attrs["event_latitude"] - self.hdf5_fp[event_id+'/'+sta_id].attrs["station_latitude"]) * self.degree2km, 2)
-            dz = round(self.hdf5_fp[event_id].attrs["event_depth_km"] + self.hdf5_fp[event_id+'/'+sta_id].attrs["station_elevation_m"]/1e3, 2)
-            # dt = (c0 - self.hdf5_fp[event_id].attrs["event_time_index"]) / self.sampling_rate
-            # dt = (c0 - 3000) / self.sampling_rate
+                waveforms[:, :, i] = self.hdf5_fp[event_id+'/'+sta_id][:self.nt,:].T
+                attrs = self.hdf5_fp[event_id+'/'+sta_id].attrs
+                p_picks = attrs["phase_index"][attrs["phase_type"] == "P"]
+                s_picks = attrs["phase_index"][attrs["phase_type"] == "S"]
+                phase_pick[:, :, i] = generate_label([p_picks, s_picks], nt=self.nt)
 
-            # center_heatmap[int(c0//self.feature_scale), i] = 1
-            center_heatmap[:, i] = generate_label([[c0/self.feature_scale],], label_width=[10,], nt=self.feature_nt)[1,:]
-            mask = (center_heatmap[:, i] >= 0.5)
-            # event_location[0, :, i] = (np.arange(self.nt) - self.hdf5_fp[event_id].attrs["event_time_index"]) / self.sampling_rate
-            event_location[0, :, i] = (np.arange(self.feature_nt) - 3000/self.feature_scale) / self.sampling_rate
-            event_location[1:, mask, i] = np.array([dx, dy, dz])[:, np.newaxis]
-            event_location_mask[:, i] = mask
+                ## TODO: how to deal with multiple phases
+                # center = (self.hdf5_fp[event_id+'/'+sta_id].attrs["phase_index"][::2] + self.hdf5_fp[event_id+'/'+sta_id].attrs["phase_index"][1::2])/2.0
+                ## assuming only one event with both P and S picks
+                c0 = np.mean(self.hdf5_fp[event_id+'/'+sta_id].attrs["phase_index"]).item()
+                dx = round((self.hdf5_fp[event_id].attrs["event_longitude"] - self.hdf5_fp[event_id+'/'+sta_id].attrs["station_longitude"]) * np.cos(np.radians(self.hdf5_fp[event_id].attrs["event_latitude"])) * self.degree2km, 2)
+                dy = round((self.hdf5_fp[event_id].attrs["event_latitude"] - self.hdf5_fp[event_id+'/'+sta_id].attrs["station_latitude"]) * self.degree2km, 2)
+                dz = round(self.hdf5_fp[event_id].attrs["event_depth_km"] + self.hdf5_fp[event_id+'/'+sta_id].attrs["station_elevation_m"]/1e3, 2)
+                # dt = (c0 - self.hdf5_fp[event_id].attrs["event_time_index"]) / self.sampling_rate
+                # dt = (c0 - 3000) / self.sampling_rate
 
-            for j, sta_jd in enumerate(station_ids):
-                relative_position[0, i, j] = round((self.hdf5_fp[event_id+'/'+sta_id].attrs["station_longitude"] - self.hdf5_fp[event_id+'/'+sta_jd].attrs["station_longitude"]) * np.cos(np.radians(self.hdf5_fp[event_id].attrs["event_latitude"])) * self.degree2km, 2)
-                relative_position[1, i, j] = round((self.hdf5_fp[event_id+'/'+sta_id].attrs["station_latitude"] - self.hdf5_fp[event_id+'/'+sta_jd].attrs["station_latitude"]) * self.degree2km, 2)
-                relative_position[2, i, j] = round((self.hdf5_fp[event_id+'/'+sta_id].attrs["station_elevation_m"] - self.hdf5_fp[event_id+'/'+sta_jd].attrs["station_elevation_m"]) / 1e3, 2)
+                # center_heatmap[int(c0//self.feature_scale), i] = 1
+                center_heatmap[:, i] = generate_label([[c0/self.feature_scale],], label_width=[10,], nt=self.feature_nt)[1,:]
+                mask = (center_heatmap[:, i] >= 0.5)
+                # event_location[0, :, i] = (np.arange(self.nt) - self.hdf5_fp[event_id].attrs["event_time_index"]) / self.sampling_rate
+                event_location[0, :, i] = (np.arange(self.feature_nt) - 3000/self.feature_scale) / self.sampling_rate
+                event_location[1:, mask, i] = np.array([dx, dy, dz])[:, np.newaxis]
+                event_location_mask[:, i] = mask
 
+                for j, sta_jd in enumerate(station_ids):
+                    relative_position[0, i, j] = round((self.hdf5_fp[event_id+'/'+sta_id].attrs["station_longitude"] - self.hdf5_fp[event_id+'/'+sta_jd].attrs["station_longitude"]) * np.cos(np.radians(self.hdf5_fp[event_id].attrs["event_latitude"])) * self.degree2km, 2)
+                    relative_position[1, i, j] = round((self.hdf5_fp[event_id+'/'+sta_id].attrs["station_latitude"] - self.hdf5_fp[event_id+'/'+sta_jd].attrs["station_latitude"]) * self.degree2km, 2)
+                    relative_position[2, i, j] = round((self.hdf5_fp[event_id+'/'+sta_id].attrs["station_elevation_m"] - self.hdf5_fp[event_id+'/'+sta_jd].attrs["station_elevation_m"]) / 1e3, 2)
 
-        yield {
-            "waveforms": torch.from_numpy(waveforms).float(),
-            "phase_pick": torch.from_numpy(phase_pick).float(),
-            "center_heatmap": torch.from_numpy(center_heatmap).float(),
-            "event_location": torch.from_numpy(event_location).float(),
-            "event_location_mask": torch.from_numpy(event_location_mask).float(),
-            "relative_position": torch.from_numpy(relative_position).float()
-        }
+            std = np.std(waveforms, axis=1, keepdims=True)
+            std[std == 0] = 1.0
+            waveforms = (waveforms - np.mean(waveforms, axis=1, keepdims=True)) / std
+            waveforms = waveforms.astype(np.float32)
+            
+            yield {
+                "waveform": torch.from_numpy(waveforms).float(),
+                "phase_pick": torch.from_numpy(phase_pick).float(),
+                "center_heatmap": torch.from_numpy(center_heatmap).float(),
+                "event_location": torch.from_numpy(event_location).float(),
+                "event_location_mask": torch.from_numpy(event_location_mask).float(),
+                "relative_position": torch.from_numpy(relative_position).float()
+            }
 
 
 if __name__ == "__main__":
