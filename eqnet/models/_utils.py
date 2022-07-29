@@ -1,5 +1,5 @@
 from collections import OrderedDict
-from typing import Optional, Dict
+from typing import Any, Callable, Dict, Optional, Tuple, TypeVar, Union
 import torch
 from torch import nn, Tensor
 from torch.nn import functional as F
@@ -53,3 +53,11 @@ class _SimpleSegmentationModel(nn.Module):
         else:
             return output
             
+V = TypeVar("V")
+
+def _ovewrite_named_param(kwargs: Dict[str, Any], param: str, new_value: V) -> None:
+    if param in kwargs:
+        if kwargs[param] != new_value:
+            raise ValueError(f"The parameter '{param}' expected value {new_value} but got {kwargs[param]} instead.")
+    else:
+        kwargs[param] = new_value
