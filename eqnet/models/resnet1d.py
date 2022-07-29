@@ -200,11 +200,10 @@ class ResNet(nn.Module):
                                        dilate=replace_stride_with_dilation[2])
         # self.avgpool = nn.AdaptiveAvgPool1d(1)
         # self.fc = nn.Linear(512 * block.expansion, num_classes)
-        # self.conv2 = nn.Conv1d(256 * block.expansion, 256, kernel_size=3, stride=1, padding=1,
-        #                        bias=False, padding_mode='reflect')
-        # self.bn2 = norm_layer(256)
+                
         self.conv2 = nn.Conv1d(256 * block.expansion, 128, kernel_size=1, stride=1, padding=0,
                                bias=False, padding_mode='reflect')
+        self.bn2 = norm_layer(128)
 
         for m in self.modules():
             if isinstance(m, nn.Conv1d):
@@ -252,9 +251,9 @@ class ResNet(nn.Module):
         # See note [TorchScript super()]
 
         # bt, st, ch, nt = x.shape #batch, station, channel, time
-        bt, ch, nt, st = x.shape #batch, station, channel, time
-        x = x.permute(0, 3, 1, 2).contiguous()
-        x = log_transform(x)#.clamp(-10, 10)
+        bt, ch, nt, st = x.shape #batch, channel, time, station
+        x = x.permute(0, 3, 1, 2).contiguous() #batch, station, channel, time
+        # x = log_transform(x)
         x = x.view(bt*st, ch, nt)
 
         x = self.conv1(x)
@@ -270,10 +269,11 @@ class ResNet(nn.Module):
         # x = self.avgpool(x)
         # x = torch.flatten(x, 1)
         # x = self.fc(x)
+
         x = self.conv2(x)
-        # x = self.bn2(x)
-        x = x.view(bt, st, x.shape[1], x.shape[2])
-        
+        x = self.bn2(x)
+        x = x.view(bt, st, x.shape[1], x.shape[2]) #batch, station, channel, time
+
         # return x
         return {"out": x}
 

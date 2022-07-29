@@ -4,6 +4,7 @@ import torch.nn.functional as F
 from torch import nn, Tensor
 from typing import Optional, Dict
 from .resnet1d import ResNet, BasicBlock, Bottleneck
+from .swin_transformer import SwinTransformer
 
 def _log_transform(x):
     x = F.relu(x)
@@ -40,7 +41,8 @@ class EventDetector(nn.Module):
         x = features["out"]
         bt, st, ch, nt = x.shape #batch, station, channel, time
         x = x.view(bt*st, ch, nt)
-        x = self.nonlin(self.bn_layers[0](x))
+        # x = self.nonlin(self.bn_layers[0](x))
+        # x = self.nonlin(x)
         for conv, bn in zip(self.conv_layers, self.bn_layers[1:]):
             x = self.nonlin(bn(conv(x)))
         x = self.conv_out(x)
@@ -86,7 +88,8 @@ class PhasePicker(nn.Module):
         x = features["out"]
         bt, st, ch, nt = x.shape #batch, station, channel, time
         x = x.view(bt*st, ch, nt)
-        x = self.nonlin(self.bn_layers[0](x))
+        # x = self.nonlin(self.bn_layers[0](x))
+        # x = self.nonlin(x)
         for conv, bn in zip(self.conv_layers, self.bn_layers[1:]):
             x = self.nonlin(bn(conv(x)))
             x = F.interpolate(x, scale_factor=2, mode='linear', align_corners=False)
@@ -108,11 +111,24 @@ class PhasePicker(nn.Module):
 
 class EQNet(nn.Module):
 
-    def __init__(self) -> None:
+    def __init__(self, backbone="resnet50") -> None:
         super().__init__()
-        # self.backbone = ResNet(BasicBlock, [2, 2, 2, 2]) #ResNet18
-        # self.backbone = ResNet(BasicBlock, [3, 4, 6, 3]) #ResNet34
-        self.backbone = ResNet(Bottleneck, [3, 4, 6, 3]) #ResNet50
+        if backbone == "resnet18":
+            self.backbone = ResNet(BasicBlock, [2, 2, 2, 2]) #ResNet18
+            # self.backbone = ResNet(BasicBlock, [3, 4, 6, 3]) #ResNet34
+        elif backbone == "resnet50":
+            self.backbone = ResNet(Bottleneck, [3, 4, 6, 3]) #ResNet50
+        elif backbone == "swin":
+            self.backbone = SwinTransformer(
+                            patch_size=[4, 1],
+                            embed_dim=16,
+                            depths=[2, 2, 6, 2],
+                            num_heads=[2, 4, 8, 8],
+                            window_size=[7, 10],
+                            stochastic_depth_prob=0.2)
+        else:
+            raise ValueError("backbone must be one of 'resnet' or 'swin'")
+
         self.event_detector = EventDetector()
         self.phase_picker = PhasePicker()
 
@@ -144,5 +160,6 @@ class EQNet(nn.Module):
 
 
 def eqnet(
+    backbone="resnet",
 ) -> EQNet:
-    return EQNet()
+    return EQNet(backbone=backbone)

@@ -4,30 +4,133 @@ from typing import Any, Callable, List, Optional
 import torch
 import torch.nn.functional as F
 from torch import nn, Tensor
-
-from ..ops.misc import MLP, Permute
-from ..ops.stochastic_depth import StochasticDepth
-from ..transforms._presets import ImageClassification, InterpolationMode
-from ..utils import _log_api_usage_once
-from ._api import Weights, WeightsEnum
-from ._meta import _IMAGENET_CATEGORIES
 from ._utils import _ovewrite_named_param
-
 
 __all__ = [
     "SwinTransformer",
-    "Swin_T_Weights",
-    "Swin_S_Weights",
-    "Swin_B_Weights",
     "swin_t",
     "swin_s",
     "swin_b",
 ]
 
+### from ..ops.misc import MLP, Permute
+class MLP(torch.nn.Sequential):
+    """This block implements the multi-layer perceptron (MLP) module.
+    Args:
+        in_channels (int): Number of channels of the input
+        hidden_channels (List[int]): List of the hidden channel dimensions
+        norm_layer (Callable[..., torch.nn.Module], optional): Norm layer that will be stacked on top of the convolution layer. If ``None`` this layer wont be used. Default: ``None``
+        activation_layer (Callable[..., torch.nn.Module], optional): Activation function which will be stacked on top of the normalization layer (if not None), otherwise on top of the conv layer. If ``None`` this layer wont be used. Default: ``torch.nn.ReLU``
+        inplace (bool): Parameter for the activation layer, which can optionally do the operation in-place. Default ``True``
+        bias (bool): Whether to use bias in the linear layer. Default ``True``
+        dropout (float): The probability for the dropout layer. Default: 0.0
+    """
+
+    def __init__(
+        self,
+        in_channels: int,
+        hidden_channels: List[int],
+        norm_layer: Optional[Callable[..., torch.nn.Module]] = None,
+        activation_layer: Optional[Callable[..., torch.nn.Module]] = torch.nn.ReLU,
+        inplace: Optional[bool] = True,
+        bias: bool = True,
+        dropout: float = 0.0,
+    ):
+        # The addition of `norm_layer` is inspired from the implementation of TorchMultimodal:
+        # https://github.com/facebookresearch/multimodal/blob/5dec8a/torchmultimodal/modules/layers/mlp.py
+        params = {} if inplace is None else {"inplace": inplace}
+
+        layers = []
+        in_dim = in_channels
+        for hidden_dim in hidden_channels[:-1]:
+            layers.append(torch.nn.Linear(in_dim, hidden_dim, bias=bias))
+            if norm_layer is not None:
+                layers.append(norm_layer(hidden_dim))
+            layers.append(activation_layer(**params))
+            layers.append(torch.nn.Dropout(dropout, **params))
+            in_dim = hidden_dim
+
+        layers.append(torch.nn.Linear(in_dim, hidden_channels[-1], bias=bias))
+        layers.append(torch.nn.Dropout(dropout, **params))
+
+        super().__init__(*layers)
+
+class Permute(torch.nn.Module):
+    """This module returns a view of the tensor input with its dimensions permuted.
+    Args:
+        dims (List[int]): The desired ordering of dimensions
+    """
+
+    def __init__(self, dims: List[int]):
+        super().__init__()
+        self.dims = dims
+
+    def forward(self, x: Tensor) -> Tensor:
+        return torch.permute(x, self.dims)
+
+
+### from ..ops.stochastic_depth import StochasticDepth
+def stochastic_depth(input: Tensor, p: float, mode: str, training: bool = True) -> Tensor:
+    """
+    Implements the Stochastic Depth from `"Deep Networks with Stochastic Depth"
+    <https://arxiv.org/abs/1603.09382>`_ used for randomly dropping residual
+    branches of residual architectures.
+    Args:
+        input (Tensor[N, ...]): The input tensor or arbitrary dimensions with the first one
+                    being its batch i.e. a batch with ``N`` rows.
+        p (float): probability of the input to be zeroed.
+        mode (str): ``"batch"`` or ``"row"``.
+                    ``"batch"`` randomly zeroes the entire input, ``"row"`` zeroes
+                    randomly selected rows from the batch.
+        training: apply stochastic depth if is ``True``. Default: ``True``
+    Returns:
+        Tensor[N, ...]: The randomly zeroed tensor.
+    """
+    if p < 0.0 or p > 1.0:
+        raise ValueError(f"drop probability has to be between 0 and 1, but got {p}")
+    if mode not in ["batch", "row"]:
+        raise ValueError(f"mode has to be either 'batch' or 'row', but got {mode}")
+    if not training or p == 0.0:
+        return input
+
+    survival_rate = 1.0 - p
+    if mode == "row":
+        size = [input.shape[0]] + [1] * (input.ndim - 1)
+    else:
+        size = [1] * input.ndim
+    noise = torch.empty(size, dtype=input.dtype, device=input.device)
+    noise = noise.bernoulli_(survival_rate)
+    if survival_rate > 0.0:
+        noise.div_(survival_rate)
+    return input * noise
+
+
+torch.fx.wrap("stochastic_depth")
+
+
+class StochasticDepth(nn.Module):
+    """
+    See :func:`stochastic_depth`.
+    """
+
+    def __init__(self, p: float, mode: str) -> None:
+        super().__init__()
+        self.p = p
+        self.mode = mode
+
+    def forward(self, input: Tensor) -> Tensor:
+        return stochastic_depth(input, self.p, self.mode, self.training)
+
+    def __repr__(self) -> str:
+        s = f"{self.__class__.__name__}(p={self.p}, mode={self.mode})"
+        return s
+
+############################################
 
 def _patch_merging_pad(x):
     H, W, _ = x.shape[-3:]
-    x = F.pad(x, (0, 0, 0, W % 2, 0, H % 2))
+    # x = F.pad(x, (0, 0, 0, W % 2, 0, H % 2))
+    x = F.pad(x, (0, 0, 0, W % 2, 0, 0)) ## for seismic time series
     return x
 
 
@@ -43,7 +146,6 @@ class PatchMerging(nn.Module):
 
     def __init__(self, dim: int, norm_layer: Callable[..., nn.Module] = nn.LayerNorm):
         super().__init__()
-        _log_api_usage_once(self)
         self.dim = dim
         self.reduction = nn.Linear(4 * dim, 2 * dim, bias=False)
         self.norm = norm_layer(4 * dim)
@@ -57,14 +159,19 @@ class PatchMerging(nn.Module):
         """
         x = _patch_merging_pad(x)
 
-        x0 = x[..., 0::2, 0::2, :]  # ... H/2 W/2 C
-        x1 = x[..., 1::2, 0::2, :]  # ... H/2 W/2 C
-        x2 = x[..., 0::2, 1::2, :]  # ... H/2 W/2 C
-        x3 = x[..., 1::2, 1::2, :]  # ... H/2 W/2 C
-        x = torch.cat([x0, x1, x2, x3], -1)  # ... H/2 W/2 4*C
+        # x0 = x[..., 0::2, 0::2, :]  # ... H/2 W/2 C
+        # x1 = x[..., 1::2, 0::2, :]  # ... H/2 W/2 C
+        # x2 = x[..., 0::2, 1::2, :]  # ... H/2 W/2 C
+        # x3 = x[..., 1::2, 1::2, :]  # ... H/2 W/2 C
+        # x = torch.cat([x0, x1, x2, x3], -1)  # ... H/2 W/2 4*C
 
-        x = self.norm(x)
-        x = self.reduction(x)  # ... H/2 W/2 2*C
+        # x = self.norm(x)
+        # x = self.reduction(x)  # ... H/2 W/2 2*C
+
+        ## for seismic time series
+        x0 = x[..., 0::2, :, :]  # ... H/2 W/2 C
+        x1 = x[..., 1::2, :, :]  # ... H/2 W/2 C
+        x = torch.cat([x0, x1], -1)  # ... H/2 W/2 4*C 
         return x
 
 
@@ -278,7 +385,6 @@ class SwinTransformerBlock(nn.Module):
         attn_layer: Callable[..., nn.Module] = ShiftedWindowAttention,
     ):
         super().__init__()
-        _log_api_usage_once(self)
 
         self.norm1 = norm_layer(dim)
         self.attn = attn_layer(
@@ -340,7 +446,6 @@ class SwinTransformer(nn.Module):
         block: Optional[Callable[..., nn.Module]] = None,
     ):
         super().__init__()
-        _log_api_usage_once(self)
         self.num_classes = num_classes
 
         if block is None:
@@ -404,11 +509,15 @@ class SwinTransformer(nn.Module):
     def forward(self, x):
         x = self.features(x)
         x = self.norm(x)
-        x = x.permute(0, 3, 1, 2)
-        x = self.avgpool(x)
-        x = torch.flatten(x, 1)
-        x = self.head(x)
-        return x
+        # x = x.permute(0, 3, 1, 2)
+        # x = self.avgpool(x)
+        # x = torch.flatten(x, 1)
+        # x = self.head(x)
+        # return x
+        
+        ## for seismic time series
+        x = x.permute(0, 2, 3, 1).contiguous() ## bt, st, chn, nt
+        return {"out": x}
 
 
 def _swin_transformer(
@@ -418,7 +527,7 @@ def _swin_transformer(
     num_heads: List[int],
     window_size: List[int],
     stochastic_depth_prob: float,
-    weights: Optional[WeightsEnum],
+    weights,
     progress: bool,
     **kwargs: Any,
 ) -> SwinTransformer:
@@ -441,81 +550,10 @@ def _swin_transformer(
     return model
 
 
-_COMMON_META = {
-    "categories": _IMAGENET_CATEGORIES,
-}
 
 
-class Swin_T_Weights(WeightsEnum):
-    IMAGENET1K_V1 = Weights(
-        url="https://download.pytorch.org/models/swin_t-704ceda3.pth",
-        transforms=partial(
-            ImageClassification, crop_size=224, resize_size=232, interpolation=InterpolationMode.BICUBIC
-        ),
-        meta={
-            **_COMMON_META,
-            "num_params": 28288354,
-            "min_size": (224, 224),
-            "recipe": "https://github.com/pytorch/vision/tree/main/references/classification#swintransformer",
-            "_metrics": {
-                "ImageNet-1K": {
-                    "acc@1": 81.474,
-                    "acc@5": 95.776,
-                }
-            },
-            "_docs": """These weights reproduce closely the results of the paper using a similar training recipe.""",
-        },
-    )
-    DEFAULT = IMAGENET1K_V1
 
-
-class Swin_S_Weights(WeightsEnum):
-    IMAGENET1K_V1 = Weights(
-        url="https://download.pytorch.org/models/swin_s-5e29d889.pth",
-        transforms=partial(
-            ImageClassification, crop_size=224, resize_size=246, interpolation=InterpolationMode.BICUBIC
-        ),
-        meta={
-            **_COMMON_META,
-            "num_params": 49606258,
-            "min_size": (224, 224),
-            "recipe": "https://github.com/pytorch/vision/tree/main/references/classification#swintransformer",
-            "_metrics": {
-                "ImageNet-1K": {
-                    "acc@1": 83.196,
-                    "acc@5": 96.360,
-                }
-            },
-            "_docs": """These weights reproduce closely the results of the paper using a similar training recipe.""",
-        },
-    )
-    DEFAULT = IMAGENET1K_V1
-
-
-class Swin_B_Weights(WeightsEnum):
-    IMAGENET1K_V1 = Weights(
-        url="https://download.pytorch.org/models/swin_b-68c6b09e.pth",
-        transforms=partial(
-            ImageClassification, crop_size=224, resize_size=238, interpolation=InterpolationMode.BICUBIC
-        ),
-        meta={
-            **_COMMON_META,
-            "num_params": 87768224,
-            "min_size": (224, 224),
-            "recipe": "https://github.com/pytorch/vision/tree/main/references/classification#swintransformer",
-            "_metrics": {
-                "ImageNet-1K": {
-                    "acc@1": 83.582,
-                    "acc@5": 96.640,
-                }
-            },
-            "_docs": """These weights reproduce closely the results of the paper using a similar training recipe.""",
-        },
-    )
-    DEFAULT = IMAGENET1K_V1
-
-
-def swin_t(*, weights: Optional[Swin_T_Weights] = None, progress: bool = True, **kwargs: Any) -> SwinTransformer:
+def swin_t(*, weights = None, progress: bool = True, **kwargs: Any) -> SwinTransformer:
     """
     Constructs a swin_tiny architecture from
     `Swin Transformer: Hierarchical Vision Transformer using Shifted Windows <https://arxiv.org/pdf/2103.14030>`_.
@@ -536,7 +574,6 @@ def swin_t(*, weights: Optional[Swin_T_Weights] = None, progress: bool = True, *
     .. autoclass:: torchvision.models.Swin_T_Weights
         :members:
     """
-    weights = Swin_T_Weights.verify(weights)
 
     return _swin_transformer(
         patch_size=[4, 4],
@@ -551,7 +588,7 @@ def swin_t(*, weights: Optional[Swin_T_Weights] = None, progress: bool = True, *
     )
 
 
-def swin_s(*, weights: Optional[Swin_S_Weights] = None, progress: bool = True, **kwargs: Any) -> SwinTransformer:
+def swin_s(*, weights = None, progress: bool = True, **kwargs: Any) -> SwinTransformer:
     """
     Constructs a swin_small architecture from
     `Swin Transformer: Hierarchical Vision Transformer using Shifted Windows <https://arxiv.org/pdf/2103.14030>`_.
@@ -572,7 +609,6 @@ def swin_s(*, weights: Optional[Swin_S_Weights] = None, progress: bool = True, *
     .. autoclass:: torchvision.models.Swin_S_Weights
         :members:
     """
-    weights = Swin_S_Weights.verify(weights)
 
     return _swin_transformer(
         patch_size=[4, 4],
@@ -587,7 +623,7 @@ def swin_s(*, weights: Optional[Swin_S_Weights] = None, progress: bool = True, *
     )
 
 
-def swin_b(*, weights: Optional[Swin_B_Weights] = None, progress: bool = True, **kwargs: Any) -> SwinTransformer:
+def swin_b(*, weights = None, progress: bool = True, **kwargs: Any) -> SwinTransformer:
     """
     Constructs a swin_base architecture from
     `Swin Transformer: Hierarchical Vision Transformer using Shifted Windows <https://arxiv.org/pdf/2103.14030>`_.
@@ -608,7 +644,6 @@ def swin_b(*, weights: Optional[Swin_B_Weights] = None, progress: bool = True, *
     .. autoclass:: torchvision.models.Swin_B_Weights
         :members:
     """
-    weights = Swin_B_Weights.verify(weights)
 
     return _swin_transformer(
         patch_size=[4, 4],
