@@ -1,12 +1,9 @@
 import datetime
 import logging
 import os
-import sys
 import time
 import matplotlib.pyplot as plt
-import numpy as np
 import torch
-from torch import nn
 import torch.nn.functional as F
 import torch.utils.data
 import torchvision
@@ -21,50 +18,6 @@ matplotlib.use('agg')
 
 logger = logging.getLogger("EQNet")
 
-def visualize(meta, preds, epoch, figure_dir="figures"):
-    meta_data = meta["data"].cpu()
-    raw_data = meta_data.clone().permute(0, 2, 3, 1).numpy()
-    data = normalize_local(meta_data.clone()).permute(0, 2, 3, 1).numpy()
-    targets = meta["targets"].cpu().permute(0, 2, 3, 1).numpy()
-
-    y = preds.cpu().permute(0, 2, 3, 1).numpy()
-
-    for i in range(len(data)):
-
-        raw_vmax = np.std(raw_data[i]) * 2
-        raw_vmin = -raw_vmax
-
-        vmax = np.std(data[i]) * 2
-        vmin = -vmax
-
-        fig, ax = plt.subplots(2,2, figsize=(12, 12), sharex=False, sharey=False)
-        ax[0, 0].imshow((raw_data[i]-np.mean(raw_data[i])), vmin=raw_vmin, vmax=raw_vmax, interpolation='none', cmap="seismic", aspect='auto')
-        # ax[1, 0].imshow((data[i]-np.mean(data[i])), vmin=vmin, vmax=vmax, interpolation='none', cmap="seismic", aspect='auto')
-        ax[0, 1].imshow(y[i], vmin=0, vmax=1, interpolation='none', aspect='auto')
-        ax[1, 1].imshow(targets[i],  vmin=0, vmax=1, interpolation='none', aspect='auto')
-        # ax[0, 1].imshow(y[i], interpolation='none', aspect='auto')
-        # ax[1, 1].imshow(targets[i], interpolation='none', aspect='auto')
-        
-        if "LOCAL_RANK" in os.environ:
-            local_rank = int(os.environ["LOCAL_RANK"])
-            fig.savefig(f"{figure_dir}/{epoch:04d}_{i:02d}_{local_rank}.png", dpi=300)
-        else:
-            fig.savefig(f"{figure_dir}/{epoch:04d}_{i:02d}.png", dpi=300)
-
-        plt.close(fig)
-
-
-def criterion(inputs, target):
-    losses = {}
-    for name, x in inputs.items():
-        losses[name] = nn.functional.cross_entropy(x, target, ignore_index=255)
-
-    if len(losses) == 1:
-        return losses["out"]
-
-    return losses["out"] + 0.5 * losses["aux"]
-
-
 def evaluate(model, data_loader, device, num_classes):
     model.eval()
     confmat = utils.ConfusionMatrix(num_classes)
@@ -72,9 +25,7 @@ def evaluate(model, data_loader, device, num_classes):
     header = "Test:"
     with torch.inference_mode():
         for meta in metric_logger.log_every(data_loader, 100, header):
-            # image, target = image.to(device), target.to(device)
             output = model(meta)
-            # output = output["out"]
 
             confmat.update(meta["targets"].argmax(1).flatten(), output.argmax(1).flatten().cpu())
         
@@ -83,21 +34,16 @@ def evaluate(model, data_loader, device, num_classes):
     return confmat
 
 
-def train_one_epoch(model, criterion, optimizer, data_loader, lr_scheduler, device, epoch, iters_per_epoch, print_freq, scaler=None, args=None):
+def train_one_epoch(model, optimizer, data_loader, lr_scheduler, device, epoch, iters_per_epoch, print_freq, scaler=None, args=None):
     model.train()
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter("lr", utils.SmoothedValue(window_size=1, fmt="{value}"))
     header = f"Epoch: [{epoch}]"
     i = 0
     for meta in metric_logger.log_every(data_loader, print_freq, header):
-        # break
-        # data = meta["data"].to(device)
-        # target = meta["targets"].to(device)
+
         with torch.cuda.amp.autocast(enabled=scaler is not None):
-            # output = model(data)
-            # loss = criterion(output, target)
             loss = model(meta)
-            # loss = sum(loss_dict.values())
 
         optimizer.zero_grad()
         if scaler is not None:
@@ -114,19 +60,29 @@ def train_one_epoch(model, criterion, optimizer, data_loader, lr_scheduler, devi
 
         i += 1
         # if i > len(data_loader):
-        if i > 200:
-            break
+        # if i > 200:
+        #     break
         if i > iters_per_epoch:
             break
-        
+        # break
 
     model.eval()
     with torch.inference_mode():
-        preds = model(meta)
-        preds = F.softmax(preds, dim=1)
-        print("plotting...")
-        visualize(meta, preds, epoch=epoch, figure_dir=args.output_dir)
-        del preds
+
+        if args.model == "phasenet_das":
+            preds = model(meta)
+            preds = F.softmax(preds, dim=1).cpu()
+            print("Plotting...")
+            eqnet.utils.visualize_das_train(meta, preds, epoch=epoch, figure_dir=args.output_dir)
+            del preds
+            
+        elif args.model == "eqnet":
+            out = model(meta)
+            phase = F.softmax(out["phase"], dim=1).cpu()
+            event = torch.sigmoid(out["event"]).cpu()
+            print("Plotting...")
+            eqnet.utils.visualize_eqnet_train(meta, phase, event, epoch=epoch, figure_dir=args.output_dir)
+            del phase, event
 
 def main(args):
 
@@ -140,28 +96,10 @@ def main(args):
 
     device = torch.device(args.device)
 
-    # dataset, num_classes = get_dataset(args.data_path, args.dataset, "train", get_transform(True, args))
-    # dataset_test, _ = get_dataset(args.data_path, args.dataset, "val", get_transform(False, args))
-    # dataset = DASDataset(data_path="/home/zhuwq/kuafu/ridgecrest/datasets/DAS_Ridgecrest/training_npz", 
-    #                      noise_path="/home/zhuwq/kuafu/ridgecrest/datasets/DAS_Ridgecrest/noise_npz",) 
-
-    # dataset = DASDataset(data_path="/net/kuafu/mnt/tank/data/EventData/Mammoth_north/data", 
-    #                     #  noise_path="/net/kuafu/mnt/tank/data/EventData/Mammoth_north/data",
-    #                      label_path="/net/kuafu/mnt/tank/data/EventData/Mammoth_north/picks_phasenet_filtered/",
-    #                      format="h5") 
-    # dataset_test = dataset
-
-    # if args.distributed:
-    #     train_sampler = torch.utils.data.distributed.DistributedSampler(dataset)
-    #     test_sampler = torch.utils.data.distributed.DistributedSampler(dataset_test)
-    # else:
-    #     train_sampler = torch.utils.data.RandomSampler(dataset)
-    #     test_sampler = torch.utils.data.SequentialSampler(dataset_test)
     if args.model == "phasenet_das":
         dataset = DASIterableDataset(
             # data_path="/net/kuafu/mnt/tank/data/EventData/Mammoth_north/data", 
-            #  noise_path="/net/kuafu/mnt/tank/data/EventData/Mammoth_north/data",
-            # label_path="/net/kuafu/mnt/tank/data/EventData/Mammoth_north/picks_phasenet_filtered/",
+            # noise_path="/net/kuafu/mnt/tank/data/EventData/Mammoth_north/data",
             label_path=["/net/kuafu/mnt/tank/data/EventData/Mammoth_north/picks_phasenet_filtered/",
                         "/net/kuafu/mnt/tank/data/EventData/Mammoth_south/picks_phasenet_filtered/",
                         "/net/kuafu/mnt/tank/data/EventData/Ridgecrest/picks_phasenet_filtered/",
@@ -178,7 +116,7 @@ def main(args):
         )
         train_sampler = None
     elif args.model == "eqnet":
-        dataset = SeismicNetworkIterableDataset("/Users/weiqiang/Research/EQNet/datasets/NCEDC/ncedc_event.h5")
+        dataset = SeismicNetworkIterableDataset("datasets/NCEDC/ncedc_seismic_dataset.h5")
         train_sampler = None
 
     dataset_test = dataset
@@ -200,18 +138,8 @@ def main(args):
         # collate_fn=utils.collate_fn
     )
 
-    # if not args.weights:
-    #     model = torchvision.models.segmentation.__dict__[args.model](
-    #         pretrained=args.pretrained,
-    #         num_classes=num_classes,
-    #         aux_loss=args.aux_loss,
-    #     )
-    # else:
-    #     model = PM.segmentation.__dict__[args.model](
-    #         weights=args.weights, num_classes=num_classes, aux_loss=args.aux_loss
-    #     )
 
-    model = eqnet.models.__dict__[args.model]()
+    model = eqnet.models.__dict__[args.model](backbone=args.backbone)
     logger.info("Model:\n{}".format(model))
     
     model.to(device)
@@ -226,12 +154,12 @@ def main(args):
     # params_to_optimize = [
     #     {"params": [p for p in model_without_ddp.backbone.parameters() if p.requires_grad], "lr": args.lr},
     #     {"params": [p for p in model_without_ddp.classifier.parameters() if p.requires_grad]},
-    #     # {"params": [p for p in model_without_ddp.sem_seg_head.parameters() if p.requires_grad]},
     # ]
-    params_to_optimize = {"params": [p for p in model_without_ddp.parameters() if p.requires_grad]}
     # if args.aux_loss:
     #     params = [p for p in model_without_ddp.aux_classifier.parameters() if p.requires_grad]
     #     params_to_optimize.append({"params": params, "lr": args.lr * 10})
+
+    params_to_optimize = model.parameters()
     # optimizer = torch.optim.SGD(params_to_optimize, lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
     optimizer = torch.optim.AdamW(params_to_optimize, lr=args.lr, weight_decay=args.weight_decay)
 
@@ -287,9 +215,8 @@ def main(args):
         
         if args.distributed and (train_sampler is not None):
             train_sampler.set_epoch(epoch)
-        train_one_epoch(model, criterion, optimizer, data_loader, lr_scheduler, device, epoch, iters_per_epoch, args.print_freq, scaler, args)
+        train_one_epoch(model, optimizer, data_loader, lr_scheduler, device, epoch, iters_per_epoch, args.print_freq, scaler, args)
         # confmat = evaluate(model, data_loader_test, device=device, num_classes=num_classes)
-        # print(confmat)
         checkpoint = {
             "model": model_without_ddp.state_dict(),
             "optimizer": optimizer.state_dict(),
@@ -312,9 +239,10 @@ def get_args_parser(add_help=True):
 
     parser = argparse.ArgumentParser(description="PyTorch Segmentation Training", add_help=add_help)
 
-    parser.add_argument("--data-path", default="/datasets01/COCO/022719/", type=str, help="dataset path")
-    parser.add_argument("--dataset", default="coco", type=str, help="dataset name")
+    parser.add_argument("--data-path", default="./data/", type=str, help="dataset path")
+    parser.add_argument("--dataset", default="", type=str, help="dataset name")
     parser.add_argument("--model", default="phasenet_das", type=str, help="model name")
+    parser.add_argument("--backbone", default="resnet50", type=str, help="model backbone")
     parser.add_argument("--aux-loss", action="store_true", help="auxiliar loss")
     parser.add_argument("--device", default="cuda", type=str, help="device (Use cuda or cpu Default: cuda)")
     parser.add_argument(
@@ -340,7 +268,7 @@ def get_args_parser(add_help=True):
     parser.add_argument("--lr-warmup-method", default="linear", type=str, help="the warmup method (default: linear)")
     parser.add_argument("--lr-warmup-decay", default=0.01, type=float, help="the decay for lr")
     parser.add_argument("--print-freq", default=10, type=int, help="print frequency")
-    parser.add_argument("--output-dir", default=".", type=str, help="path to save outputs")
+    parser.add_argument("--output-dir", default="./output", type=str, help="path to save outputs")
     parser.add_argument("--resume", default="", type=str, help="path of checkpoint")
     parser.add_argument("--start-epoch", default=0, type=int, metavar="N", help="start epoch")
     parser.add_argument(

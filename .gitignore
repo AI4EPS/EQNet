@@ -1,7 +1,11 @@
 *.pyc
 *.pth
+*.h5
 
+output/
 swarm_south_debug/
-Trash
+Trash/
+audoencoder/
 autoencoder/
+
 
