@@ -251,7 +251,9 @@ class ResNet(nn.Module):
     def _forward_impl(self, x: Tensor) -> Tensor:
         # See note [TorchScript super()]
 
-        bt, st, ch, nt = x.shape #batch, station, channel, time
+        # bt, st, ch, nt = x.shape #batch, station, channel, time
+        bt, ch, nt, st = x.shape #batch, station, channel, time
+        x = x.permute(0, 3, 1, 2).contiguous()
         x = log_transform(x)#.clamp(-10, 10)
         x = x.view(bt*st, ch, nt)
 
@@ -272,7 +274,8 @@ class ResNet(nn.Module):
         # x = self.bn2(x)
         x = x.view(bt, st, x.shape[1], x.shape[2])
         
-        return x
+        # return x
+        return {"out": x}
 
     def forward(self, x: Tensor) -> Tensor:
         return self._forward_impl(x)

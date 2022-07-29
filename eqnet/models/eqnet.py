@@ -61,7 +61,7 @@ class EventDetector(nn.Module):
 
 
 class PhasePicker(nn.Module):
-    def __init__(self, channels=[128, 64, 32, 16, 8], bn=True, kernel_size=5, nonlin=nn.ReLU()):
+    def __init__(self, channels=[128, 64, 32, 16, 8], bn=True, dilations=[1, 2, 4, 8, 16], kernel_size=5, nonlin=nn.ReLU()):
         super().__init__()
         self.channels = channels
         self.bn = bn
@@ -75,9 +75,9 @@ class PhasePicker(nn.Module):
             conv_bias = True
 
         self.conv_layers = nn.ModuleList([
-            nn.Conv1d(channels[i], channels[i+1], kernel_size=kernel_size, padding=kernel_size//2, padding_mode='reflect', bias=conv_bias)
+            nn.Conv1d(channels[i], channels[i+1], kernel_size=kernel_size, dilation=dilations[i], padding=((kernel_size-1)*dilations[i]+1)//2, padding_mode='reflect', bias=conv_bias)
                 for i in range(len(channels) - 1)])
-        self.conv_out = nn.Conv1d(channels[-1], 3, kernel_size=kernel_size, padding=kernel_size//2, padding_mode='reflect')
+        self.conv_out = nn.Conv1d(channels[-1], 3, kernel_size=kernel_size, dilation=dilations[-1], padding=((kernel_size-1)*dilations[-1]+1)//2, padding_mode='reflect')
 
 
     def forward(self, features, targets=None):
