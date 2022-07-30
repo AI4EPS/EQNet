@@ -76,6 +76,12 @@ def train_one_epoch(model, optimizer, data_loader, lr_scheduler, device, epoch, 
             eqnet.utils.visualize_das_train(meta, preds, epoch=epoch, figure_dir=args.output_dir)
             del preds
             
+        elif args.model == "autoencoder":
+            preds = model(meta).cpu()
+            print("Plotting...")
+            eqnet.utils.visualize_autoencoder_das_train(meta, preds, epoch=epoch, figure_dir=args.output_dir)
+            del preds
+            
         elif args.model == "eqnet":
             out = model(meta)
             phase = F.softmax(out["phase"], dim=1).cpu()
@@ -83,6 +89,7 @@ def train_one_epoch(model, optimizer, data_loader, lr_scheduler, device, epoch, 
             print("Plotting...")
             eqnet.utils.visualize_eqnet_train(meta, phase, event, epoch=epoch, figure_dir=args.output_dir)
             del phase, event
+
 
 def main(args):
 
@@ -148,7 +155,7 @@ def main(args):
 
     model_without_ddp = model
     if args.distributed:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])#, find_unused_parameters=True)
         model_without_ddp = model.module
 
     # params_to_optimize = [
@@ -159,7 +166,7 @@ def main(args):
     #     params = [p for p in model_without_ddp.aux_classifier.parameters() if p.requires_grad]
     #     params_to_optimize.append({"params": params, "lr": args.lr * 10})
 
-    params_to_optimize = model.parameters()
+    params_to_optimize =  [p for p in model_without_ddp.parameters() if p.requires_grad]
     # optimizer = torch.optim.SGD(params_to_optimize, lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
     optimizer = torch.optim.AdamW(params_to_optimize, lr=args.lr, weight_decay=args.weight_decay)
 

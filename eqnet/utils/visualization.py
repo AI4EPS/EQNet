@@ -6,6 +6,46 @@ import pandas as pd
 from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
 
+def visualize_autoencoder_das_train(meta, preds, epoch, figure_dir="figures"):
+
+    meta_data = meta["data"]
+    raw_data = meta_data.clone().permute(0, 2, 3, 1).numpy()
+    # data = normalize_local(meta_data.clone()).permute(0, 2, 3, 1).numpy()
+    targets = meta["targets"].permute(0, 2, 3, 1).numpy()
+
+    y = preds.permute(0, 2, 3, 1).numpy()
+
+    for i in range(len(raw_data)):
+
+        raw_vmax = np.std(raw_data[i]) * 2
+        raw_vmin = -raw_vmax
+
+        vmax = np.std(raw_data[i]) * 2
+        vmin = -vmax
+
+        fig, ax = plt.subplots(2,2, figsize=(12, 12), sharex=False, sharey=False)
+        im = ax[0, 0].imshow(raw_data[i], vmin=raw_vmin, vmax=raw_vmax, interpolation='none', cmap="seismic", aspect='auto')
+        fig.colorbar(im, ax=ax[0, 0])
+        im = ax[0, 1].imshow(targets[i], vmin=raw_vmin, vmax=raw_vmax, interpolation='none', cmap="seismic", aspect='auto')
+        fig.colorbar(im, ax=ax[0, 1])
+        im = ax[1, 0].imshow(y[i], vmin=raw_vmin, vmax=raw_vmax, interpolation='none', cmap="seismic", aspect='auto')
+        fig.colorbar(im, ax=ax[1, 0])
+        im = ax[1, 1].imshow(y[i], interpolation='none', cmap="seismic", aspect='auto')
+        fig.colorbar(im, ax=ax[1, 1])
+
+        
+        # ax[0, 1].imshow(y[i], vmin=0, vmax=1, interpolation='none', aspect='auto')
+        # ax[1, 1].imshow(targets[i],  vmin=0, vmax=1, interpolation='none', aspect='auto')
+        # ax[0, 1].imshow(y[i], interpolation='none', aspect='auto')
+        # ax[1, 1].imshow(targets[i], interpolation='none', aspect='auto')
+        
+        if "LOCAL_RANK" in os.environ:
+            local_rank = int(os.environ["LOCAL_RANK"])
+            fig.savefig(f"{figure_dir}/{epoch:02d}_{i:02d}_{local_rank}.png", dpi=300)
+        else:
+            fig.savefig(f"{figure_dir}/{epoch:02d}_{i:02d}.png", dpi=300)
+
+        plt.close(fig)
 
 def visualize_das_train(meta, preds, epoch, figure_dir="figures"):
 
