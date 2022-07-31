@@ -149,7 +149,8 @@ class PatchMerging(nn.Module):
         self.dim = dim
         # self.reduction = nn.Linear(4 * dim, 2 * dim, bias=False)
         # self.norm = norm_layer(4 * dim)
-        self.norm = norm_layer(2 * dim)
+        
+        # self.norm = norm_layer(2 * dim)
 
     def forward(self, x: Tensor):
         """
@@ -173,7 +174,8 @@ class PatchMerging(nn.Module):
         x0 = x[..., 0::2, :, :]  # ... H/2 W/2 C
         x1 = x[..., 1::2, :, :]  # ... H/2 W/2 C
         x = torch.cat([x0, x1], -1)  # ... H/2 W/2 2*C 
-        x = self.norm(x)
+
+        # x = self.norm(x)
         
         return x
 

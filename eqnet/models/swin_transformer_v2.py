@@ -147,7 +147,7 @@ class PatchMerging(nn.Module):
     def __init__(self, dim: int, norm_layer: Callable[..., nn.Module] = nn.LayerNorm):
         super().__init__()
         self.dim = dim
-        self.norm = norm_layer(2 * dim)
+        # self.norm = norm_layer(2 * dim)
 
     def forward(self, meta: Dict):
         """
@@ -164,7 +164,7 @@ class PatchMerging(nn.Module):
         x1 = x[..., 1::2, :, :]  # ... H/2 W/2 C
         x = torch.cat([x0, x1], -1)  # ... H/2 W/2 2*C 
         
-        x = self.norm(x)
+        # x = self.norm(x)
 
         return {"x": x, "loc": loc}
 
