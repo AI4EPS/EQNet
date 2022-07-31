@@ -5,6 +5,7 @@ from torch import nn, Tensor
 from typing import Optional, Dict
 from .resnet1d import ResNet, BasicBlock, Bottleneck
 from .swin_transformer import SwinTransformer
+from .swin2 import SwinTransformer2
 
 def _log_transform(x):
     x = F.relu(x)
@@ -115,6 +116,7 @@ class EQNet(nn.Module):
 
     def __init__(self, backbone="resnet50") -> None:
         super().__init__()
+        self.backbone_name = backbone
         if backbone == "resnet18":
             self.backbone = ResNet(BasicBlock, [2, 2, 2, 2]) #ResNet18
             # self.backbone = ResNet(BasicBlock, [3, 4, 6, 3]) #ResNet34
@@ -122,6 +124,14 @@ class EQNet(nn.Module):
             self.backbone = ResNet(Bottleneck, [3, 4, 6, 3]) #ResNet50
         elif backbone == "swin":
             self.backbone = SwinTransformer(
+                            patch_size=[4, 1],
+                            embed_dim=16,
+                            depths=[2, 2, 6, 2],
+                            num_heads=[2, 4, 8, 8],
+                            window_size=[7, 10],
+                            stochastic_depth_prob=0.2)
+        elif backbone == "swin2":
+            self.backbone = SwinTransformer2(
                             patch_size=[4, 1],
                             embed_dim=16,
                             depths=[2, 2, 6, 2],
@@ -141,7 +151,7 @@ class EQNet(nn.Module):
     def forward(self, batched_inputs: Tensor) -> Dict[str, Tensor]:
 
         waveform = batched_inputs["waveform"].to(self.device)
-        relative_position = batched_inputs["relative_position"].to(self.device)
+
         if self.training:
             phase_pick = batched_inputs["phase_pick"].to(self.device)
             center_heatmap = batched_inputs["center_heatmap"].to(self.device)
@@ -150,7 +160,12 @@ class EQNet(nn.Module):
         else:
             phase_pick, center_heatmap, event_location, event_location_mask = None, None, None, None
 
-        features = self.backbone(waveform)
+        if self.backbone_name == "swin2":
+            station_location = batched_inputs["station_location"].to(self.device)
+            # features = self.backbone({"waveform": waveform, "station_location": station_location})
+            features = self.backbone(waveform, station_location)
+        else:
+            features = self.backbone(waveform)
 
         output_phase, loss_phase = self.phase_picker(features, phase_pick)
         output_event, loss_event = self.event_detector(features, center_heatmap, event_location, event_location_mask)

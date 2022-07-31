@@ -62,7 +62,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
             center_heatmap = np.zeros([self.feature_nt, len(station_ids)])
             event_location = np.zeros([4, self.feature_nt, len(station_ids)])
             event_location_mask = np.zeros([self.feature_nt, len(station_ids)])
-            relative_position = np.zeros([3, len(station_ids), len(station_ids)])
+            station_location = np.zeros([len(station_ids), 2])
 
             for i, sta_id in enumerate(station_ids):
                 
@@ -93,10 +93,10 @@ class SeismicNetworkIterableDataset(IterableDataset):
                 event_location[1:, mask, i] = np.array([dx, dy, dz])[:, np.newaxis]
                 event_location_mask[:, i] = mask
 
-                for j, sta_jd in enumerate(station_ids):
-                    relative_position[0, i, j] = round((self.hdf5_fp[event_id+'/'+sta_id].attrs["station_longitude"] - self.hdf5_fp[event_id+'/'+sta_jd].attrs["station_longitude"]) * np.cos(np.radians(self.hdf5_fp[event_id].attrs["event_latitude"])) * self.degree2km, 2)
-                    relative_position[1, i, j] = round((self.hdf5_fp[event_id+'/'+sta_id].attrs["station_latitude"] - self.hdf5_fp[event_id+'/'+sta_jd].attrs["station_latitude"]) * self.degree2km, 2)
-                    relative_position[2, i, j] = round((self.hdf5_fp[event_id+'/'+sta_id].attrs["station_elevation_m"] - self.hdf5_fp[event_id+'/'+sta_jd].attrs["station_elevation_m"]) / 1e3, 2)
+                ## station location
+                station_location[i, 0] = round(self.hdf5_fp[event_id+'/'+sta_id].attrs["station_longitude"] 
+                                                * np.cos(np.radians(self.hdf5_fp[event_id+'/'+sta_id].attrs["station_latitude"])) * self.degree2km, 2)
+                station_location[i, 1] = round(self.hdf5_fp[event_id+'/'+sta_id].attrs["station_latitude"] * self.degree2km, 2)
 
             std = np.std(waveforms, axis=1, keepdims=True)
             std[std == 0] = 1.0
@@ -109,7 +109,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
                 "center_heatmap": torch.from_numpy(center_heatmap).float(),
                 "event_location": torch.from_numpy(event_location).float(),
                 "event_location_mask": torch.from_numpy(event_location_mask).float(),
-                "relative_position": torch.from_numpy(relative_position).float()
+                "station_location": torch.from_numpy(station_location).float()
             }
 
 
