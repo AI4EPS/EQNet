@@ -1,5 +1,5 @@
 from functools import partial
-from typing import Any, Callable, List, Optional
+from typing import Any, Callable, List, Optional, Dict
 
 import torch
 import torch.nn.functional as F
@@ -147,32 +147,23 @@ class PatchMerging(nn.Module):
     def __init__(self, dim: int, norm_layer: Callable[..., nn.Module] = nn.LayerNorm):
         super().__init__()
         self.dim = dim
-        # self.reduction = nn.Linear(4 * dim, 2 * dim, bias=False)
-        # self.norm = norm_layer(4 * dim)
 
-    def forward(self, x: Tensor):
+    def forward(self, meta: Dict):
         """
         Args:
             x (Tensor): input tensor with expected layout of [..., H, W, C]
         Returns:
             Tensor with layout of [..., H/2, W/2, 2*C]
         """
+        x, loc = meta["x"], meta["loc"]
         x = _patch_merging_pad(x)
-
-        # x0 = x[..., 0::2, 0::2, :]  # ... H/2 W/2 C
-        # x1 = x[..., 1::2, 0::2, :]  # ... H/2 W/2 C
-        # x2 = x[..., 0::2, 1::2, :]  # ... H/2 W/2 C
-        # x3 = x[..., 1::2, 1::2, :]  # ... H/2 W/2 C
-        # x = torch.cat([x0, x1, x2, x3], -1)  # ... H/2 W/2 4*C
-
-        # x = self.norm(x)
-        # x = self.reduction(x)  # ... H/2 W/2 2*C
 
         ## for seismic time series
         x0 = x[..., 0::2, :, :]  # ... H/2 W/2 C
         x1 = x[..., 1::2, :, :]  # ... H/2 W/2 C
         x = torch.cat([x0, x1], -1)  # ... H/2 W/2 2*C 
-        return x
+
+        return {"x": x, "loc": loc}
 
 
 def shifted_window_attention(
@@ -236,14 +227,9 @@ def shifted_window_attention(
     q = q * (C // num_heads) ** -0.5
     attn = q.matmul(k.transpose(-2, -1))
     # add relative position bias
-    # print(B * num_windows, attn.shape, relative_position_bias.shape)
-    B_, C_, N_, N_, = relative_position_bias.shape
-    # print(f"{relative_position_bias.shape = }")
-    relative_position_bias = relative_position_bias.unsqueeze(1).repeat(1, num_windows, 1, 1, 1).view(B * num_windows, C_, N_, N_)
-    # raise
-    # print(relative_position_bias.shape)
-    # attn = attn + relative_position_bias
-    attn = attn
+    relative_position_bias_shape = relative_position_bias.shape
+    relative_position_bias = relative_position_bias.unsqueeze(1).repeat(1, num_windows, 1, 1, 1).view(B * num_windows, *relative_position_bias_shape[1:])
+    attn = attn + relative_position_bias
 
     if sum(shift_size) > 0:
         # generate attention mask
@@ -314,55 +300,30 @@ class ShiftedWindowAttention(nn.Module):
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
         self.proj = nn.Linear(dim, dim, bias=proj_bias)
 
-        # define a parameter table of relative position bias
-        self.relative_position_bias_table = nn.Parameter(
-            torch.zeros((2 * window_size[0] - 1) * (2 * window_size[1] - 1), num_heads)
-        )  # 2*Wh-1 * 2*Ww-1, nH
-
-        # get pair-wise relative position index for each token inside the window
-        coords_h = torch.arange(self.window_size[0])
-        coords_w = torch.arange(self.window_size[1])
-        coords = torch.stack(torch.meshgrid(coords_h, coords_w, indexing="ij"))  # 2, Wh, Ww
-        coords_flatten = torch.flatten(coords, 1)  # 2, Wh*Ww
-        relative_coords = coords_flatten[:, :, None] - coords_flatten[:, None, :]  # 2, Wh*Ww, Wh*Ww
-        relative_coords = relative_coords.permute(1, 2, 0).contiguous()  # Wh*Ww, Wh*Ww, 2
-        relative_coords[:, :, 0] += self.window_size[0] - 1  # shift to start from 0
-        relative_coords[:, :, 1] += self.window_size[1] - 1
-        relative_coords[:, :, 0] *= 2 * self.window_size[1] - 1
-        relative_position_index = relative_coords.sum(-1).view(-1)  # Wh*Ww*Wh*Ww
-        self.register_buffer("relative_position_index", relative_position_index)
-
-        nn.init.trunc_normal_(self.relative_position_bias_table, std=0.02)
-
+        ## https://github.com/microsoft/Swin-Transformer/blob/b720b4191588c19222ccf129860e905fb02373a7/models/swin_transformer_v2.py#L92
+        # mlp to generate continuous relative position bias
         self.cpb_mlp = nn.Sequential(nn.Linear(3, 512, bias=True),
                                      nn.ReLU(inplace=True),
                                      nn.Linear(512, num_heads, bias=False))
 
+        coords_t = torch.arange(self.window_size[0]).unsqueeze(-1).unsqueeze(-1).repeat(1, self.window_size[1], 1) # nt, nx 1
+        self.register_buffer("coords_t", coords_t)
 
-    def forward(self, x: Tensor, loc):
+    def forward(self, x: Tensor, loc: Tensor):
         """
         Args:
             x (Tensor): Tensor with layout of [B, H, W, C]
+            loc (Tensor): Station location with layout of [B, W, 2]
         Returns:
             Tensor with same layout as input, i.e. [B, H, W, C]
         """
-        # loc : nb, nsta, 2
-        coords_t = torch.arange(self.window_size[0], dtype=torch.float32, device=x.device).unsqueeze(-1).unsqueeze(-1).repeat(loc.shape[0], 1, loc.shape[1], 1) #bt, nt, nx 1
-        coords_x = loc.unsqueeze(-3).repeat(1, self.window_size[0], 1, 1) #bt, nt, nx, 2
-        # print(coords_t.shape, coords_x.shape)
+        coords_t = self.coords_t.repeat(loc.shape[0], 1, 1, 1) #bt, nt, nx 1
+        coords_x = loc.unsqueeze(-3).repeat(1, self.coords_t.shape[0], 1, 1) #bt, nt, nx, 2
         coords = torch.cat((coords_t, coords_x), dim=-1) #bt, nt, nx, 3
         coords_flatten = torch.flatten(coords, 1, 2)  # bt, nt * nx, 3
         relative_coords = coords_flatten[:, :, None, :] - coords_flatten[:, None, :, :]  # bt, Wh*Ww, Wh*Ww, 3
         relative_position_bias = self.cpb_mlp(relative_coords) #bt, Wh*Ww, Wh*Ww, nH
         relative_position_bias = relative_position_bias.permute(0, 3, 1, 2)
-        # print(f"1. {relative_position_bias.shape = }")
-    
-        # N = self.window_size[0] * self.window_size[1]
-        # relative_position_bias = self.relative_position_bias_table[self.relative_position_index]  # type: ignore[index]
-        # relative_position_bias = relative_position_bias.view(N, N, -1)
-        # relative_position_bias = relative_position_bias.permute(2, 0, 1).contiguous().unsqueeze(0)
-        # print(f"2. {relative_position_bias.shape = }")
-        # raise
 
         return shifted_window_attention(
             x,
@@ -429,14 +390,14 @@ class SwinTransformerBlock(nn.Module):
                 if m.bias is not None:
                     nn.init.normal_(m.bias, std=1e-6)
 
-    # def forward(self, x: Tensor):
-    def forward(self, x, loc):
+    def forward(self, meta: Dict):
+        x, loc = meta["x"], meta["loc"]
         x = x + self.stochastic_depth(self.attn(self.norm1(x), loc))
         x = x + self.stochastic_depth(self.mlp(self.norm2(x)))
-        return x
+        return {"x": x, "loc": loc}
 
 
-class SwinTransformer2(nn.Module):
+class SwinTransformerV2(nn.Module):
     """
     Implements Swin Transformer from the `"Swin Transformer: Hierarchical Vision Transformer using
     Shifted Windows" <https://arxiv.org/pdf/2103.14030>`_ paper.
@@ -479,23 +440,16 @@ class SwinTransformer2(nn.Module):
         if norm_layer is None:
             norm_layer = partial(nn.LayerNorm, eps=1e-5)
 
-        layers: List[nn.Module] = []
         # split image into non-overlapping patches
-        layers.append(
-            nn.Sequential(
+        self.split_patch = nn.Sequential(
                 nn.Conv2d(
                     3, embed_dim, kernel_size=(patch_size[0], patch_size[1]), stride=(patch_size[0], patch_size[1])
                 ),
                 Permute([0, 2, 3, 1]),
                 norm_layer(embed_dim),
             )
-        )
-        self.cov1 = nn.Conv2d(
-                    3, embed_dim, kernel_size=(patch_size[0], patch_size[1]), stride=(patch_size[0], patch_size[1])
-                )
-        self.permute1 = Permute([0, 2, 3, 1])
-        self.norm1 = norm_layer(embed_dim)
 
+        layers: List[nn.Module] = []
         total_stage_blocks = sum(depths)
         stage_block_id = 0
         # build SwinTransformer blocks
@@ -524,70 +478,6 @@ class SwinTransformer2(nn.Module):
             if i_stage < (len(depths) - 1):
                 layers.append(PatchMerging(dim, norm_layer))
         self.features = nn.Sequential(*layers)
-        i_stage = 0
-        i_layer = 0
-        dim = embed_dim * 2**i_stage
-        print(dim)
-        self.stage1 = block(
-                        dim,
-                        num_heads[i_stage],
-                        window_size=window_size,
-                        shift_size=[0 if i_layer % 2 == 0 else w // 2 for w in window_size],
-                        mlp_ratio=mlp_ratio,
-                        dropout=dropout,
-                        attention_dropout=attention_dropout,
-                        stochastic_depth_prob=sd_prob,
-                        norm_layer=norm_layer,
-                    )
-        self.patch_merging1 = PatchMerging(dim, norm_layer)
-        i_stage = 1
-        i_layer = 0
-        dim = embed_dim * 2**i_stage
-        print(dim)
-        self.stage2 = block(
-                        dim,
-                        num_heads[i_stage],
-                        window_size=window_size,
-                        shift_size=[0 if i_layer % 2 == 0 else w // 2 for w in window_size],
-                        mlp_ratio=mlp_ratio,
-                        dropout=dropout,
-                        attention_dropout=attention_dropout,
-                        stochastic_depth_prob=sd_prob,
-                        norm_layer=norm_layer,
-                    )
-        self.patch_merging2 = PatchMerging(dim, norm_layer)
-        i_stage = 2
-        i_layer = 0
-        dim = embed_dim * 2**i_stage
-        print(dim)
-        self.stage3 = block(
-                        dim,
-                        num_heads[i_stage],
-                        window_size=window_size,
-                        shift_size=[0 if i_layer % 2 == 0 else w // 2 for w in window_size],
-                        mlp_ratio=mlp_ratio,
-                        dropout=dropout,
-                        attention_dropout=attention_dropout,
-                        stochastic_depth_prob=sd_prob,
-                        norm_layer=norm_layer,
-                    )
-        self.patch_merging3 = PatchMerging(dim, norm_layer)
-        i_stage = 3
-        i_layer = 0
-        dim = embed_dim * 2**i_stage
-        print(dim)
-        self.stage4 = block(
-                        dim,
-                        num_heads[i_stage],
-                        window_size=window_size,
-                        shift_size=[0 if i_layer % 2 == 0 else w // 2 for w in window_size],
-                        mlp_ratio=mlp_ratio,
-                        dropout=dropout,
-                        attention_dropout=attention_dropout,
-                        stochastic_depth_prob=sd_prob,
-                        norm_layer=norm_layer,
-                    )
-        self.patch_merging4 = PatchMerging(dim, norm_layer)
 
         num_features = embed_dim * 2 ** (len(depths) - 1)
         self.norm = norm_layer(num_features)
@@ -603,30 +493,10 @@ class SwinTransformer2(nn.Module):
 
     def forward(self, x, loc):
         
-        x = self.cov1(x)
-        x = self.permute1(x)
-        x = self.norm1(x)
+        x = self.split_patch(x)
+        meta = self.features({"x":x, "loc":loc})
+        x = self.norm(meta["x"])
 
-
-        x = self.stage1(x, loc)
-        x = self.patch_merging1(x)
-        
-        x = self.stage2(x, loc)
-        x = self.patch_merging2(x)
-        
-        x = self.stage3(x, loc)
-        x = self.patch_merging3(x)
-        x = self.stage4(x, loc)
-        # x = self.patch_merging4(x)
-
-        # x = self.features(x)
-        x = self.norm(x)
-        # x = x.permute(0, 3, 1, 2)
-        # x = self.avgpool(x)
-        # x = torch.flatten(x, 1)
-        # x = self.head(x)
-        # return x
-        
         ## for seismic time series
         x = x.permute(0, 2, 3, 1).contiguous() ## bt, st, chn, nt
         return {"out": x}
@@ -642,11 +512,11 @@ def _swin_transformer(
     weights,
     progress: bool,
     **kwargs: Any,
-) -> SwinTransformer2:
+) -> SwinTransformerV2:
     if weights is not None:
         _ovewrite_named_param(kwargs, "num_classes", len(weights.meta["categories"]))
 
-    model = SwinTransformer2(
+    model = SwinTransformerV2(
         patch_size=patch_size,
         embed_dim=embed_dim,
         depths=depths,
