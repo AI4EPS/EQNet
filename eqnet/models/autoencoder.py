@@ -62,7 +62,8 @@ class UNet(nn.Module):
                  encoder_kernel_size = (5, 5), decoder_kernel_size = (5, 5),
                  encoder_stride = (4, 4), decoder_stride = (4, 4),
                  encoder_padding = (2, 2), decoder_padding = (2, 2), 
-                 use_deconv = True, **kwargs):
+                 use_deconv = True, use_skip = False,
+                 **kwargs):
         
         super().__init__()
 
@@ -72,6 +73,12 @@ class UNet(nn.Module):
         # self.activation = nn.Tanh()
         # self.activation = nn.ELU()
         # use_deconv = True
+        self.use_deconv = use_deconv
+        self.use_skip = use_skip
+        if self.use_skip:
+            channel_ratio = 2
+        else:
+            channel_ratio = 1
 
         features = init_features
         self.encoder1 = self._block(
@@ -103,7 +110,7 @@ class UNet(nn.Module):
         else:
             self.upconv4 = nn.Upsample(scale_factor=tuple(decoder_stride), mode='bilinear', align_corners=False)
         self.decoder4 = self._block(
-            features * 8 * 2, features * 8, kernel_size=decoder_kernel_size, padding=decoder_padding, activation=self.activation, name="dec4"
+            features * 8 * channel_ratio, features * 8, kernel_size=decoder_kernel_size, padding=decoder_padding, activation=self.activation, name="dec4"
         )
         if use_deconv:
             self.upconv3 = nn.Sequential(
@@ -113,7 +120,7 @@ class UNet(nn.Module):
         else:
             self.upconv3 = nn.Upsample(scale_factor=tuple(decoder_stride), mode='bilinear', align_corners=False)
         self.decoder3 = self._block(
-            features * 4 * 2, features * 4, kernel_size=decoder_kernel_size, padding=decoder_padding, activation=self.activation, name="dec3"
+            features * 4 * channel_ratio, features * 4, kernel_size=decoder_kernel_size, padding=decoder_padding, activation=self.activation, name="dec3"
         )
         if use_deconv:
             self.upconv2 = nn.Sequential(
@@ -123,7 +130,7 @@ class UNet(nn.Module):
         else:
             self.upconv2 = nn.Upsample(scale_factor=tuple(decoder_stride), mode='bilinear', align_corners=False)
         self.decoder2 = self._block(
-            features * 2 * 2, features * 2, kernel_size=decoder_kernel_size, padding=decoder_padding, activation=self.activation, name="dec2"
+            features * 2 * channel_ratio, features * 2, kernel_size=decoder_kernel_size, padding=decoder_padding, activation=self.activation, name="dec2"
         )
         if use_deconv:
             self.upconv1 = nn.Sequential(
@@ -133,7 +140,7 @@ class UNet(nn.Module):
         else:
             self.upconv1 = nn.Upsample(scale_factor=tuple(decoder_stride), mode='bilinear', align_corners=False)
         self.decoder1 = self._block(
-            features * 2, features, kernel_size=decoder_kernel_size, padding=decoder_padding, activation=self.activation, name="dec1"
+            features * channel_ratio, features, kernel_size=decoder_kernel_size, padding=decoder_padding, activation=self.activation, name="dec1"
         )
 
         self.conv = nn.Conv2d(in_channels=features, out_channels=out_channels, kernel_size=1)
@@ -152,16 +159,20 @@ class UNet(nn.Module):
         bottleneck = self.bottleneck(self.pool4(enc4))
 
         dec4 = self.upconv4(bottleneck)
-        dec4 = UNet._cat(enc4, dec4)
+        if self.use_skip:
+            dec4 = UNet._cat(enc4, dec4)
         dec4 = self.decoder4(dec4)
         dec3 = self.upconv3(dec4)
-        dec3 = UNet._cat(enc3, dec3)
+        if self.use_skip:
+            dec3 = UNet._cat(enc3, dec3)
         dec3 = self.decoder3(dec3)
         dec2 = self.upconv2(dec3)
-        dec2 = UNet._cat(enc2, dec2)
+        if self.use_skip:
+            dec2 = UNet._cat(enc2, dec2)
         dec2 = self.decoder2(dec2)
         dec1 = self.upconv1(dec2)
-        dec1 = UNet._cat(enc1, dec1)
+        if self.use_skip:
+            dec1 = UNet._cat(enc1, dec1)
         dec1 = self.decoder1(dec1)
         out = self.conv(dec1)
         return {"out": out}

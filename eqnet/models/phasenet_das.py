@@ -111,7 +111,7 @@ class UNet(nn.Module):
 
     def __init__(self, in_channels=1, out_channels=3, init_features=8, use_stft=False, 
                  encoder_kernel_size = (5, 5), decoder_kernel_size = (5, 5),
-                 encoder_stride = (4, 4), decoder_stride = (4, 4),
+                 encoder_stride = (2, 4), decoder_stride = (2, 4),
                  encoder_padding = (2, 2), decoder_padding = (2, 2), **kwargs):
         
         super().__init__()
@@ -326,7 +326,7 @@ def phasenet_das(
     
     backbone = UNet(in_channels=1, out_channels=3, init_features=8, use_stft=False, 
                     encoder_kernel_size = (5, 5), decoder_kernel_size = (5, 5),
-                    encoder_stride = (4, 4), decoder_stride = (4, 4),
+                    encoder_stride = (2, 4), decoder_stride = (2, 4),
                     encoder_padding = (2, 2), decoder_padding = (2, 2))
     classifier = UNetHead()
 
