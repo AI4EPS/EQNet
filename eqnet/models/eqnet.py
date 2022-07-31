@@ -5,7 +5,7 @@ from torch import nn, Tensor
 from typing import Optional, Dict
 from .resnet1d import ResNet, BasicBlock, Bottleneck
 from .swin_transformer import SwinTransformer
-from .swin2 import SwinTransformer2
+from .swin_transformer_v2 import SwinTransformerV2
 
 def _log_transform(x):
     x = F.relu(x)
@@ -131,7 +131,7 @@ class EQNet(nn.Module):
                             window_size=[7, 10],
                             stochastic_depth_prob=0.2)
         elif backbone == "swin2":
-            self.backbone = SwinTransformer2(
+            self.backbone = SwinTransformerV2(
                             patch_size=[4, 1],
                             embed_dim=16,
                             depths=[2, 2, 6, 2],
