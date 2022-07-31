@@ -236,7 +236,7 @@ def shifted_window_attention(
     q = q * (C // num_heads) ** -0.5
     attn = q.matmul(k.transpose(-2, -1))
     # add relative position bias
-    # attn = attn + relative_position_bias ## Not using seismic station information
+    attn = attn + relative_position_bias ## Not using seismic station information
 
     if sum(shift_size) > 0:
         # generate attention mask
@@ -307,10 +307,19 @@ class ShiftedWindowAttention(nn.Module):
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
         self.proj = nn.Linear(dim, dim, bias=proj_bias)
 
+        ## TODO: add if using station dimension into arguments
+        ## we put Wh as the time dimension, Wn as the station dimension
+        use_station_location = False
+
         # define a parameter table of relative position bias
-        self.relative_position_bias_table = nn.Parameter(
-            torch.zeros((2 * window_size[0] - 1) * (2 * window_size[1] - 1), num_heads)
-        )  # 2*Wh-1 * 2*Ww-1, nH
+        if use_station_location:
+            self.relative_position_bias_table = nn.Parameter(
+                torch.zeros((2 * window_size[0] - 1) * (2 * window_size[1] - 1), num_heads)
+            )  # 2*Wh-1 * 2*Ww-1, nH
+        else:
+            self.relative_position_bias_table = nn.Parameter(
+                torch.zeros((2 * window_size[0] - 1), num_heads)
+            )  # 2*Wh-1 * 1, nH
 
         # get pair-wise relative position index for each token inside the window
         coords_h = torch.arange(self.window_size[0])
@@ -320,8 +329,11 @@ class ShiftedWindowAttention(nn.Module):
         relative_coords = coords_flatten[:, :, None] - coords_flatten[:, None, :]  # 2, Wh*Ww, Wh*Ww
         relative_coords = relative_coords.permute(1, 2, 0).contiguous()  # Wh*Ww, Wh*Ww, 2
         relative_coords[:, :, 0] += self.window_size[0] - 1  # shift to start from 0
-        relative_coords[:, :, 1] += self.window_size[1] - 1
-        relative_coords[:, :, 0] *= 2 * self.window_size[1] - 1
+        if use_station_location:
+            relative_coords[:, :, 1] += self.window_size[1] - 1
+            relative_coords[:, :, 0] *= 2 * self.window_size[1] - 1
+        else:
+            relative_coords[:, :, 1] = 0
         relative_position_index = relative_coords.sum(-1).view(-1)  # Wh*Ww*Wh*Ww
         self.register_buffer("relative_position_index", relative_position_index)
 
