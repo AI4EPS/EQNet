@@ -236,7 +236,7 @@ def shifted_window_attention(
     q = q * (C // num_heads) ** -0.5
     attn = q.matmul(k.transpose(-2, -1))
     # add relative position bias
-    attn = attn + relative_position_bias
+    # attn = attn + relative_position_bias ## Not using seismic station information
 
     if sum(shift_size) > 0:
         # generate attention mask
