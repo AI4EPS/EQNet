@@ -135,6 +135,7 @@ def filter_close_false_picks(picks, events, tol=500):
 # event_list = []
 # files = data_path.rglob('picks_phasenet_raw/*.csv')
 # if True:
+plot_figure = False
 
 def run(files, event_list):
     for file in files:
@@ -187,21 +188,18 @@ def run(files, event_list):
         picks.sort_values(by=["channel_index", "phase_index"], inplace=True)
         picks.to_csv(output_path.joinpath(file.name), index=False, columns=["channel_index", "phase_index", "phase_time", "phase_score", "phase_type", "event_index"], float_format='%.3f')
         
-        fig, axs = plt.subplots(1, 1, figsize=(20, 10))
-        axs.scatter(picks_["channel_index"][picks_["phase_type"] == "P"], picks_["phase_index"][picks_["phase_type"] == "P"], c=picks_["event_idx"][picks_["phase_type"] == "P"].apply(lambda x: f"C{x}" if x != -1 else "k"), s=1, marker=".")
-        axs.scatter(picks_["channel_index"][picks_["phase_type"] == "S"], picks_["phase_index"][picks_["phase_type"] == "S"], c=picks_["event_idx"][picks_["phase_type"] == "S"].apply(lambda x: f"C{x}" if x != -1 else "k"), s=1, marker="x")
-        axs.invert_yaxis()
+        if plot_figure:
+            fig, axs = plt.subplots(1, 1, figsize=(20, 10))
+            axs.scatter(picks_["channel_index"][picks_["phase_type"] == "P"], picks_["phase_index"][picks_["phase_type"] == "P"], c=picks_["event_idx"][picks_["phase_type"] == "P"].apply(lambda x: f"C{x}" if x != -1 else "k"), s=1, marker=".")
+            axs.scatter(picks_["channel_index"][picks_["phase_type"] == "S"], picks_["phase_index"][picks_["phase_type"] == "S"], c=picks_["event_idx"][picks_["phase_type"] == "S"].apply(lambda x: f"C{x}" if x != -1 else "k"), s=1, marker="x")
+            axs.invert_yaxis()
 
-        # picks_ = picks.copy()
-        # axs[1].scatter(picks_["channel_index"][picks_["phase_type"] == "P"], picks_["phase_index"][picks_["phase_type"] == "P"], c=picks_["event_idx"][picks_["phase_type"] == "P"].apply(lambda x: f"C{x}" if x != -1 else "gray"), s=1, marker=".")
-        # axs[1].scatter(picks_["channel_index"][picks_["phase_type"] == "S"], picks_["phase_index"][picks_["phase_type"] == "S"], c=picks_["event_idx"][picks_["phase_type"] == "S"].apply(lambda x: f"C{x}" if x != -1 else "gray"), s=1, marker="x")
-        # axs[1].invert_yaxis()
-        plt.savefig(figures_path.joinpath(file.stem + ".jpg"), bbox_inches='tight')
-        plt.close(fig)
-
-        # plt.savefig("test.jpg")
-        # plt.show()     
-        # raise
+            # picks_ = picks.copy()
+            # axs[1].scatter(picks_["channel_index"][picks_["phase_type"] == "P"], picks_["phase_index"][picks_["phase_type"] == "P"], c=picks_["event_idx"][picks_["phase_type"] == "P"].apply(lambda x: f"C{x}" if x != -1 else "gray"), s=1, marker=".")
+            # axs[1].scatter(picks_["channel_index"][picks_["phase_type"] == "S"], picks_["phase_index"][picks_["phase_type"] == "S"], c=picks_["event_idx"][picks_["phase_type"] == "S"].apply(lambda x: f"C{x}" if x != -1 else "gray"), s=1, marker="x")
+            # axs[1].invert_yaxis()
+            plt.savefig(figures_path.joinpath(file.stem + ".jpg"), bbox_inches='tight')
+            plt.close(fig)
 
 # %%
 if __name__ == "__main__":
