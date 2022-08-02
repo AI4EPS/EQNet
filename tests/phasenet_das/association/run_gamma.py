@@ -12,8 +12,14 @@ from pyproj import Proj
 import warnings
 warnings.filterwarnings("ignore")
 
+
 # %%
-picks_path = Path(f"picks_phasenet_das/")
+root_dir = "./"
+root_dir = "/net/kuafu/mnt/tank/data/EventData/Ridgecrest_South/"
+root_dir = "/net/kuafu/mnt/tank/data/EventData/Ridgecrest/"
+
+# %%
+picks_path = Path(root_dir+f"picks_phasenet_das/")
 output_path = Path(f"picks_phasenet_filtered/")
 figures_path = Path(f"figures_phasenet_filtered/")
 
@@ -23,7 +29,7 @@ if not figures_path.exists():
     figures_path.mkdir(parents=True)
 
 # %% Match data format for GaMMA
-stations = pd.read_csv("das_info.csv", index_col="index")
+stations = pd.read_csv(root_dir+"das_info.csv", index_col="index")
 y0 = stations["latitude"].mean()
 x0 = stations["longitude"].mean()
 proj = Proj(f"+proj=sterea +lon_0={x0} +lat_0={y0} +units=km")
