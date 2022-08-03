@@ -251,7 +251,8 @@ def autoencoder(
     backbone = UNet(in_channels=1, out_channels=1, init_features=8, use_stft=False, 
                     encoder_kernel_size = (3, 3), decoder_kernel_size = (3, 3),
                     encoder_stride = (2, 2), decoder_stride = (2, 2),
-                    encoder_padding = (1, 1), decoder_padding = (1, 1))
+                    encoder_padding = (1, 1), decoder_padding = (1, 1),
+                    use_skip=True)
     classifier = UNetHead()
 
     return AutoEncoder(backbone, classifier)

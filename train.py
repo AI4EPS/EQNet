@@ -117,7 +117,8 @@ def main(args):
         train_sampler = None
     elif args.model == "autoencoder":
         dataset = AutoEncoderIterableDataset(
-            data_path = "/net/kuafu/mnt/tank/data/EventData/Ridgecrest/data",
+            # data_path = "/net/kuafu/mnt/tank/data/EventData/Ridgecrest/data",
+            data_path = args.data_path,
             format="h5",
             training=True,
         )
