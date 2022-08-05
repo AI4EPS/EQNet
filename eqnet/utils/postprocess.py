@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 from collections import defaultdict
 from tqdm import tqdm
 from pathlib import Path
+import shutil
 
 def detect_peaks(scores, vmin=0.3, kernel=101, K=0):
 
@@ -140,6 +141,8 @@ def merge_picks(raw_folder="picks_phasenet", merged_folder=None):
         num_picks += len(picks)
 
     if rename_folder:
+        if os.path.exists(raw_folder + "_raw"):
+            shutil.rmtree(raw_folder + "_raw")
         in_path.rename(raw_folder + "_raw")
         out_path.rename(raw_folder)
 

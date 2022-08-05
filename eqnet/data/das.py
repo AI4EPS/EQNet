@@ -349,6 +349,8 @@ class DASIterableDataset(IterableDataset):
         stack_noise=True,
         picks=["p_picks", "s_picks"],
         filtering=False,
+        # filter_params={"freqmin": 0.1, "freqmax": 10.0, "corners": 4, "zerophase": True},
+        update_total_number = False,
         **kwargs,
     ):
         super().__init__()
@@ -362,6 +364,8 @@ class DASIterableDataset(IterableDataset):
         self.picks = picks
         self.stack_noise = stack_noise
         self.data_list = sorted(list(glob(os.path.join(data_path, f"{prefix}*{suffix}.{format}"))))
+        if ("rank" in kwargs) and ("world_size" in kwargs):
+            self.data_list = self.data_list[kwargs["rank"]::kwargs["world_size"]]
         if label_path is not None:
             if type(label_path) is list:
                 self.label_list = []
@@ -382,12 +386,23 @@ class DASIterableDataset(IterableDataset):
         self.nt = kwargs["nt"] if "nt" in kwargs else 12000
         self.nx = kwargs["nx"] if "nx" in kwargs else 1024
         self.filtering = filtering
+        if self.label_path is not None:
+            self.total_number = len(self.label_list)
+        else:
+            self.total_number = len(self.data_list)
+        if update_total_number:
+            self.total_number = self.update_total_number()
+
+    def update_total_number(self):
+        if self.format == "h5":
+            shape = h5py.File(self.data_list[0], "r")["data"].shape
+            total_number = len(self.data_list) * (shape[0] + 512)//self.nt * (shape[1] + 512)//self.nx
+        else:
+            total_number = len(self.data_list)
+        return total_number
 
     def __len__(self):
-        if self.label_path is not None:
-            return len(self.label_list)
-        return len(self.data_list)
-
+        return self.total_number
 
     def __iter__(self):
         worker_info = torch.utils.data.get_worker_info()
@@ -505,7 +520,7 @@ class DASIterableDataset(IterableDataset):
             else:
                 raise (f"Unsupported format: {self.format}")
 
-            data = data - np.median(data, axis=2, keepdims=True)
+            data = data - torch.median(data, dim=2, keepdims=True)[0]
             data = normalize(data)  # nch, nt, nsta
 
             if self.training:

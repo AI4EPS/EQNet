@@ -2,7 +2,7 @@ import datetime
 import logging
 import os
 import sys
-import time
+from tkinter import W
 import pandas as pd
 from tqdm import tqdm
 import matplotlib
@@ -14,6 +14,8 @@ from torch import nn
 import torch.nn.functional as F
 import torch.utils.data
 import torchvision
+import torch.distributed as dist
+import multiprocessing
 
 import utils
 from eqnet.data import DASDataset, DASIterableDataset
@@ -25,35 +27,13 @@ warnings.filterwarnings("ignore", ".*Length of IterableDataset.*")
 
 logger = logging.getLogger("EQNet")
 
-def pred_fn(model, data_loader, args):
-
-
-    if args.result_path is None:
-        result_path = args.data_path.rstrip("/").split("/")[-1]
-    else:
-        result_path = args.result_path
-    if not os.path.exists(result_path):
-        os.mkdir(result_path)
-    picks_path = os.path.join(result_path, "picks_phasenet_das")
-    if not os.path.exists(picks_path):
-        os.mkdir(picks_path)
-    if args.plot_figure:
-        figures_path = os.path.join(result_path, "figures_phasenet_das")
-        if not os.path.exists(figures_path):
-            os.mkdir(figures_path)
+def pred_fn(model, data_loader, pick_path, figure_path, args):
 
     model.eval()
-    picks = []
+    metric_logger = utils.MetricLogger(delimiter="  ")
+    header = "Predicting:"
     with torch.inference_mode():
-        pbar = tqdm(total=len(data_loader))
-        processed = set()
-        for meta in data_loader:
-            for file_name in meta["file_name"]:
-                if file_name.split("_")[0] not in processed:
-                    processed.add(file_name.split("_")[0])
-                    pbar.update(1)
-            pbar.set_description(f'{",".join(meta["file_name"])}')
-
+        for meta in metric_logger.log_every(data_loader, 1, header):
 
             with torch.cuda.amp.autocast(enabled=args.amp):
                 scores = torch.softmax(model(meta), dim=1) #batch, nch, nt, nsta
@@ -68,7 +48,6 @@ def pred_fn(model, data_loader, args):
                 vmin = 0.6
                 topk_scores, topk_inds = detect_peaks(scores, vmin=vmin, kernel=21)
             
-
                 picks_ = extract_picks(
                     topk_inds,
                     topk_scores,
@@ -82,8 +61,6 @@ def pred_fn(model, data_loader, args):
                 )
 
             for i in range(len(meta["file_name"])):
-
-
                 if len(picks_[i]) == 0:
                     continue
                 picks_df = pd.DataFrame(picks_[i])
@@ -91,7 +68,7 @@ def pred_fn(model, data_loader, args):
                 picks_df.sort_values(by=["channel_index", "phase_index"], inplace=True)
                 picks_df.to_csv(
                     os.path.join(
-                        picks_path, meta["file_name"][i] + ".csv"
+                        pick_path, meta["file_name"][i] + ".csv"
                     ),
                     columns=["channel_index","phase_index","phase_time","phase_score","phase_type"],
                     index=False,
@@ -108,28 +85,33 @@ def pred_fn(model, data_loader, args):
                     begin_channel_index=meta["begin_channel_index"] if "begin_channel_index" in meta else None,
                     dt = meta["dt_s"] if "dt_s" in meta else torch.tensor(0.01),
                     dx = meta["dx_m"] if "dx_m" in meta else torch.tensor(10.0),
-                    figure_dir=figures_path,
+                    figure_dir=figure_path,
                 )
 
-            for x in picks_:
-                picks.extend(x)
-        pbar.close()
+    if args.distributed:
+        torch.distributed.barrier()
+        if utils.is_main_process():
+            merge_picks(pick_path)
+    else:
+        merge_picks(pick_path)
 
 
-    merge_picks(picks_path)
-
-    picks_df = pd.DataFrame.from_records(picks)
-    picks_df["channel_index"] = picks_df["station_name"].apply(lambda x: int(x))
-    picks_df.sort_values(by=["channel_index", "phase_index"], inplace=True)
-    picks_df.to_csv(os.path.join(result_path, f"picks_phasenet_das.csv"), index=False)
-    
     return 0
 
 
 def main(args):
 
+    result_path = args.result_path
+    if not os.path.exists(result_path):
+        utils.mkdir(result_path)
+    pick_path = os.path.join(result_path, "picks_phasenet_das")
+    if not os.path.exists(pick_path):
+        utils.mkdir(pick_path)
+    figure_path = os.path.join(result_path, "figures_phasenet_das")
+    if not os.path.exists(figure_path):
+        utils.mkdir(figure_path)
+
     utils.init_distributed_mode(args)
-    print(args)
 
     device = torch.device(args.device)
 
@@ -153,25 +135,33 @@ def main(args):
         state_dict = torch.hub.load_state_dict_from_url(model_url, model_dir="./", progress=True, check_hash=True, map_location="cpu")
         model_without_ddp.load_state_dict(state_dict["model"], strict=False)
 
+    if args.distributed:
+        rank = utils.get_rank()
+        world_size = utils.get_world_size()
+    else:
+        rank, world_size = 0, 1
     dataset = DASIterableDataset(
         data_path = args.data_path,
         format = args.format,
         filtering = args.filtering,
+        rank = rank, 
+        world_size = world_size,
+        update_total_number = True,
         training=False)
     sampler = None
 
 
     data_loader = torch.utils.data.DataLoader(
         dataset,
-        batch_size=1,
+        batch_size=args.batch_size,
         sampler=sampler,
-        num_workers=16,
+        num_workers=min(args.workers, multiprocessing.cpu_count()),
         collate_fn=None,
         drop_last=False,
     )
 
 
-    pred_fn(model, data_loader, args)
+    pred_fn(model, data_loader, pick_path, figure_path, args)
 
 
 def get_args_parser(add_help=True):
@@ -180,13 +170,14 @@ def get_args_parser(add_help=True):
     parser = argparse.ArgumentParser(description="PyTorch Segmentation Training", add_help=add_help)
 
     parser.add_argument("--model", default="phasenet_das", type=str, help="model name")
+    parser.add_argument("--resume", default="", type=str, help="path of checkpoint")
     parser.add_argument("--device", default="cuda", type=str, help="device (Use cuda or cpu Default: cuda)")
     parser.add_argument(
-        "-j", "--workers", default=16*2, type=int, metavar="N", help="number of data loading workers (default: 16)"
+        "-j", "--workers", default=32, type=int, metavar="N", help="number of data loading workers (default: 16)"
     )
-
-    parser.add_argument("--resume", default="", type=str, help="path of checkpoint")
-
+    parser.add_argument(
+        "-b", "--batch-size", default=1, type=int, help="images per gpu, the total batch size is $NGPU x batch_size"
+    )
 
     # distributed training parameters
     parser.add_argument("--world-size", default=1, type=int, help="number of distributed processes")
