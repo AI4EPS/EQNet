@@ -16,7 +16,7 @@ import torch.utils.data
 import torchvision
 
 import utils
-from eqnet.data import DASDataset, DASIterableDataset
+from eqnet.data import DASDataset, DASIterableDataset, AutoEncoderIterableDataset
 from eqnet.utils import detect_peaks, extract_picks, merge_picks, plot_das
 import eqnet
 
@@ -153,11 +153,19 @@ def main(args):
         state_dict = torch.hub.load_state_dict_from_url(model_url, model_dir="./", progress=True, check_hash=True, map_location="cpu")
         model_without_ddp.load_state_dict(state_dict["model"], strict=False)
 
-    dataset = DASIterableDataset(
+    # dataset = DASIterableDataset(
+    #     data_path = args.data_path,
+    #     format = args.format,
+    #     filtering = args.filtering,
+    #     training=False)
+
+    dataset = AutoEncoderIterableDataset(
         data_path = args.data_path,
         format = args.format,
         filtering = args.filtering,
+        clip_amplitude=10**1.54, 
         training=False)
+
     sampler = None
 
 

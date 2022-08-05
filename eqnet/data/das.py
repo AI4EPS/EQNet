@@ -28,6 +28,39 @@ def normalize(data):
     data = (data - mean) / std
     return data.float()
 
+def normalize_clipped(data, data_clipped):
+    """
+    data: [Nch, Nt, Nsta] (Nchn: number of channels, Nt: number of time, Nsta: number of stations)
+    data_clipped: [Nch, Nt, Nsta] (Nchn: number of channels, Nt: number of time, Nsta: number of stations)
+    """
+    data = data.double()
+    data_clipped = data_clipped.double()
+
+    mean = torch.mean(data, dim=(1), keepdims=True)
+    std = torch.std(data, dim=(1), keepdims=True)
+
+    data = (data - mean) / std
+    data_clipped = (data_clipped - mean) / std
+
+    return data.float(), data_clipped.float()
+
+
+def das_clipping(temp, clip_amplitude):
+    if type(clip_amplitude) == float:
+        clip_max = abs(clip_amplitude)
+        clip_min = -clip_max
+    else:
+        clip_max = np.max(clip_amplitude)
+        clip_min = np.min(clip_amplitude)
+
+    clipping_interval = clip_max - clip_min
+
+    while (len(temp[temp>clip_max]) > 0) or  (len(temp[temp<clip_min]) > 0):
+        temp[temp>clip_max] =  temp[temp>clip_max] % clipping_interval - clipping_interval
+        temp[temp<clip_min] =  temp[temp<clip_min] % (-clipping_interval) + clipping_interval
+
+    return temp
+
 
 # def normalize_numpy(data):
 #     """
@@ -578,8 +611,9 @@ class DASIterableDataset(IterableDataset):
 
 
 class AutoEncoderIterableDataset(DASIterableDataset):
-    def __init__(self, data_path="./", noise_path=None, format="npz", prefix="", suffix="", training=False, stack_noise=False, filtering=False, **kwargs):
+    def __init__(self, data_path="./", noise_path=None, format="npz", prefix="", suffix="", training=False, stack_noise=False, filtering=False, clip_amplitude=10**1.54, **kwargs):
         super().__init__(data_path, noise_path, format=format, training=training)
+        self.clip_amplitude = clip_amplitude
 
     def sample(self, file_list):
         sample = {}
@@ -597,13 +631,14 @@ class AutoEncoderIterableDataset(DASIterableDataset):
             if self.training and (self.format == "h5"):
                 with h5py.File(file, "r") as f:
                     data = f["data"][()]
+                    # randomly adjust the amplitude
+                    data = data * 10 #**(np.random.rand()*0.7)
+
                     data = data[np.newaxis, :, :]  # nchn, nt, nsta
                     data = torch.from_numpy(data.astype(np.float32))
             else:
                 raise (f"Unsupported format: {self.format}")
 
-            data = data - np.median(data, axis=2, keepdims=True)
-            data = normalize(data)  # nch, nt, nsta
 
             if self.training:
                 for ii in range(10):
@@ -618,14 +653,21 @@ class AutoEncoderIterableDataset(DASIterableDataset):
                         data_ = flip_lr(data_)
                     data_ = data_ - np.median(data_, axis=2, keepdims=True)
 
+                    data_clipped = das_clipping(data_, self.clip_amplitude)
+
+                    data_clipped = data_clipped - np.median(data_clipped, axis=2, keepdims=True)
+                    data_, data_clipped = normalize_clipped(data_, data_clipped)  # nch, nt, nsta
+
                     yield {
-                        "data": data_,
+                        "data": data_clipped,
                         "targets": data_,
                         "file_name": os.path.splitext(file.split("/")[-1])[0] + f"_{ii:02d}",
                         "height": data_.shape[-2],
                         "width": data_.shape[-1],
                     }
             else:
+                data = data - np.median(data, axis=2, keepdims=True)
+                data = normalize(data)
                 sample["data"] = data
                 if self.nt is None:
                     self.nt = data.shape[1]
