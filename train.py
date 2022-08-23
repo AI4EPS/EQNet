@@ -2,21 +2,28 @@ import datetime
 import logging
 import os
 import time
+
+import matplotlib
 import matplotlib.pyplot as plt
 import torch
 import torch.nn.functional as F
 import torch.utils.data
 import torchvision
 
-import utils
 import eqnet
+import utils
+from eqnet.data import (
+    AutoEncoderIterableDataset,
+    DASDataset,
+    DASIterableDataset,
+    SeismicNetworkIterableDataset,
+)
 from eqnet.models import log_transform, normalize_local
-from eqnet.data import DASDataset, DASIterableDataset, AutoEncoderIterableDataset, SeismicNetworkIterableDataset
 
-import matplotlib
-matplotlib.use('agg')
+matplotlib.use("agg")
 
 logger = logging.getLogger("EQNet")
+
 
 def evaluate(model, data_loader, device, num_classes):
     model.eval()
@@ -28,13 +35,15 @@ def evaluate(model, data_loader, device, num_classes):
             output = model(meta)
 
             confmat.update(meta["targets"].argmax(1).flatten(), output.argmax(1).flatten().cpu())
-        
+
         confmat.reduce_from_all_processes()
 
     return confmat
 
 
-def train_one_epoch(model, optimizer, data_loader, lr_scheduler, device, epoch, iters_per_epoch, print_freq, scaler=None, args=None):
+def train_one_epoch(
+    model, optimizer, data_loader, lr_scheduler, device, epoch, iters_per_epoch, print_freq, scaler=None, args=None
+):
     model.train()
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter("lr", utils.SmoothedValue(window_size=1, fmt="{value}"))
@@ -75,13 +84,13 @@ def train_one_epoch(model, optimizer, data_loader, lr_scheduler, device, epoch, 
             print("Plotting...")
             eqnet.utils.visualize_das_train(meta, preds, epoch=epoch, figure_dir=args.output_dir)
             del preds
-            
+
         elif args.model == "autoencoder":
             preds = model(meta).cpu()
             print("Plotting...")
             eqnet.utils.visualize_autoencoder_das_train(meta, preds, epoch=epoch, figure_dir=args.output_dir)
             del preds
-            
+
         elif args.model == "eqnet":
             out = model(meta)
             phase = F.softmax(out["phase"], dim=1).cpu()
@@ -103,14 +112,23 @@ def main(args):
 
     device = torch.device(args.device)
 
+    # if args.distributed:
+    #     train_sampler = torch.utils.data.distributed.DistributedSampler(dataset)
+    #     test_sampler = torch.utils.data.distributed.DistributedSampler(dataset_test, shuffle=False)
+    # else:
+    #     train_sampler = torch.utils.data.RandomSampler(dataset)
+    #     test_sampler = torch.utils.data.SequentialSampler(dataset_test)
+
     if args.model == "phasenet_das":
         dataset = DASIterableDataset(
-            # data_path="/net/kuafu/mnt/tank/data/EventData/Mammoth_north/data", 
+            # data_path="/net/kuafu/mnt/tank/data/EventData/Mammoth_north/data",
             # noise_path="/net/kuafu/mnt/tank/data/EventData/Mammoth_north/data",
-            label_path=["/net/kuafu/mnt/tank/data/EventData/Mammoth_north/picks_phasenet_filtered/",
-                        "/net/kuafu/mnt/tank/data/EventData/Mammoth_south/picks_phasenet_filtered/",
-                        "/net/kuafu/mnt/tank/data/EventData/Ridgecrest/picks_phasenet_filtered/",
-                        "/net/kuafu/mnt/tank/data/EventData/Ridgecrest_South/picks_phasenet_filtered/"],
+            label_path=[
+                "/net/kuafu/mnt/tank/data/EventData/Mammoth_north/picks_phasenet_filtered/",
+                "/net/kuafu/mnt/tank/data/EventData/Mammoth_south/picks_phasenet_filtered/",
+                "/net/kuafu/mnt/tank/data/EventData/Ridgecrest/picks_phasenet_filtered/",
+                "/net/kuafu/mnt/tank/data/EventData/Ridgecrest_South/picks_phasenet_filtered/",
+            ],
             format="h5",
             training=True,
         )
@@ -118,7 +136,7 @@ def main(args):
     elif args.model == "autoencoder":
         dataset = AutoEncoderIterableDataset(
             # data_path = "/net/kuafu/mnt/tank/data/EventData/Ridgecrest/data",
-            data_path = args.data_path,
+            data_path=args.data_path,
             format="h5",
             training=True,
         )
@@ -142,21 +160,26 @@ def main(args):
     )
 
     data_loader_test = torch.utils.data.DataLoader(
-        dataset_test, batch_size=1, sampler=test_sampler, num_workers=args.workers, collate_fn=None,
+        dataset_test,
+        batch_size=1,
+        sampler=test_sampler,
+        num_workers=args.workers,
+        collate_fn=None,
         # collate_fn=utils.collate_fn
     )
 
-
     model = eqnet.models.__dict__[args.model](backbone=args.backbone)
     logger.info("Model:\n{}".format(model))
-    
+
     model.to(device)
     if args.distributed:
         model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
 
     model_without_ddp = model
     if args.distributed:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])#, find_unused_parameters=True)
+        model = torch.nn.parallel.DistributedDataParallel(
+            model, device_ids=[args.gpu]
+        )  # , find_unused_parameters=True)
         model_without_ddp = model.module
 
     # params_to_optimize = [
@@ -167,7 +190,7 @@ def main(args):
     #     params = [p for p in model_without_ddp.aux_classifier.parameters() if p.requires_grad]
     #     params_to_optimize.append({"params": params, "lr": args.lr * 10})
 
-    params_to_optimize =  [p for p in model_without_ddp.parameters() if p.requires_grad]
+    params_to_optimize = [p for p in model_without_ddp.parameters() if p.requires_grad]
     # optimizer = torch.optim.SGD(params_to_optimize, lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
     optimizer = torch.optim.AdamW(params_to_optimize, lr=args.lr, weight_decay=args.weight_decay)
 
@@ -179,7 +202,7 @@ def main(args):
     #     optimizer, lambda x: (1 - x / (iters_per_epoch * (args.epochs - args.lr_warmup_epochs))) ** 0.9
     # )
     main_lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max = iters_per_epoch * (args.epochs - args.lr_warmup_epochs)
+        optimizer, T_max=iters_per_epoch * (args.epochs - args.lr_warmup_epochs)
     )
 
     if args.lr_warmup_epochs > 0:
@@ -220,10 +243,12 @@ def main(args):
 
     start_time = time.time()
     for epoch in range(args.start_epoch, args.epochs):
-        
+
         if args.distributed and (train_sampler is not None):
             train_sampler.set_epoch(epoch)
-        train_one_epoch(model, optimizer, data_loader, lr_scheduler, device, epoch, iters_per_epoch, args.print_freq, scaler, args)
+        train_one_epoch(
+            model, optimizer, data_loader, lr_scheduler, device, epoch, iters_per_epoch, args.print_freq, scaler, args
+        )
         # confmat = evaluate(model, data_loader_test, device=device, num_classes=num_classes)
         checkpoint = {
             "model": model_without_ddp.state_dict(),
@@ -259,7 +284,7 @@ def get_args_parser(add_help=True):
     parser.add_argument("--epochs", default=100, type=int, metavar="N", help="number of total epochs to run")
 
     parser.add_argument(
-        "-j", "--workers", default=16*2, type=int, metavar="N", help="number of data loading workers (default: 16)"
+        "-j", "--workers", default=16 * 2, type=int, metavar="N", help="number of data loading workers (default: 16)"
     )
     parser.add_argument("--lr", default=0.01, type=float, help="initial learning rate")
     parser.add_argument("--momentum", default=0.9, type=float, metavar="M", help="momentum")
@@ -297,8 +322,6 @@ def get_args_parser(add_help=True):
 
     # Mixed precision training parameters
     parser.add_argument("--amp", action="store_true", help="Use torch.cuda.amp for mixed precision training")
-
-
 
     return parser
 

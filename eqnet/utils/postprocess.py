@@ -1,14 +1,16 @@
-import torch
-import torch.nn as nn
 import os
+import shutil
+from collections import defaultdict
+from datetime import datetime, timedelta
+from pathlib import Path
+
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from datetime import datetime, timedelta
-import matplotlib.pyplot as plt
-from collections import defaultdict
+import torch
+import torch.nn as nn
 from tqdm import tqdm
-from pathlib import Path
-import shutil
+
 
 def detect_peaks(scores, vmin=0.3, kernel=101, K=0):
 
@@ -32,9 +34,11 @@ def extract_picks(
     file_name=None,
     begin_time=None,
     station_name=None,
+    phases=["P", "S"],
     vmin=0.3,
     dt=0.01,
-    phases=["P", "S"],
+    begin_channel_index=None,
+    begin_time_index=None,
     **kwargs,
 ):
     """Extract picks from prediction results.
@@ -64,7 +68,7 @@ def extract_picks(
         begin_time_index = [x.item() for x in kwargs["begin_time_index"]]
     else:
         begin_time_index = [0 for i in range(batch)]
-    # raise
+
     for i in range(batch):
         picks_per_file = []
         if file_name is None:
@@ -89,15 +93,18 @@ def extract_picks(
 
                 for index, score in zip(topk_index[i, j, k], topk_score[i, j, k]):
                     if score > vmin:
-                        pick_time = (begin_i + timedelta(seconds=index.item() * dt[i])).isoformat(timespec="milliseconds")
+                        pick_index = index.item() + begin_time_index[i]
+                        pick_time = (begin_i + timedelta(seconds=index.item() * dt[i])).isoformat(
+                            timespec="milliseconds"
+                        )
                         picks_per_file.append(
                             {
                                 "file_name": file_i,
                                 "station_name": station_i,
-                                "phase_index": index.item() + begin_time_index[i],
+                                "phase_index": pick_index,
+                                "phase_time": pick_time,
                                 "phase_score": f"{score.item():.3f}",
                                 "phase_type": phases[j],
-                                "phase_time": pick_time,
                                 "dt": dt[i],
                             }
                         )
@@ -124,7 +131,7 @@ def merge_picks(raw_folder="picks_phasenet", merged_folder=None):
 
     file_group = defaultdict(list)
     for file in files:
-        file_group[file.stem.split("_")[0]].append(file) ## event_id
+        file_group[file.stem.split("_")[0]].append(file)  ## event_id
 
     num_picks = 0
     for k in tqdm(file_group, desc=f"{out_path}"):
@@ -135,7 +142,7 @@ def merge_picks(raw_folder="picks_phasenet", merged_folder=None):
                 if i == 0:
                     picks.extend(tmp)
                 else:
-                    picks.extend(tmp[1:]) ## wihout header
+                    picks.extend(tmp[1:])  ## wihout header
         with open(out_path.joinpath(f"{k}.csv"), "w") as f:
             f.writelines(picks)
         num_picks += len(picks)
