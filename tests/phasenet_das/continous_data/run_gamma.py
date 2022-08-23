@@ -18,9 +18,10 @@ warnings.filterwarnings("ignore")
 root_dir = "./"
 
 # %%
-picks_path = Path(root_dir + f"picks_phasenet_das/")
-output_path = Path(f"picks_phasenet_filtered/")
-figures_path = Path(f"figures_phasenet_filtered/")
+data_path = Path("./")
+picks_path = Path("./")
+output_path = Path("./")
+figures_path = Path("./figures")
 
 if not output_path.exists():
     output_path.mkdir(parents=True)
@@ -28,7 +29,7 @@ if not figures_path.exists():
     figures_path.mkdir(parents=True)
 
 # %% Match data format for GaMMA
-stations = pd.read_csv(root_dir + "das_info.csv", index_col="index")
+stations = pd.read_csv(data_path / "das_info.csv", index_col="index")
 y0 = stations["latitude"].mean()
 x0 = stations["longitude"].mean()
 proj = Proj(f"+proj=sterea +lon_0={x0} +lat_0={y0} +units=km")
@@ -49,7 +50,7 @@ config["dbscan_min_samples"] = 3
 config["use_amplitude"] = False
 config["x(km)"] = (np.array(config["xlim_degree"]) - np.array(config["center"][0])) * config["degree2km"]
 config["y(km)"] = (np.array(config["ylim_degree"]) - np.array(config["center"][1])) * config["degree2km"]
-config["z(km)"] = (0, 20)
+config["z(km)"] = (0, 30)
 # config["vel"] = {"p": 6.0, "s": 6.0 / 1.73}
 config["vel"] = {"p": 5.5, "s": 5.5 / 1.73}  ## Mammoth
 config["method"] = "BGMM"
@@ -68,10 +69,10 @@ config["bfgs_bounds"] = (
 config["initial_mode"] = "one_point"
 
 # Filtering
-config["min_picks_per_eq"] = 20  # len(stations)//10
-config["min_p_picks_per_eq"] = 10  # len(stations)//20
-config["min_s_picks_per_eq"] = 10  # len(stations)//20
-config["max_sigma11"] = 3.0
+config["min_picks_per_eq"] = 200  # len(stations)//10
+config["min_p_picks_per_eq"] = 100  # len(stations)//20
+config["min_s_picks_per_eq"] = 100  # len(stations)//20
+config["max_sigma11"] = 2.0
 
 for k, v in config.items():
     print(f"{k}: {v}")
@@ -92,86 +93,83 @@ def associate(picks, stations, config):
     event_idx0 = 0  ## current earthquake index
     catalogs, assignments = association(picks, stations, config, event_idx0, config["method"])
 
-    assignments = pd.DataFrame(assignments, columns=["pick_idx", "event_idx", "prob_gamma"])
-    picks = picks.join(assignments.set_index("pick_idx")).fillna(-1).astype({"event_idx": int})
+    assignments = pd.DataFrame(assignments, columns=["pick_index", "event_index", "prob_gamma"])
+    picks = picks.join(assignments.set_index("pick_index")).fillna(-1).astype({"event_index": int})
 
     return catalogs, picks
 
 
 # %%
-def run(files, event_list):
-    for file in files:
-        picks = pd.read_csv(file)
-        # picks = picks[picks["phase_index"] > 10]
-        # picks = picks[picks["phase_prob"] > 0.5]
+def run(i, picks, event_list, picks_list):
 
-        events, picks = associate(picks, stations, config)
+    # picks = picks[picks["phase_index"] > 10]
+    # picks = picks[picks["phase_prob"] > 0.5]
 
-        if (events is None) or (picks is None):
-            continue
-        for e in events:
-            e["event_id"] = file.stem
-            event_list.append(e)
+    events, picks = associate(picks, stations, config)
 
-        picks_ = picks.copy()
-        picks["event_index"] = picks["event_idx"]
-        picks = picks[picks["event_idx"] != -1]
+    if (events is None) or (picks is None):
+        return
+    for e in events:
+        e["event_id"] = f"{i:04d}_{e['event_index']:04d}" if e["event_index"] != -1 else "-1"
+        event_list.append(e)
 
-        if len(picks) == 0:
-            continue
-        ## filter: keep both P/S picks
-        picks["event_index"] = picks["event_idx"]
-        picks["station_id"] = picks["channel_index"]
+    # picks = picks[picks["event_idx"] != -1]
+    if len(picks) == 0:
+        return
 
-        picks.sort_values(by=["channel_index", "phase_time"], inplace=True)
-        picks.to_csv(
-            output_path.joinpath(file.name),
-            index=False,
-            # columns=["channel_index", "phase_index", "phase_time", "phase_score", "phase_type", "event_index"],
-            columns=["channel_index", "phase_time", "phase_score", "phase_type", "event_index"],
-            float_format="%.3f",
-        )
+    ## filter: keep both P/S picks
+    picks["event_id"] = picks["event_index"].apply(lambda x: f"{i:04d}_{x:04d}" if x != -1 else "-1")
+    picks.sort_values(by=["channel_index", "phase_time"], inplace=True)
+
+    picks_list.append(picks[["channel_index", "phase_time", "phase_score", "phase_type", "prob_gamma", "event_id"]])
 
 
 # %%
 if __name__ == "__main__":
     manager = Manager()
     event_list = manager.list()
-    files = sorted(list(picks_path.rglob("*.csv")))
+    picks_list = manager.list()
 
-    files = [Path("mammoth.csv")]
-    run(files, event_list)
-    print(event_list)
+    picks = pd.read_csv(picks_path / "mammoth_picks.csv")
+    picks.sort_values(by=["phase_time"], inplace=True)
+    picks.reset_index(drop=True, inplace=True)
 
-    # jobs = []
-    # num_cores = multiprocessing.cpu_count()
-    # # num_cores = 1
-    # for i in range(num_cores):
-    #     p = multiprocessing.Process(target=run, args=(files[i::num_cores], event_list))
-    #     jobs.append(p)
-    #     p.start()
-    # for p in jobs:
-    #     p.join()
+    # run(0, picks, event_list, picks_list)
+    # print(event_list)
+    # print(picks_list)
+    # raise
+
+    jobs = []
+    num_cores = multiprocessing.cpu_count()
+    split_index = np.array_split(np.arange(len(picks)), num_cores)
+    for i in range(num_cores):
+        p = multiprocessing.Process(target=run, args=(i, picks.iloc[split_index[i]], event_list, picks_list))
+        jobs.append(p)
+        p.start()
+    for p in jobs:
+        p.join()
 
     events = pd.DataFrame(list(event_list))
-    # events["event_index"] = events["event_idx"]
-
     events[["longitude", "latitude"]] = events.apply(
         lambda x: pd.Series(proj(longitude=x["x(km)"], latitude=x["y(km)"], inverse=True)), axis=1
     )
     events["depth_km"] = events["z(km)"]
+    mapping = {events.loc[i, "event_id"]: i + 1 for i in events.index}
+    mapping["-1"] = -1
+    events["event_id"] = events.index + 1
 
-    # events["longitude"] = events["x(km)"].apply(
-    #     lambda x: x / config["degree2km"] + config["center"][0]
-    # )
-    # events["latitude"] = events["y(km)"].apply(
-    #     lambda x: x / config["degree2km"] + config["center"][1]
-    # )
-    # events["depth_km"] = events["z(km)"]
+    picks = pd.concat(picks_list)
+    picks["event_id"] = picks["event_id"].map(mapping)
+    picks["event_id"] = picks["event_id"].astype(int)
 
     events.to_csv(
-        "catalog_gamma.csv",
+        "gamma_catalog.csv",
         index=False,
-        columns=["event_id", "time", "longitude", "latitude", "depth_km", "event_index"],
+        columns=["event_id", "time", "longitude", "latitude", "depth_km", "sigma_time", "gamma_score"],
         float_format="%.6f",
+    )
+
+    picks.to_csv(
+        "gamma_picks.csv",
+        index=False,
     )

@@ -50,6 +50,6 @@ for f in tqdm(picks_south):
     picks.append(tmp)
 
 combined_picks = pd.concat(picks)
-combined_picks.to_csv(f"mammoth.csv", index=False)
+combined_picks.to_csv(f"mammoth_picks.csv", index=False)
 
 # %%
