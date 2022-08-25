@@ -20,7 +20,7 @@ def generate_label(phase_list, label_width=[150, 150], nt=8192):
     return target
 
 
-class SeismicNetworkIterableDataset(IterableDataset):
+class SeismicTraceIterableDataset(IterableDataset):
 
     degree2km = 111.32
     nt = 8192  ## 8992
@@ -58,7 +58,6 @@ class SeismicNetworkIterableDataset(IterableDataset):
                 continue
             else:
                 station_ids = np.random.choice(station_ids, num_station, replace=False)
-            print(event_id, station_ids)
 
             waveforms = np.zeros([3, self.nt, len(station_ids)])
             phase_pick = np.zeros([3, self.nt, len(station_ids)])
@@ -68,8 +67,6 @@ class SeismicNetworkIterableDataset(IterableDataset):
             station_location = np.zeros([len(station_ids), 2])
 
             for i, sta_id in enumerate(station_ids):
-
-                print(self.hdf5_fp[event_id + "/" + sta_id][()].shape)
 
                 if self.hdf5_fp[event_id + "/" + sta_id][()].shape != (9000, 3):
                     continue
@@ -156,7 +153,7 @@ if __name__ == "__main__":
     import matplotlib.pyplot as plt
 
     # dataset = SeismicNetworkIterableDataset("../../datasets/NCEDC/ncedc_seismic_dataset_3.h5")
-    dataset = SeismicNetworkIterableDataset("/atomic-data/poggiali/test.hdf5")
+    dataset = SeismicTraceIterableDataset("/atomic-data/poggiali/test.hdf5")
     for x in dataset:
         # print(x)
         fig, axes = plt.subplots(1, 5, figsize=(15, 5))

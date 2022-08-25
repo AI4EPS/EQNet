@@ -17,6 +17,7 @@ from eqnet.data import (
     DASDataset,
     DASIterableDataset,
     SeismicNetworkIterableDataset,
+    SeismicTraceIterableDataset,
 )
 from eqnet.models import log_transform, normalize_local
 
@@ -78,7 +79,18 @@ def train_one_epoch(
     model.eval()
     with torch.inference_mode():
 
-        if args.model == "phasenet_das":
+        if args.model == "phasenet":
+            out = model(meta)
+            phase = F.softmax(out["phase"], dim=1).cpu()
+            event = torch.sigmoid(out["event"]).cpu()
+            print("Plotting...")
+            eqnet.utils.visualize_phasenet_train(meta, phase, event, epoch=epoch, figure_dir=args.output_dir)
+            del phase, event
+
+        if args.model == "deepdenoiser":
+            pass
+
+        elif args.model == "phasenet_das":
             preds = model(meta)
             preds = F.softmax(preds, dim=1).cpu()
             print("Plotting...")
@@ -143,6 +155,9 @@ def main(args):
         train_sampler = None
     elif args.model == "eqnet":
         dataset = SeismicNetworkIterableDataset("datasets/NCEDC/ncedc_seismic_dataset.h5")
+        train_sampler = None
+    elif args.model == "phasenet":
+        dataset = SeismicTraceIterableDataset("datasets/NCEDC/ncedc_seismic_dataset_3.h5")
         train_sampler = None
 
     dataset_test = dataset

@@ -1,10 +1,12 @@
-import torch
-import torch.nn as nn
 import os
+from datetime import datetime, timedelta
+
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from datetime import datetime, timedelta
-import matplotlib.pyplot as plt
+import torch
+import torch.nn as nn
+
 
 def visualize_autoencoder_das_train(meta, preds, epoch, figure_dir="figures"):
 
@@ -23,22 +25,25 @@ def visualize_autoencoder_das_train(meta, preds, epoch, figure_dir="figures"):
         vmax = np.std(raw_data[i]) * 2
         vmin = -vmax
 
-        fig, ax = plt.subplots(2,2, figsize=(12, 12), sharex=False, sharey=False)
-        im = ax[0, 0].imshow(raw_data[i], vmin=raw_vmin, vmax=raw_vmax, interpolation='none', cmap="seismic", aspect='auto')
+        fig, ax = plt.subplots(2, 2, figsize=(12, 12), sharex=False, sharey=False)
+        im = ax[0, 0].imshow(
+            raw_data[i], vmin=raw_vmin, vmax=raw_vmax, interpolation="none", cmap="seismic", aspect="auto"
+        )
         fig.colorbar(im, ax=ax[0, 0])
-        im = ax[0, 1].imshow(targets[i], vmin=raw_vmin, vmax=raw_vmax, interpolation='none', cmap="seismic", aspect='auto')
+        im = ax[0, 1].imshow(
+            targets[i], vmin=raw_vmin, vmax=raw_vmax, interpolation="none", cmap="seismic", aspect="auto"
+        )
         fig.colorbar(im, ax=ax[0, 1])
-        im = ax[1, 0].imshow(y[i], vmin=raw_vmin, vmax=raw_vmax, interpolation='none', cmap="seismic", aspect='auto')
+        im = ax[1, 0].imshow(y[i], vmin=raw_vmin, vmax=raw_vmax, interpolation="none", cmap="seismic", aspect="auto")
         fig.colorbar(im, ax=ax[1, 0])
-        im = ax[1, 1].imshow(y[i], interpolation='none', cmap="seismic", aspect='auto')
+        im = ax[1, 1].imshow(y[i], interpolation="none", cmap="seismic", aspect="auto")
         fig.colorbar(im, ax=ax[1, 1])
 
-        
         # ax[0, 1].imshow(y[i], vmin=0, vmax=1, interpolation='none', aspect='auto')
         # ax[1, 1].imshow(targets[i],  vmin=0, vmax=1, interpolation='none', aspect='auto')
         # ax[0, 1].imshow(y[i], interpolation='none', aspect='auto')
         # ax[1, 1].imshow(targets[i], interpolation='none', aspect='auto')
-        
+
         if "LOCAL_RANK" in os.environ:
             local_rank = int(os.environ["LOCAL_RANK"])
             fig.savefig(f"{figure_dir}/{epoch:02d}_{i:02d}_{local_rank}.png", dpi=300)
@@ -46,6 +51,7 @@ def visualize_autoencoder_das_train(meta, preds, epoch, figure_dir="figures"):
             fig.savefig(f"{figure_dir}/{epoch:02d}_{i:02d}.png", dpi=300)
 
         plt.close(fig)
+
 
 def visualize_das_train(meta, preds, epoch, figure_dir="figures"):
 
@@ -64,14 +70,21 @@ def visualize_das_train(meta, preds, epoch, figure_dir="figures"):
         vmax = np.std(raw_data[i]) * 2
         vmin = -vmax
 
-        fig, ax = plt.subplots(2,2, figsize=(12, 12), sharex=False, sharey=False)
-        ax[0, 0].imshow((raw_data[i]-np.mean(raw_data[i])), vmin=raw_vmin, vmax=raw_vmax, interpolation='none', cmap="seismic", aspect='auto')
+        fig, ax = plt.subplots(2, 2, figsize=(12, 12), sharex=False, sharey=False)
+        ax[0, 0].imshow(
+            (raw_data[i] - np.mean(raw_data[i])),
+            vmin=raw_vmin,
+            vmax=raw_vmax,
+            interpolation="none",
+            cmap="seismic",
+            aspect="auto",
+        )
         # ax[1, 0].imshow((data[i]-np.mean(data[i])), vmin=vmin, vmax=vmax, interpolation='none', cmap="seismic", aspect='auto')
-        ax[0, 1].imshow(y[i], vmin=0, vmax=1, interpolation='none', aspect='auto')
-        ax[1, 1].imshow(targets[i],  vmin=0, vmax=1, interpolation='none', aspect='auto')
+        ax[0, 1].imshow(y[i], vmin=0, vmax=1, interpolation="none", aspect="auto")
+        ax[1, 1].imshow(targets[i], vmin=0, vmax=1, interpolation="none", aspect="auto")
         # ax[0, 1].imshow(y[i], interpolation='none', aspect='auto')
         # ax[1, 1].imshow(targets[i], interpolation='none', aspect='auto')
-        
+
         if "LOCAL_RANK" in os.environ:
             local_rank = int(os.environ["LOCAL_RANK"])
             fig.savefig(f"{figure_dir}/{epoch:02d}_{i:02d}_{local_rank}.png", dpi=300)
@@ -80,14 +93,36 @@ def visualize_das_train(meta, preds, epoch, figure_dir="figures"):
 
         plt.close(fig)
 
+
+def visualize_phasenet_train(meta, phase, event, epoch, figure_dir="figures"):
+
+    for i in range(meta["waveform"].shape[0]):
+        plt.close("all")
+        fig, axes = plt.subplots(3, 1, figsize=(10, 10))
+        axes[0].plot((meta["waveform"][i, -1, :]) / torch.std(meta["waveform"][i, -1, :]))
+        axes[1].plot(phase[i, 1, :], "r")
+        axes[1].plot(phase[i, 2, :], "b")
+        axes[1].plot(meta["phase_pick"][i, 1, :], "--C3")
+        axes[1].plot(meta["phase_pick"][i, 2, :], "--C0")
+
+        axes[2].plot(event[i, :], "b")
+        axes[2].plot(meta["center_heatmap"][i, :], "--C0")
+
+        if "LOCAL_RANK" in os.environ:
+            local_rank = int(os.environ["LOCAL_RANK"])
+            fig.savefig(f"{figure_dir}/{epoch:02d}_{i:02d}_{local_rank}.png", dpi=300)
+        else:
+            fig.savefig(f"{figure_dir}/{epoch:02d}_{i:02d}.png", dpi=300)
+
+
 def visualize_eqnet_train(meta, phase, event, epoch, figure_dir="figures"):
 
     for i in range(meta["waveform"].shape[0]):
         plt.close("all")
         fig, axes = plt.subplots(3, 1, figsize=(10, 10))
         for j in range(phase.shape[-1]):
-            axes[0].plot((meta["waveform"][i, -1, :, j])/torch.std(meta["waveform"][i, -1, :, j])/8 + j)
-            
+            axes[0].plot((meta["waveform"][i, -1, :, j]) / torch.std(meta["waveform"][i, -1, :, j]) / 8 + j)
+
             axes[1].plot(phase[i, 1, :, j] + j, "r")
             axes[1].plot(phase[i, 2, :, j] + j, "b")
             axes[1].plot(meta["phase_pick"][i, 1, :, j] + j, "--C3")
@@ -151,7 +186,7 @@ def plot_das(data, pred, picks=None, file_name=None, figure_dir="./figures", epo
         # fig, axs = plt.subplots(1, 1, sharex=True, figsize=(8, 6))
         fig, axs = plt.subplots(1, 1)
         im = axs.pcolormesh(
-            (np.arange(nx) + begin_channel_index[i]) * dx[i] / 1e3, #km
+            (np.arange(nx) + begin_channel_index[i]) * dx[i] / 1e3,  # km
             (np.arange(nt) + begin_time_index[i]) * dt[i],
             data[i, :, :, 0],
             vmin=-std,
@@ -222,7 +257,7 @@ def plot_das(data, pred, picks=None, file_name=None, figure_dir="./figures", epo
             p_picks = picks_[picks_["phase_type"] == "P"]
             s_picks = picks_[picks_["phase_type"] == "S"]
             axs.plot(
-                p_picks["station_name"].astype("int") * dx[i] / 1e3, #km
+                p_picks["station_name"].astype("int") * dx[i] / 1e3,  # km
                 p_picks["phase_index"] * dt[i],
                 ".C0",
                 # linewidth=5,
@@ -232,7 +267,7 @@ def plot_das(data, pred, picks=None, file_name=None, figure_dir="./figures", epo
                 label="P-phase",
             )
             axs.plot(
-                s_picks["station_name"].astype("int") * dx[i] / 1e3, #km
+                s_picks["station_name"].astype("int") * dx[i] / 1e3,  # km
                 s_picks["phase_index"] * dt[i],
                 # "-C3",
                 ".C2",
