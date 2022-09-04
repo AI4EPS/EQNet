@@ -37,8 +37,6 @@ def extract_picks(
     phases=["P", "S"],
     vmin=0.3,
     dt=0.01,
-    begin_channel_index=None,
-    begin_time_index=None,
     **kwargs,
 ):
     """Extract picks from prediction results.

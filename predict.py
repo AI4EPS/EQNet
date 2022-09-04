@@ -150,6 +150,7 @@ def main(args):
         update_total_number=True,
         dataset=args.dataset,
         training=False,
+        skip_files=args.skip_files,
     )
     sampler = None
 
@@ -159,6 +160,8 @@ def main(args):
         sampler=sampler,
         num_workers=min(args.workers, multiprocessing.cpu_count()),
         collate_fn=None,
+        # prefetch_factor=512,
+        prefetch_factor=2,
         drop_last=False,
     )
 
@@ -196,6 +199,11 @@ def get_args_parser(add_help=True):
     # Mixed precision training parameters
     parser.add_argument("--amp", action="store_true", help="Use torch.cuda.amp for mixed precision training")
 
+    parser.add_argument(
+        "--skip_files",
+        default="./Mammoth_north_debug/picks_phasenet_das_merged/*csv",
+        help="If skip the files that have been processed",
+    )
     return parser
 
 

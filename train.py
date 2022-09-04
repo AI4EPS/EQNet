@@ -26,20 +26,54 @@ matplotlib.use("agg")
 logger = logging.getLogger("EQNet")
 
 
-def evaluate(model, data_loader, device, num_classes):
+def evaluate(model, data_loader, device, num_classes=3, args=None):
     model.eval()
-    confmat = utils.ConfusionMatrix(num_classes)
+    # confmat = utils.ConfusionMatrix(num_classes)
     metric_logger = utils.MetricLogger(delimiter="  ")
     header = "Test:"
     with torch.inference_mode():
+        i = 0
         for meta in metric_logger.log_every(data_loader, 100, header):
-            output = model(meta)
 
-            confmat.update(meta["targets"].argmax(1).flatten(), output.argmax(1).flatten().cpu())
+            if args.model == "phasenet":
+                out = model(meta)
+                phase = F.softmax(out["phase"], dim=1).cpu()
+                event = torch.sigmoid(out["event"]).cpu()
+                print("Plotting...")
+                eqnet.utils.visualize_phasenet_train(meta, phase, event, epoch=i, figure_dir=args.output_dir)
+                del phase, event
 
-        confmat.reduce_from_all_processes()
+            if args.model == "deepdenoiser":
+                pass
 
-    return confmat
+            elif args.model == "phasenet_das":
+                preds = model(meta)
+                preds = F.softmax(preds, dim=1).cpu()
+                print("Plotting...")
+                eqnet.utils.visualize_das_train(meta, preds, epoch=i, figure_dir=args.output_dir)
+                del preds
+
+            elif args.model == "autoencoder":
+                preds = model(meta).cpu()
+                print("Plotting...")
+                eqnet.utils.visualize_autoencoder_das_train(meta, preds, epoch=i, figure_dir=args.output_dir)
+                del preds
+
+            elif args.model == "eqnet":
+                out = model(meta)
+                phase = F.softmax(out["phase"], dim=1).cpu()
+                event = torch.sigmoid(out["event"]).cpu()
+                print("Plotting...")
+                eqnet.utils.visualize_eqnet_train(meta, phase, event, epoch=i, figure_dir=args.output_dir)
+                del phase, event
+
+            i += 1
+            # confmat.update(meta["targets"].argmax(1).flatten(), output.argmax(1).flatten().cpu())
+
+        # confmat.reduce_from_all_processes()
+
+    # return confmat
+    return
 
 
 def train_one_epoch(
@@ -145,6 +179,16 @@ def main(args):
             training=True,
         )
         train_sampler = None
+        dataset_test = dataset = DASIterableDataset(
+            # data_path="/net/kuafu/mnt/tank/data/EventData/Mammoth_south/data/",
+            label_path=["/net/kuafu/mnt/tank/data/EventData/Mammoth_south/picks_phasenet_filtered/"],
+            format="h5",
+            stack_event=False,
+            stack_noise=False,
+            add_moveout=False,
+            training=True,
+        )
+        test_sampler = None
     elif args.model == "autoencoder":
         dataset = AutoEncoderIterableDataset(
             # data_path = "/net/kuafu/mnt/tank/data/EventData/Ridgecrest/data",
@@ -153,15 +197,18 @@ def main(args):
             training=True,
         )
         train_sampler = None
+        dataset_test = dataset
+        test_sampler = None
     elif args.model == "eqnet":
         dataset = SeismicNetworkIterableDataset("datasets/NCEDC/ncedc_seismic_dataset.h5")
         train_sampler = None
+        dataset_test = dataset
+        test_sampler = None
     elif args.model == "phasenet":
         dataset = SeismicTraceIterableDataset("datasets/NCEDC/ncedc_seismic_dataset_3.h5")
         train_sampler = None
-
-    dataset_test = dataset
-    test_sampler = None
+        dataset_test = dataset
+        test_sampler = None
 
     data_loader = torch.utils.data.DataLoader(
         dataset,
@@ -252,7 +299,7 @@ def main(args):
                 scaler.load_state_dict(checkpoint["scaler"])
 
     if args.test_only:
-        confmat = evaluate(model, data_loader_test, device=device, num_classes=num_classes)
+        confmat = evaluate(model, data_loader_test, device=device, args=args)
         print(confmat)
         return
 
@@ -264,7 +311,7 @@ def main(args):
         train_one_epoch(
             model, optimizer, data_loader, lr_scheduler, device, epoch, iters_per_epoch, args.print_freq, scaler, args
         )
-        # confmat = evaluate(model, data_loader_test, device=device, num_classes=num_classes)
+        # confmat = evaluate(model, data_loader_test, device=device, args=args)
         checkpoint = {
             "model": model_without_ddp.state_dict(),
             "optimizer": optimizer.state_dict(),

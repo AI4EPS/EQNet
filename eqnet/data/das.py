@@ -353,6 +353,8 @@ class DASIterableDataset(IterableDataset):
         suffix="",
         training=False,
         stack_noise=True,
+        add_moveout=True,
+        stack_event=True,
         picks=["p_picks", "s_picks"],
         filtering=False,
         # filter_params={"freqmin": 0.1, "freqmax": 10.0, "corners": 4, "zerophase": True},
@@ -370,7 +372,18 @@ class DASIterableDataset(IterableDataset):
         self.suffix = suffix
         self.picks = picks
         self.stack_noise = stack_noise
+        self.stack_event = stack_event
+        self.add_moveout = add_moveout
         self.data_list = sorted(list(glob(os.path.join(data_path, f"{prefix}*{suffix}.{format}"))))
+        if "skip_files" in kwargs:
+            self.skip_data_list = [
+                os.path.splitext(x.split("/")[-1])[0] for x in sorted(list(glob(kwargs["skip_files"])))
+            ]
+            print("Total number of files:", len(self.data_list))
+            self.data_list = [
+                x for x in self.data_list if os.path.splitext(x.split("/")[-1])[0] not in self.skip_data_list
+            ]
+            print("Total number of files without skipped:", len(self.data_list))
         if ("rank" in kwargs) and ("world_size" in kwargs):
             self.data_list = self.data_list[kwargs["rank"] :: kwargs["world_size"]]
         if label_path is not None:
@@ -404,10 +417,11 @@ class DASIterableDataset(IterableDataset):
     def update_total_number(self):
         if self.format == "h5":
             if self.dataset == "mammoth":
-                shape = h5py.File(self.data_list[0], "r")["Data"].shape
+                shape = h5py.File(self.data_list[0], "r")["Data"].shape[::-1]
             else:
                 shape = h5py.File(self.data_list[0], "r")["data"].shape
-            total_number = len(self.data_list) * (shape[0] + 512) // self.nt * (shape[1] + 512) // self.nx
+            total_number = len(self.data_list) * ((shape[0] + 512) // self.nt) * ((shape[1] + 512) // self.nx)
+            print(f"Update total number: file number = {len(self.data_list)}, sample number = {total_number}")
         else:
             total_number = len(self.data_list)
         return total_number
@@ -417,6 +431,8 @@ class DASIterableDataset(IterableDataset):
 
     def __iter__(self):
         worker_info = torch.utils.data.get_worker_info()
+        print(f"{worker_info = }")
+        # raise
         if worker_info is None:
             if self.label_list is None:
                 data_list = self.data_list
@@ -538,7 +554,7 @@ class DASIterableDataset(IterableDataset):
                 # data = scipy.signal.filtfilt(b, a, data, axis=-2)
                 # data = torch.from_numpy(data.astype(np.float32))
                 data = torch.diff(data, n=1, dim=1)
-                data = data - data.median(dim=2, keepdim=True).values
+                # data = data - data.median(dim=2, keepdim=True).values
 
             elif self.format == "segy":
                 meta = {}
@@ -568,7 +584,7 @@ class DASIterableDataset(IterableDataset):
                 targets = torch.from_numpy(targets)
                 snr = calc_snr(data, meta["p_picks"])
                 with_event = False
-                if (snr > 3) and (np.random.rand() < 0.3):
+                if (snr > 3) and (np.random.rand() < 0.3) and self.stack_event:
                     data, targets = stack_event(data, targets, data, targets, snr)
                     with_event = True
                 for ii in range(sum([len(x) for x in picks]) // self.min_picks * 10):
@@ -576,12 +592,12 @@ class DASIterableDataset(IterableDataset):
                     data_, targets_ = cut_data(data, targets, pre_nt=pre_nt)
                     if data_ is None:
                         continue
-                    if np.random.rand() < 0.5:
+                    if (np.random.rand() < 0.5) and self.add_moveout:
                         data_, targets_ = add_moveout(data_, targets_)
                     data_ = data_[:, pre_nt:, :]
                     targets_ = targets_[:, pre_nt:, :]
                     # if (snr > 10) and (np.random.rand() < 0.5):
-                    if not with_event:
+                    if not with_event and self.stack_noise:
                         noise_ = cut_noise(noise)
                         data_ = stack_noise(data_, noise_, snr)
                     if np.random.rand() < 0.5:
@@ -603,6 +619,9 @@ class DASIterableDataset(IterableDataset):
                     self.nt = data.shape[1]
                 if self.nx is None:
                     self.nx = data.shape[2]
+                ## TODO: add padding instead of direct skipping
+                if (data.shape[1] < 512) or (data.shape[2] < 512):
+                    continue
                 for i in list(range(0, data.shape[1], self.nt)):
                     if self.nt + i + 512 >= data.shape[1]:
                         tn = data.shape[1]

@@ -24,7 +24,7 @@ sampling_rate = 100
 
 with h5py.File(h5_file, "r") as fp_in:
     # with h5py.File(output_path.joinpath(f"{event['index']:06}.h5"), "w") as fp_out:
-    with h5py.File("ncedc_seismic_dataset_3.h5", "w") as fp_out:
+    with h5py.File("ncedc_seismic_dataset_4.h5", "w") as fp_out:
 
         for i, (_, event) in tqdm(enumerate(event_csv.iterrows()), total=len(event_csv)):
 
@@ -65,8 +65,8 @@ with h5py.File(h5_file, "r") as fp_in:
                 #     print(trace.shape, p_arrival_index, begin_index, end_index)
 
                 waveform = np.zeros([pre_window + post_window, 3])
-                waveform[: trace[max(0, begin_index) : end_index, :].shape[0], :] = trace[
-                    max(0, begin_index) : end_index, :
+                waveform[: trace[max(0, begin_index) : max(0, end_index), :].shape[0], :] = trace[
+                    max(0, begin_index) : max(0, end_index), :
                 ]
                 network = trace.attrs["network"]
                 station = trace.attrs["station"]

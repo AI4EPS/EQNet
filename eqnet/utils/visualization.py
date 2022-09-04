@@ -53,7 +53,7 @@ def visualize_autoencoder_das_train(meta, preds, epoch, figure_dir="figures"):
         plt.close(fig)
 
 
-def visualize_das_train(meta, preds, epoch, figure_dir="figures"):
+def visualize_das_train(meta, preds, epoch, figure_dir="figures", dt=0.01, dx=10):
 
     meta_data = meta["data"].cpu()
     raw_data = meta_data.clone().permute(0, 2, 3, 1).numpy()
@@ -70,26 +70,62 @@ def visualize_das_train(meta, preds, epoch, figure_dir="figures"):
         vmax = np.std(raw_data[i]) * 2
         vmin = -vmax
 
-        fig, ax = plt.subplots(2, 2, figsize=(12, 12), sharex=False, sharey=False)
-        ax[0, 0].imshow(
+        fig, ax = plt.subplots(1, 3, figsize=(3 * 3, 3), sharex=False, sharey=False)
+        ax[0].imshow(
             (raw_data[i] - np.mean(raw_data[i])),
             vmin=raw_vmin,
             vmax=raw_vmax,
+            extent=(0, raw_data[i].shape[1] * dx / 1e3, raw_data[i].shape[0] * dt, 0),
             interpolation="none",
             cmap="seismic",
             aspect="auto",
         )
+        ax[0].set_xlabel("Distance (km)")
+        ax[0].set_ylabel("Time (s)")
+        ax[0].set_title("DAS Data")
         # ax[1, 0].imshow((data[i]-np.mean(data[i])), vmin=vmin, vmax=vmax, interpolation='none', cmap="seismic", aspect='auto')
-        ax[0, 1].imshow(y[i], vmin=0, vmax=1, interpolation="none", aspect="auto")
-        ax[1, 1].imshow(targets[i], vmin=0, vmax=1, interpolation="none", aspect="auto")
+
+        targets[i][:, :, 1] = 1 - targets[i][:, :, 1]
+        targets[i][:, :, 2] = 1 - targets[i][:, :, 2]
+        print(targets[i].shape)
+        print((targets[i][:, :, 0] == 0).all(axis=1).shape)
+        targets[i][:, (targets[i][:, :, 0] == 0).all(axis=0), :] = 0
+        ax[1].imshow(
+            targets[i][:, :, [1, 0, 2]],
+            vmin=0,
+            vmax=1,
+            extent=(0, targets[i].shape[1] * dx / 1e3, targets[i].shape[0] * dt, 0),
+            interpolation="none",
+            aspect="auto",
+        )
+        ax[1].set_xlabel("Distance (km)")
+        ax[1].set_title("Noisy Label")
+        ax[1].set_ylabel("Time (s)")
         # ax[0, 1].imshow(y[i], interpolation='none', aspect='auto')
-        # ax[1, 1].imshow(targets[i], interpolation='none', aspect='auto')
+
+        # y[i][:, :, 0] = 0
+        y[i][:, :, 1] = 1 - y[i][:, :, 1]
+        y[i][:, :, 2] = 1 - y[i][:, :, 2]
+        y[i][:, (y[i][:, :, 0] == 0).all(axis=0), :] = 0
+        ax[2].imshow(
+            y[i][:, :, [1, 0, 2]],
+            vmin=0,
+            vmax=1,
+            extent=(0, y[i].shape[1] * dx / 1e3, y[i].shape[0] * dt, 0),
+            interpolation="none",
+            aspect="auto",
+        )
+        ax[2].set_xlabel("Distance (km)")
+        ax[2].set_ylabel("Time (s)")
+        ax[2].set_title("Prediction")
+
+        fig.tight_layout()
 
         if "LOCAL_RANK" in os.environ:
             local_rank = int(os.environ["LOCAL_RANK"])
-            fig.savefig(f"{figure_dir}/{epoch:02d}_{i:02d}_{local_rank}.png", dpi=300)
+            fig.savefig(f"{figure_dir}/{epoch:02d}_{i:02d}_{local_rank}.png", dpi=300, bbox_inches="tight")
         else:
-            fig.savefig(f"{figure_dir}/{epoch:02d}_{i:02d}.png", dpi=300)
+            fig.savefig(f"{figure_dir}/{epoch:02d}_{i:02d}.png", dpi=300, bbox_inches="tight")
 
         plt.close(fig)
 
