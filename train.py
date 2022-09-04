@@ -205,7 +205,8 @@ def main(args):
         dataset_test = dataset
         test_sampler = None
     elif args.model == "phasenet":
-        dataset = SeismicTraceIterableDataset("datasets/NCEDC/ncedc_seismic_dataset_3.h5")
+        # dataset = SeismicTraceIterableDataset("datasets/NCEDC/ncedc_seismic_dataset_3.h5")
+        dataset = SeismicTraceIterableDataset(args.dataset)
         train_sampler = None
         dataset_test = dataset
         test_sampler = None

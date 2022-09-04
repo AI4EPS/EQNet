@@ -42,12 +42,12 @@ with h5py.File(h5_file, "r") as fp_in:
             group = fp_out.create_group(f"{event_id:06d}")
             group.attrs["event_id"] = event_id
             group.attrs["event_time"] = event_time.isoformat(timespec="milliseconds")
-            group.attrs["event_time_index"] = event_time_index
-            group.attrs["event_latitude"] = event_latitude
-            group.attrs["event_longitude"] = event_longitude
-            group.attrs["event_depth_km"] = event_depth_km
-            group.attrs["event_magnitude"] = event["magnitude"]
-            group.attrs["event_magnitude_type"] = event["magnitude_type"]
+            group.attrs["time_index"] = event_time_index
+            group.attrs["latitude"] = event_latitude
+            group.attrs["longitude"] = event_longitude
+            group.attrs["depth_km"] = event_depth_km
+            group.attrs["magnitude"] = event["magnitude"]
+            group.attrs["magnitude_type"] = event["magnitude_type"]
 
             for j, (_, phase) in enumerate(phase_csv.loc[[event["index"]]].iterrows()):
 
@@ -106,9 +106,9 @@ with h5py.File(h5_file, "r") as fp_in:
                 attrs["first_motion"] = first_motion
                 attrs["emergence_angle"] = emergence_angle
                 attrs["station_id"] = station_id
-                attrs["station_latitude"] = station_latitude
-                attrs["station_longitude"] = station_longitude
-                attrs["station_elevation_km"] = station_elevation_m / 1e3
+                attrs["latitude"] = station_latitude
+                attrs["longitude"] = station_longitude
+                attrs["elevation_m"] = station_elevation_m
                 attrs["dt_s"] = dt_s
                 attrs["unit"] = "u" + unit
                 attrs["snr"] = snr
