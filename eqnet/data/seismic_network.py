@@ -65,23 +65,25 @@ class SeismicNetworkIterableDataset(IterableDataset):
             station_location = np.zeros([len(station_ids), 2])
 
             for i, sta_id in enumerate(station_ids):
-                
-                if self.hdf5_fp[event_id+'/'+sta_id][()].shape != (9000, 3):
+
+                trace_id = event_id+'/'+sta_id
+
+                if self.hdf5_fp[trace_id][()].shape != (9000, 3):
                     continue
 
-                waveforms[:, :, i] = self.hdf5_fp[event_id+'/'+sta_id][:self.nt,:].T
-                attrs = self.hdf5_fp[event_id+'/'+sta_id].attrs
+                waveforms[:, :, i] = self.hdf5_fp[trace_id][:self.nt,:].T
+                attrs = self.hdf5_fp[trace_id].attrs
                 p_picks = attrs["phase_index"][attrs["phase_type"] == "P"]
                 s_picks = attrs["phase_index"][attrs["phase_type"] == "S"]
                 phase_pick[:, :, i] = generate_label([p_picks, s_picks], nt=self.nt)
 
                 ## TODO: how to deal with multiple phases
-                # center = (self.hdf5_fp[event_id+'/'+sta_id].attrs["phase_index"][::2] + self.hdf5_fp[event_id+'/'+sta_id].attrs["phase_index"][1::2])/2.0
+                # center = (self.hdf5_fp[trace_id].attrs["phase_index"][::2] + self.hdf5_fp[trace_id].attrs["phase_index"][1::2])/2.0
                 ## assuming only one event with both P and S picks
-                c0 = np.mean(self.hdf5_fp[event_id+'/'+sta_id].attrs["phase_index"]).item()
-                dx = round((self.hdf5_fp[event_id].attrs["event_longitude"] - self.hdf5_fp[event_id+'/'+sta_id].attrs["station_longitude"]) * np.cos(np.radians(self.hdf5_fp[event_id].attrs["event_latitude"])) * self.degree2km, 2)
-                dy = round((self.hdf5_fp[event_id].attrs["event_latitude"] - self.hdf5_fp[event_id+'/'+sta_id].attrs["station_latitude"]) * self.degree2km, 2)
-                dz = round(self.hdf5_fp[event_id].attrs["event_depth_km"] + self.hdf5_fp[event_id+'/'+sta_id].attrs["station_elevation_m"]/1e3, 2)
+                c0 = np.mean(self.hdf5_fp[trace_id].attrs["phase_index"]).item()
+                dx = round((self.hdf5_fp[event_id].attrs["event_longitude"] - self.hdf5_fp[trace_id].attrs["station_longitude"]) * np.cos(np.radians(self.hdf5_fp[event_id].attrs["event_latitude"])) * self.degree2km, 2)
+                dy = round((self.hdf5_fp[event_id].attrs["event_latitude"] - self.hdf5_fp[trace_id].attrs["station_latitude"]) * self.degree2km, 2)
+                dz = round(self.hdf5_fp[event_id].attrs["event_depth_km"] + self.hdf5_fp[trace_id].attrs["station_elevation_m"]/1e3, 2)
                 # dt = (c0 - self.hdf5_fp[event_id].attrs["event_time_index"]) / self.sampling_rate
                 # dt = (c0 - 3000) / self.sampling_rate
 
@@ -94,9 +96,9 @@ class SeismicNetworkIterableDataset(IterableDataset):
                 event_location_mask[:, i] = mask
 
                 ## station location
-                station_location[i, 0] = round(self.hdf5_fp[event_id+'/'+sta_id].attrs["station_longitude"] 
-                                                * np.cos(np.radians(self.hdf5_fp[event_id+'/'+sta_id].attrs["station_latitude"])) * self.degree2km, 2)
-                station_location[i, 1] = round(self.hdf5_fp[event_id+'/'+sta_id].attrs["station_latitude"] * self.degree2km, 2)
+                station_location[i, 0] = round(self.hdf5_fp[trace_id].attrs["station_longitude"] 
+                                                * np.cos(np.radians(self.hdf5_fp[trace_id].attrs["station_latitude"])) * self.degree2km, 2)
+                station_location[i, 1] = round(self.hdf5_fp[trace_id].attrs["station_latitude"] * self.degree2km, 2)
 
             std = np.std(waveforms, axis=1, keepdims=True)
             std[std == 0] = 1.0
