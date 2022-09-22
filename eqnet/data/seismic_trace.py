@@ -83,109 +83,6 @@ class SeismicTraceIterableDataset(IterableDataset):
     def __len__(self):
         return len(self.trace_ids)
 
-    def _read_training_h5(self, trace_id):
-
-        event_id, sta_id = trace_id.split("/")
-
-        waveform = self.hdf5_fp[trace_id][:, :].T  # [3, Nt]
-        nt = waveform.shape[1]
-
-        ## P/S picks
-        attrs = self.hdf5_fp[trace_id].attrs
-        p_picks = attrs["phase_index"][attrs["phase_type"] == "P"]
-        s_picks = attrs["phase_index"][attrs["phase_type"] == "S"]
-        if len(p_picks) != len(s_picks):
-            print(f"picks not match, {trace_id}: {len(p_picks)}, {len(s_picks)}")
-
-        ## TODO: remove this part
-        if len(p_picks) == 0:
-            p_picks = [0]
-        if len(s_picks) == 0:
-            s_picks = [0]
-
-        phase_pick = generate_label(
-            [p_picks, s_picks],
-            # label_width=[100, 100],
-            nt=nt,
-        )
-        waveform_mask = np.zeros(nt, dtype=np.int32)
-        waveform_mask[min(p_picks) - 1 * self.sampling_rate : max(s_picks) + 1 * self.sampling_rate] = 1
-
-        ## P/S center time
-        ## TODO: how to deal with multiple phases
-        ## center = (self.hdf5_fp[event_id+'/'+sta_id].attrs["phase_index"][::2] + self.hdf5_fp[event_id+'/'+sta_id].attrs["phase_index"][1::2])/2.0
-        ## assuming only one event with both P and S picks
-        c0 = np.mean(self.hdf5_fp[trace_id].attrs["phase_index"]).item()
-        center_heatmap = generate_label(
-            [
-                [c0],
-            ],
-            # label_width=[
-            #     # 10 * self.feature_scale,
-            #     100
-            # ],
-            nt=nt,
-        )[1, :]
-
-        ## station location
-        station_location = np.array(
-            [
-                round(
-                    self.hdf5_fp[trace_id].attrs["station_longitude"]
-                    * np.cos(np.radians(self.hdf5_fp[trace_id].attrs["station_latitude"]))
-                    * self.degree2km,
-                    2,
-                ),
-                round(self.hdf5_fp[trace_id].attrs["station_latitude"] * self.degree2km, 2),
-                round(self.hdf5_fp[trace_id].attrs["station_elevation_m"], 2),
-            ]
-        )
-
-        ## event location
-        dx = round(
-            (self.hdf5_fp[event_id].attrs["event_longitude"] - self.hdf5_fp[trace_id].attrs["station_longitude"])
-            * np.cos(np.radians(self.hdf5_fp[event_id].attrs["event_latitude"]))
-            * self.degree2km,
-            2,
-        )
-        dy = round(
-            (self.hdf5_fp[event_id].attrs["event_latitude"] - self.hdf5_fp[trace_id].attrs["station_latitude"])
-            * self.degree2km,
-            2,
-        )
-        dz = round(
-            self.hdf5_fp[event_id].attrs["event_depth_km"] + self.hdf5_fp[trace_id].attrs["station_elevation_m"],
-            2,
-        )
-        mask = center_heatmap >= 0.5
-        event_location = np.zeros([4, nt], dtype=np.float32)
-        # event_location[0, :] = (np.arange(nt) - self.hdf5_fp[event_id].attrs["event_time_index"])
-        event_location[0, :] = np.arange(nt) - 3000
-        event_location[1:, mask] = np.array([dx, dy, dz])[:, np.newaxis]
-        event_location_mask = mask
-
-        # return {
-        #     "waveform": torch.from_numpy(waveform).float(),
-        #     "waveform_mask": torch.from_numpy(waveform_mask).float(),
-        #     "phase_pick": torch.from_numpy(phase_pick).float(),
-        #     "center_heatmap": torch.from_numpy(center_heatmap).float(),
-        #     "station_location": torch.from_numpy(station_location).float(),
-        #     "event_location": torch.from_numpy(event_location).float(),
-        #     "waveform_mask": torch.from_numpy(waveform_mask).float(),
-        #     "event_location_mask": torch.from_numpy(event_location_mask).float(),
-        # }
-
-        return {
-            "waveform": waveform[:, :, np.newaxis],
-            "waveform_mask": waveform_mask[:, np.newaxis],
-            "phase_pick": phase_pick[:, :, np.newaxis],
-            "center_heatmap": center_heatmap[:, np.newaxis],
-            "station_location": station_location[:, np.newaxis],
-            "event_location": event_location[:, :, np.newaxis],
-            "waveform_mask": waveform_mask[:, np.newaxis],
-            "event_location_mask": event_location_mask[:, np.newaxis],
-        }
-
     # def _read_training_h5(self, trace_id):
 
     #     event_id, sta_id = trace_id.split("/")
@@ -197,6 +94,15 @@ class SeismicTraceIterableDataset(IterableDataset):
     #     attrs = self.hdf5_fp[trace_id].attrs
     #     p_picks = attrs["phase_index"][attrs["phase_type"] == "P"]
     #     s_picks = attrs["phase_index"][attrs["phase_type"] == "S"]
+    #     if len(p_picks) != len(s_picks):
+    #         print(f"picks not match, {trace_id}: {len(p_picks)}, {len(s_picks)}")
+
+    #     ## TODO: remove this part
+    #     if len(p_picks) == 0:
+    #         p_picks = [0]
+    #     if len(s_picks) == 0:
+    #         s_picks = [0]
+
     #     phase_pick = generate_label(
     #         [p_picks, s_picks],
     #         # label_width=[100, 100],
@@ -279,6 +185,103 @@ class SeismicTraceIterableDataset(IterableDataset):
     #         "event_location_mask": event_location_mask[:, np.newaxis],
     #     }
 
+    def _read_training_h5(self, trace_id):
+
+        event_id, sta_id = trace_id.split("/")
+
+        waveform = self.hdf5_fp[trace_id][:, :].T  # [3, Nt]
+        nt = waveform.shape[1]
+
+        ## P/S picks
+        attrs = self.hdf5_fp[trace_id].attrs
+        p_picks = attrs["phase_index"][attrs["phase_type"] == "P"]
+        s_picks = attrs["phase_index"][attrs["phase_type"] == "S"]
+        phase_pick = generate_label(
+            [p_picks, s_picks],
+            # label_width=[100, 100],
+            nt=nt,
+        )
+        waveform_mask = np.zeros(nt, dtype=np.int32)
+        waveform_mask[min(p_picks) - 1 * self.sampling_rate : max(s_picks) + 1 * self.sampling_rate] = 1
+
+        ## P/S center time
+        ## TODO: how to deal with multiple phases
+        ## center = (self.hdf5_fp[event_id+'/'+sta_id].attrs["phase_index"][::2] + self.hdf5_fp[event_id+'/'+sta_id].attrs["phase_index"][1::2])/2.0
+        ## assuming only one event with both P and S picks
+        # c0 = np.mean(self.hdf5_fp[trace_id].attrs["phase_index"]).item()
+        c0 = (
+            (self.hdf5_fp[trace_id].attrs["phase_index"][attrs["phase_type"] == "P"])
+            + (self.hdf5_fp[trace_id].attrs["phase_index"][attrs["phase_type"] == "S"])
+        ) / 2.0
+        center_heatmap = generate_label(
+            [
+                c0,
+            ],
+            # label_width=[
+            #     # 10 * self.feature_scale,
+            #     300
+            # ],
+            nt=nt,
+        )[1, :]
+
+        ## station location
+        station_location = np.array(
+            [
+                round(
+                    self.hdf5_fp[trace_id].attrs["longitude"]
+                    * np.cos(np.radians(self.hdf5_fp[trace_id].attrs["latitude"]))
+                    * self.degree2km,
+                    2,
+                ),
+                round(self.hdf5_fp[trace_id].attrs["latitude"] * self.degree2km, 2),
+                round(self.hdf5_fp[trace_id].attrs["elevation_m"], 2),
+            ]
+        )
+
+        ## event location
+        dx = round(
+            (self.hdf5_fp[event_id].attrs["longitude"] - self.hdf5_fp[trace_id].attrs["longitude"])
+            * np.cos(np.radians(self.hdf5_fp[event_id].attrs["latitude"]))
+            * self.degree2km,
+            2,
+        )
+        dy = round(
+            (self.hdf5_fp[event_id].attrs["latitude"] - self.hdf5_fp[trace_id].attrs["latitude"]) * self.degree2km,
+            2,
+        )
+        dz = round(
+            self.hdf5_fp[event_id].attrs["depth_km"] + self.hdf5_fp[trace_id].attrs["elevation_m"] / 1e3,
+            2,
+        )
+        mask = center_heatmap >= 0.5
+        event_location = np.zeros([4, nt], dtype=np.float32)
+        event_location[0, :] = np.arange(nt) - self.hdf5_fp[event_id].attrs["time_index"]
+        # event_location[0, :] = np.arange(nt) - 3000
+        event_location[1:, mask] = np.array([dx, dy, dz])[:, np.newaxis]
+        event_location_mask = mask
+
+        # return {
+        #     "waveform": torch.from_numpy(waveform).float(),
+        #     "waveform_mask": torch.from_numpy(waveform_mask).float(),
+        #     "phase_pick": torch.from_numpy(phase_pick).float(),
+        #     "center_heatmap": torch.from_numpy(center_heatmap).float(),
+        #     "station_location": torch.from_numpy(station_location).float(),
+        #     "event_location": torch.from_numpy(event_location).float(),
+        #     "waveform_mask": torch.from_numpy(waveform_mask).float(),
+        #     "event_location_mask": torch.from_numpy(event_location_mask).float(),
+        # }
+
+        return {
+            "waveform": waveform[:, :, np.newaxis],
+            "waveform_mask": waveform_mask[:, np.newaxis],
+            "phase_pick": phase_pick[:, :, np.newaxis],
+            "center_heatmap": center_heatmap[:, np.newaxis],
+            "station_location": station_location[:, np.newaxis],
+            "event_location": event_location[:, :, np.newaxis],
+            "waveform_mask": waveform_mask[:, np.newaxis],
+            "event_location_mask": event_location_mask[:, np.newaxis],
+        }
+
     def sample(self, trace_ids):
 
         while True:
@@ -289,8 +292,9 @@ class SeismicTraceIterableDataset(IterableDataset):
             data = self._read_training_h5(trace_id)
 
             # print(data["waveform"].shape)
-            if data["waveform"].shape[1] != 9001:
-                continue
+            # if data["waveform"].shape[1] != 9001:
+            #     print(data["waveform"].shape)
+            #     continue
 
             # print(data["waveform"].shape)
             data = cut_data(data)
@@ -312,7 +316,7 @@ class SeismicTraceIterableDataset(IterableDataset):
             std[std == 0] = 1.0
             waveform = (waveform - np.mean(waveform, axis=1, keepdims=True)) / std
             phase_pick = data["phase_pick"]
-            center_heatmap = data["center_heatmap"][:: self.feature_scale]
+            center_heatmap = data["center_heatmap"][np.newaxis, :: self.feature_scale]
             event_location = data["event_location"][:, :: self.feature_scale]
             event_location_mask = data["event_location_mask"][:: self.feature_scale]
             station_location = data["station_location"]

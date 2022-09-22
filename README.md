@@ -15,6 +15,21 @@ python train.py --output-dir output
 torchrun --standalone --nproc_per_node=4 train.py --output-dir output
 ```
 
+### Training PhaseNet
+```
+python train.py --model=phasenet --backbone=resnet50 --output-dir result_phasenet
+```
+
+### Training EQNet
+```
+python train.py --model=eqnet --backbone=resnet50 --output-dir result_eqnet
+```
+
+### Training DeepDenoiser
+### Training PhaseNet-DAS
+### Training AutoEncoder
+
+
 ## Prediction
 
 - Using the pretrained model on default

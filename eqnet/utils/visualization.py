@@ -132,17 +132,24 @@ def visualize_das_train(meta, preds, epoch, figure_dir="figures", dt=0.01, dx=10
 
 def visualize_phasenet_train(meta, phase, event, epoch, figure_dir="figures"):
 
+    # print(f"{meta['waveform'].shape =}")
+    # print(f"{meta['phase_pick'].shape =}")
+    # print(f"{meta['center_heatmap'].shape =}")
+    # print(f"{phase.shape =}")
+    # print(f"{event.shape =}")
+
     for i in range(meta["waveform"].shape[0]):
         plt.close("all")
         fig, axes = plt.subplots(3, 1, figsize=(10, 10))
-        axes[0].plot((meta["waveform"][i, -1, :]) / torch.std(meta["waveform"][i, -1, :]))
-        axes[1].plot(phase[i, 1, :], "r")
-        axes[1].plot(phase[i, 2, :], "b")
-        axes[1].plot(meta["phase_pick"][i, 1, :], "--C3")
-        axes[1].plot(meta["phase_pick"][i, 2, :], "--C0")
+        axes[0].plot((meta["waveform"][i, -1, :, 0]) / torch.std(meta["waveform"][i, -1, :]))
 
-        axes[2].plot(event[i, :], "b")
-        axes[2].plot(meta["center_heatmap"][i, :], "--C0")
+        axes[1].plot(phase[i, 1, :, 0], "r")
+        axes[1].plot(phase[i, 2, :, 0], "b")
+        axes[1].plot(meta["phase_pick"][i, 1, :, 0], "--C3")
+        axes[1].plot(meta["phase_pick"][i, 2, :, 0], "--C0")
+
+        axes[2].plot(event[i, 0, :, 0], "b")
+        axes[2].plot(meta["center_heatmap"][i, 0, :, 0], "--C0")
 
         if "LOCAL_RANK" in os.environ:
             local_rank = int(os.environ["LOCAL_RANK"])
