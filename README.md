@@ -17,7 +17,7 @@ torchrun --standalone --nproc_per_node=4 train.py --output-dir output
 
 ### Training PhaseNet
 ```
-python train.py --model=phasenet --backbone=resnet50 --output-dir result_phasenet
+python train.py --model=phasenet --backbone=resnet50 --dataset=/atomic-data/poggiali/test1.h5 --output-dir result_phasenet
 ```
 
 ### Training EQNet
