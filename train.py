@@ -104,8 +104,8 @@ def train_one_epoch(
 
         i += 1
         # if i > len(data_loader):
-        # if i > 200:
-        #     break
+        if i > 200:
+            break
         if i > iters_per_epoch:
             break
         # break
@@ -200,12 +200,11 @@ def main(args):
         dataset_test = dataset
         test_sampler = None
     elif args.model == "eqnet":
-        dataset = SeismicNetworkIterableDataset("datasets/NCEDC/ncedc_seismic_dataset.h5")
+        dataset = SeismicNetworkIterableDataset(args.dataset)
         train_sampler = None
         dataset_test = dataset
         test_sampler = None
     elif args.model == "phasenet":
-        # dataset = SeismicTraceIterableDataset("datasets/NCEDC/ncedc_seismic_dataset_3.h5")
         dataset = SeismicTraceIterableDataset(args.dataset)
         train_sampler = None
         dataset_test = dataset

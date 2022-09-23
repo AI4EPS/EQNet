@@ -57,17 +57,18 @@ class SeismicTraceIterableDataset(IterableDataset):
     feature_scale = 16
     feature_nt = nt // feature_scale
 
-    def __init__(self, hdf5_file="ncedc_event.h5", trace_ids="trace_ids_poggiali.txt", sampling_rate=100):
+    def __init__(self, hdf5_file="ncedc_event.h5", trace_ids=None, sampling_rate=100):
         super().__init__()
         fp = h5py.File(hdf5_file, "r")
         self.hdf5_fp = fp
-        if trace_ids is None:
+        tmp_hdf5_keys = f"/tmp/{hdf5_file.split('/')[-1]}.txt"
+        if not os.path.exists(tmp_hdf5_keys):
             self.trace_ids = [event + "/" + station for event in fp.keys() for station in list(fp[event].keys())]
-            with open("trace_ids.txt", "w") as f:
+            with open(tmp_hdf5_keys, "w") as f:
                 for x in self.trace_ids:
                     f.write(x + "\n")
         else:
-            self.trace_ids = pd.read_csv(trace_ids, header=None, names=["trace_id"])["trace_id"].values.tolist()
+            self.trace_ids = pd.read_csv(tmp_hdf5_keys, header=None, names=["trace_id"])["trace_id"].values.tolist()
         self.sampling_rate = sampling_rate
 
     def __iter__(self):
