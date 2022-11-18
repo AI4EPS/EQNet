@@ -1,6 +1,7 @@
 import os
 
 import h5py
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
@@ -45,8 +46,9 @@ def cut_data(data, nt=4096):
         "center_heatmap": data["center_heatmap"][it0 : it0 + nt, :].copy(),
         "station_location": data["station_location"],
         "event_location": data["event_location"][:, it0 : it0 + nt, :].copy(),
-        "waveform_mask": data["waveform_mask"][it0 : it0 + nt, :].copy(),
         "event_location_mask": data["event_location_mask"][it0 : it0 + nt, :].copy(),
+        "polarity": data["polarity"][it0 : it0 + nt, :].copy(),
+        "polarity_mask": data["polarity_mask"][it0 : it0 + nt, :].copy(),
     }
 
 
@@ -202,6 +204,36 @@ class SeismicTraceIterableDataset(IterableDataset):
             # label_width=[100, 100],
             nt=nt,
         )
+
+        ## polarity
+        first_motion = attrs["first_motion"]
+        polarity = generate_label(
+            [p_picks],
+            label_width=[200],
+            nt=nt,
+        )[1, :]
+        if first_motion == "U":
+            polarity[polarity < 0.5] = 0.5
+        elif first_motion == "D":
+            polarity = 1.0 - polarity
+            polarity[polarity > 0.5] = 0.5
+        polarity_mask = np.zeros_like(polarity)
+        i = np.random.randint(0, len(polarity_mask))
+        polarity_mask[i : i + 5 * self.sampling_rate] = 1.0
+        for p in p_picks:
+            polarity_mask[p - 1 * self.sampling_rate : p + 1 * self.sampling_rate] = 1.0
+        # # polarity_mask[polarity != 0.5] = 1.0
+        # for p, s in zip(p_picks, s_picks):
+        #     try:
+        #         assert s > p
+        #     except:
+        #         print(p_picks, s_picks)
+        #         # plt.figure()
+        #         # plt.plot(waveform[-1, :])
+        #         # plt.savefig("debug.png")
+        #     width = min(s - p, 1 * self.sampling_rate)
+        #     polarity_mask[p - width : p + width] = 1.0
+
         waveform_mask = np.zeros(nt, dtype=np.int32)
         waveform_mask[min(p_picks) - 1 * self.sampling_rate : max(s_picks) + 1 * self.sampling_rate] = 1
 
@@ -215,9 +247,7 @@ class SeismicTraceIterableDataset(IterableDataset):
             + (self.hdf5_fp[trace_id].attrs["phase_index"][attrs["phase_type"] == "S"])
         ) / 2.0
         center_heatmap = generate_label(
-            [
-                c0,
-            ],
+            [c0],
             # label_width=[
             #     # 10 * self.feature_scale,
             #     300
@@ -279,8 +309,9 @@ class SeismicTraceIterableDataset(IterableDataset):
             "center_heatmap": center_heatmap[:, np.newaxis],
             "station_location": station_location[:, np.newaxis],
             "event_location": event_location[:, :, np.newaxis],
-            "waveform_mask": waveform_mask[:, np.newaxis],
             "event_location_mask": event_location_mask[:, np.newaxis],
+            "polarity": polarity[:, np.newaxis],
+            "polarity_mask": polarity_mask[:, np.newaxis],
         }
 
     def sample(self, trace_ids):
@@ -318,6 +349,8 @@ class SeismicTraceIterableDataset(IterableDataset):
             waveform = (waveform - np.mean(waveform, axis=1, keepdims=True)) / std
             phase_pick = data["phase_pick"]
             center_heatmap = data["center_heatmap"][np.newaxis, :: self.feature_scale]
+            polarity = data["polarity"][np.newaxis, ::]
+            polarity_mask = data["polarity_mask"][np.newaxis, ::]
             event_location = data["event_location"][:, :: self.feature_scale]
             event_location_mask = data["event_location_mask"][:: self.feature_scale]
             station_location = data["station_location"]
@@ -329,6 +362,8 @@ class SeismicTraceIterableDataset(IterableDataset):
                 "event_location": torch.from_numpy(event_location).float(),
                 "event_location_mask": torch.from_numpy(event_location_mask).float(),
                 "station_location": torch.from_numpy(station_location).float(),
+                "polarity": torch.from_numpy(polarity).float(),
+                "polarity_mask": torch.from_numpy(polarity_mask).float(),
             }
 
 

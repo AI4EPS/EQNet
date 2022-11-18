@@ -3,7 +3,6 @@ from datetime import datetime, timedelta
 from glob import glob
 
 import h5py
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import scipy
@@ -30,31 +29,14 @@ def normalize(data):
     return data.float()
 
 
-# def normalize_numpy(data):
-#     """
-#     data: [Nch, Nt, Nsta] (Nchn: number of channels, Nt: number of time, Nsta: number of stations)
-#     """
-#     data = data.astype(np.float64)
-#     mean = np.mean(data, axis=(1), keepdims=True)
-#     std = np.std(data, axis=(1), keepdims=True)
-#     data = (data - mean) / std
-#     return data.astype(np.float32)
-
-
 def normalize_local_1d(data, window=1024 + 1):
     nch, nt, nsta = data.shape
     data = data.permute((2, 0, 1))
     with torch.no_grad():
         data_ = F.pad(data, (window // 2, window // 2), mode="circular")
-        # mean_pool = F.avg_pool1d(data_, kernel_size=window, stride=window // 2)
-        # mean = F.interpolate(mean_pool, size=nt, align_corners=True, mode="linear")
         mean = F.avg_pool1d(data_, kernel_size=window, stride=1)
         data -= mean
         data_ = F.pad(data, (window // 2, window // 2), mode="circular")
-        # std_pool = F.lp_pool1d(
-        #     data_, norm_type=2, kernel_size=window, stride=window // 2
-        # ) / (window ** 0.5)
-        # std = F.interpolate(std_pool, size=nt, align_corners=True, mode="linear")
         std = F.lp_pool1d(data_, norm_type=2, kernel_size=window, stride=1) / (window**0.5)
         data /= std
         data = log_transform(data)
@@ -68,21 +50,9 @@ def normalize_local(data, window=1024 + 1):
     data = data.unsqueeze(0)  # batch, nsta, nch, nt
     with torch.no_grad():
         data_ = F.pad(data, (window // 2, window // 2, 0, 0), mode="circular")
-        # mean_pool = F.avg_pool2d(
-        #     data_, kernel_size=(nch, window), stride=(1, window // 2)
-        # )
-        # mean = F.interpolate(
-        #     mean_pool, size=(nch, nt), align_corners=True, mode="bilinear"
-        # )
         mean = F.avg_pool2d(data_, kernel_size=(nch, window), stride=(1, 1))
         data -= mean
         data_ = F.pad(data, (window // 2, window // 2, 0, 0), mode="circular")
-        # std_pool = F.lp_pool2d(
-        #     data_, norm_type=2, kernel_size=(nch, window), stride=(1, window // 2)
-        # ) / ((window * nch) ** 0.5)
-        # std = F.interpolate(
-        #     std_pool, size=(nch, nt), align_corners=True, mode="bilinear"
-        # )
         std = F.lp_pool2d(data_, norm_type=2, kernel_size=(nch, window), stride=(1, 1)) / ((window * nch) ** 0.5)
         data /= std
         data = log_transform(data)
@@ -346,46 +316,54 @@ class DASIterableDataset(IterableDataset):
     def __init__(
         self,
         data_path="./",
-        noise_path=None,
-        label_path=None,
-        format="npz",
+        data_list=None,
+        format="h5",
         prefix="",
         suffix="",
+        ## training
         training=False,
+        picks=["p_picks", "s_picks"],
+        noise_path=None,
+        label_path=None,
         stack_noise=True,
         add_moveout=True,
         stack_event=True,
-        picks=["p_picks", "s_picks"],
         filtering=False,
-        # filter_params={"freqmin": 0.1, "freqmax": 10.0, "corners": 4, "zerophase": True},
-        update_total_number=False,
-        dataset="",
+        filter_params={"freqmin": 0.1, "freqmax": 10.0, "corners": 4, "zerophase": True},
+        ## continuous data
+        dataset="mammoth",  # "eqnet" or "mammoth"
+        cut_patch=False,
+        skip_files=None,
+        rank=0,
+        world_size=1,
         **kwargs,
     ):
         super().__init__()
         self.data_path = data_path
-        self.noise_path = noise_path
-        self.label_path = label_path
         self.format = format
-        self.training = training
         self.prefix = prefix
         self.suffix = suffix
+        if data_list is not None:
+            self.data_list = np.loadtxt(data_list, dtype=str).tolist()
+        else:
+            self.data_list = [os.path.basename(x) for x in sorted(list(glob(os.path.join(data_path, f"{prefix}*{suffix}.{format}"))))]
+        if skip_files is not None:
+            self.data_list = self.filt_list(self.data_list, kwargs["skip_files"])
+        self.data_list = self.data_list[rank::world_size]
+
+        ## continuous data
+        self.dataset = dataset
+        self.cut_patch = cut_patch
+        self.dt = kwargs["dt"] if "dt" in kwargs else 0.01  # s
+        self.dx = kwargs["dx"] if "dx" in kwargs else 10.0  # m
+        self.nt = kwargs["nt"] if "nt" in kwargs else 1024 * 3
+        self.nx = kwargs["nx"] if "nx" in kwargs else 1024 * 3
+
+        ## training and data augmentation
+        self.training = training
         self.picks = picks
-        self.stack_noise = stack_noise
-        self.stack_event = stack_event
-        self.add_moveout = add_moveout
-        self.data_list = sorted(list(glob(os.path.join(data_path, f"{prefix}*{suffix}.{format}"))))
-        if "skip_files" in kwargs:
-            self.skip_data_list = [
-                os.path.splitext(x.split("/")[-1])[0] for x in sorted(list(glob(kwargs["skip_files"])))
-            ]
-            print("Total number of files:", len(self.data_list))
-            self.data_list = [
-                x for x in self.data_list if os.path.splitext(x.split("/")[-1])[0] not in self.skip_data_list
-            ]
-            print("Total number of files without skipped:", len(self.data_list))
-        if ("rank" in kwargs) and ("world_size" in kwargs):
-            self.data_list = self.data_list[kwargs["rank"] :: kwargs["world_size"]]
+        self.noise_path = noise_path
+        self.label_path = label_path
         if label_path is not None:
             if type(label_path) is list:
                 self.label_list = []
@@ -395,124 +373,170 @@ class DASIterableDataset(IterableDataset):
                 self.label_list = sorted(glob(os.path.join(label_path, f"{prefix}*{suffix}.csv")))
         else:
             self.label_list = None
-        print(os.path.join(data_path, f"{prefix}*{suffix}.{format}"), len(self.data_list))
+        self.min_picks = kwargs["min_picks"] if "min_picks" in kwargs else 500
         if self.noise_path is not None:
             self.noise_list = glob(os.path.join(noise_path, f"*.{format}"))
-        self.num_data = len(self.data_list)
-        self.min_picks = kwargs["min_picks"] if "min_picks" in kwargs else 500
-        self.dt = kwargs["dt"] if "dt" in kwargs else 0.01
-        self.dx = kwargs["dx"] if "dx" in kwargs else 10.0  # m
-        # self.nt = kwargs["nt"] if "nt" in kwargs else 2048
-        self.nt = kwargs["nt"] if "nt" in kwargs else 12000
-        self.nx = kwargs["nx"] if "nx" in kwargs else 1024
+        self.stack_noise = stack_noise
+        self.stack_event = stack_event
+        self.add_moveout = add_moveout
         self.filtering = filtering
-        self.dataset = dataset
-        if self.label_path is not None:
-            self.total_number = len(self.label_list)
-        else:
-            self.total_number = len(self.data_list)
-        if update_total_number:
-            self.total_number = self.update_total_number()
 
-    def update_total_number(self):
-        if self.format == "h5":
-            if self.dataset == "mammoth":
-                shape = h5py.File(self.data_list[0], "r")["Data"].shape[::-1]
-            else:
-                shape = h5py.File(self.data_list[0], "r")["data"].shape
-            total_number = len(self.data_list) * ((shape[0] + 512) // self.nt) * ((shape[1] + 512) // self.nx)
-            print(f"Update total number: file number = {len(self.data_list)}, sample number = {total_number}")
+        if self.training:
+            print(f"{label_path}: {len(self.label_list)} files")
         else:
-            total_number = len(self.data_list)
-        return total_number
+            print(os.path.join(data_path, f"{prefix}*{suffix}.{format}"), f": {len(self.data_list)} files")
+
+
+    def filt_list(self, data_list, skip_files):
+        skip_data_list = [
+            os.path.splitext(x.split("/")[-1])[0] for x in sorted(list(glob(skip_files)))
+        ]  ## merged picks
+        skip_data_list += [
+            "_".join(os.path.splitext(x.split("/")[-1])[0].split("_")[:-2]) for x in sorted(list(glob(skip_files)))
+        ]  ## raw picks
+        print("Total number of files:", len(data_list))
+        data_list = [x for x in data_list if os.path.splitext(x.split("/")[-1])[0] not in skip_data_list]
+        print("Remaining number for processing:", len(data_list))
+        return data_list
 
     def __len__(self):
-        return self.total_number
+
+        if self.training:
+            return len(self.label_list)
+
+        if not self.cut_patch:
+            return len(self.data_list)
+        else:
+            if self.dataset is None:
+                nt, nch = h5py.File(os.path.join(self.data_path, self.data_list[0]), "r")["data"].shape
+            elif self.dataset == "mammoth":
+                nch, nt = h5py.File(os.path.join(self.data_path, self.data_list[0]), "r")["Data"].shape
+            else:
+                raise ValueError("Unknown dataset")
+            return len(self.data_list) * ((nt - 1) // self.nt + 1) * ((nch - 1) // self.nx + 1)
+
 
     def __iter__(self):
         worker_info = torch.utils.data.get_worker_info()
         print(f"{worker_info = }")
-        # raise
         if worker_info is None:
-            if self.label_list is None:
-                data_list = self.data_list
-            else:
-                data_list = self.label_list
+            num_workers = 1
+            worker_id = 0
         else:
             num_workers = worker_info.num_workers
             worker_id = worker_info.id
-            # num_workers = comm.get_world_size()
-            # worker_id = comm.get_local_rank()
-            if self.label_list is None:
-                data_list = self.data_list[worker_id::num_workers]
-            else:
-                data_list = self.label_list[worker_id::num_workers]
-        return iter(self.sample(data_list))
+
+        if self.training:
+            return iter(self.sample_training(self.label_list[worker_id::num_workers]))
+        else:
+            return iter(self.sample(self.data_list[worker_id::num_workers]))
+
+
+    def sample_training(self, file_list):
+
+        while True:
+
+            file = file_list[np.random.randint(0, len(file_list))]
+            picks = pd.read_csv(file)
+            meta = {}
+            meta["p_picks"] = picks[picks["phase_type"] == "P"][["channel_index", "phase_index"]].to_numpy()
+            meta["s_picks"] = picks[picks["phase_type"] == "S"][["channel_index", "phase_index"]].to_numpy()
+            if (len(meta["p_picks"]) < 500) or (len(meta["s_picks"]) < 500):
+                continue
+            tmp = file.split("/")
+            tmp[-2] = "data"
+            tmp[-1] = tmp[-1][:-4] + ".h5"  ## remove .csv
+            with h5py.File("/".join(tmp), "r") as f:
+                data = f["data"][()]
+                data = data[np.newaxis, :, :]  # nchn, nt, nsta
+                data = torch.from_numpy(data.astype(np.float32))
+
+            if self.stack_noise and (not self.noise_path):
+                tries = 0
+                max_tries = 10
+                while tries < max_tries:
+                    tmp_file = file_list[np.random.randint(0, len(file_list))]
+                    tmp_picks = pd.read_csv(tmp_file)
+                    if tmp_picks["phase_index"].min() < 3000:
+                        tries += 1
+                        continue
+                    tmp = tmp_file.split("/")
+                    tmp[-2] = "data"
+                    tmp[-1] = tmp[-1][:-4] + ".h5"  ## remove .csv
+                    with h5py.File("/".join(tmp), "r") as f:
+                        noise = f["data"][()]
+                        noise = noise[np.newaxis, :, :]  # nchn, nt, nsta
+                        noise = torch.from_numpy(noise.astype(np.float32))
+                    break
+                if tries >= max_tries:
+                    print(f"Failed to find noise file for {file}")
+                    noise = torch.zeros_like(data)
+
+            data = data - torch.mean(data, dim=1, keepdim=True)
+            data = data - torch.median(data, dim=2, keepdims=True)[0]
+
+            if self.stack_noise:
+                if torch.max(torch.abs(noise)) > 0:
+                    noise = normalize(noise)
+            picks = [meta[x] for x in self.picks]
+            targets = generate_label(data, picks)
+            targets = torch.from_numpy(targets)
+            snr = calc_snr(data, meta["p_picks"])
+            with_event = False
+            if (snr > 3) and (np.random.rand() < 0.3) and self.stack_event:
+                data, targets = stack_event(data, targets, data, targets, snr)
+                with_event = True
+            for ii in range(sum([len(x) for x in picks]) // self.min_picks * 10):
+                pre_nt = 255
+                data_, targets_ = cut_data(data, targets, pre_nt=pre_nt)
+                if data_ is None:
+                    continue
+                if (np.random.rand() < 0.5) and self.add_moveout:
+                    data_, targets_ = add_moveout(data_, targets_)
+                data_ = data_[:, pre_nt:, :]
+                targets_ = targets_[:, pre_nt:, :]
+                # if (snr > 10) and (np.random.rand() < 0.5):
+                if not with_event and self.stack_noise:
+                    noise_ = cut_noise(noise)
+                    data_ = stack_noise(data_, noise_, snr)
+                if np.random.rand() < 0.5:
+                    data_, targets_ = flip_lr(data_, targets_)
+
+                data_ = data_ - np.median(data_, axis=2, keepdims=True)
+
+                yield {
+                    "data": data_,
+                    "targets": targets_,
+                    "file_name": os.path.splitext(file.split("/")[-1])[0] + f"_{ii:02d}",
+                    "height": data_.shape[-2],
+                    "width": data_.shape[-1],
+                }
 
     def sample(self, file_list):
-        sample = {}
-        # for file in file_list:
-        idx = 0
-        while True:
-            if self.training:
-                file = file_list[np.random.randint(0, len(file_list))]
-            else:
-                if idx >= len(file_list):
-                    break
-                file = file_list[idx]
-                idx += 1
 
-            if self.training and (self.format == "h5"):
-                picks = pd.read_csv(file)
-                meta = {}
-                meta["p_picks"] = picks[picks["phase_type"] == "P"][["channel_index", "phase_index"]].to_numpy()
-                meta["s_picks"] = picks[picks["phase_type"] == "S"][["channel_index", "phase_index"]].to_numpy()
-                if (len(meta["p_picks"]) < 500) or (len(meta["s_picks"]) < 500):
-                    continue
-                tmp = file.split("/")
-                tmp[-2] = "data"
-                tmp[-1] = tmp[-1][:-4] + ".h5"  ## remove .csv
-                with h5py.File("/".join(tmp), "r") as f:
-                    data = f["data"][()]
-                    data = data[np.newaxis, :, :]  # nchn, nt, nsta
-                    data = torch.from_numpy(data.astype(np.float32))
+        for file in file_list:
 
-                if self.stack_noise and (not self.noise_path):
-                    tries = 0
-                    max_tries = 10
-                    while tries < max_tries:
-                        tmp_file = file_list[np.random.randint(0, len(file_list))]
-                        tmp_picks = pd.read_csv(tmp_file)
-                        if tmp_picks["phase_index"].min() < 3000:
-                            tries += 1
-                            continue
-                        tmp = tmp_file.split("/")
-                        tmp[-2] = "data"
-                        tmp[-1] = tmp[-1][:-4] + ".h5"  ## remove .csv
-                        with h5py.File("/".join(tmp), "r") as f:
-                            noise = f["data"][()]
-                            noise = noise[np.newaxis, :, :]  # nchn, nt, nsta
-                            noise = torch.from_numpy(noise.astype(np.float32))
-                        break
-                    if tries >= max_tries:
-                        print(f"Failed to find noise file for {file}")
-                        noise = torch.zeros_like(data)
+            sample = {}
 
-            elif self.format == "npz":
+            if self.format == "npz": 
                 meta = np.load(os.path.join(self.data_path, file))
                 data = meta["data"][np.newaxis, :, :]
                 data = torch.from_numpy(data.astype(np.float32))
 
-            elif self.format == "h5" and (not self.dataset):
-                with h5py.File(file, "r") as fp:
-                    data = fp["data"][()]  # nt x nsta
+            elif self.format == "npy":
+                data = np.load(os.path.join(self.data_path, file)) # (nsta, nt)
+                data = data.T[np.newaxis, :, :]# (nch, nt, nsta)
+                data = torch.from_numpy(data.astype(np.float32))
+                sample["begin_time"] = datetime.fromisoformat("1970-01-01 00:00:00")
+                sample["dt_s"] = 0.01
+                sample["dx_m"] = 10.0
+
+            elif self.format == "h5" and (self.dataset is None):
+                with h5py.File(os.path.join(self.data_path, file), "r") as fp:
+                    data = fp["data"][:]  # nt x nsta
                     if self.filtering:
-                        # raise
-                        # b, a = scipy.signal.butter(2, 4, 'hp', fs=100)
                         b, a = scipy.signal.butter(2, 1.0, "hp", fs=100)
                         data = scipy.signal.filtfilt(b, a, data, axis=0)
-                    data = data[np.newaxis, :, :]
-                    data = torch.from_numpy(data.astype(np.float32))
                     if "begin_time" in fp["data"].attrs:
                         sample["begin_time"] = datetime.fromisoformat(fp["data"].attrs["begin_time"].rstrip("Z"))
                     if "dt_s" in fp["data"].attrs:
@@ -524,17 +548,12 @@ class DASIterableDataset(IterableDataset):
                     else:
                         sample["dx_m"] = self.dx
 
-                    # b, a = scipy.signal.butter(2, 4, 'hp', fs=100)
-                    # data = scipy.signal.filtfilt(b, a, data, axis=-2)
-                    # data = torch.from_numpy(data.astype(np.float32))
-                    # data = torch.diff(data, n=1, dim=-1)
-                    # data = data.permute(0, 2, 1)  # nch, nt, nsta
-                    # data = data - data.median(dim=2, keepdim=True).values
+                    data = data[np.newaxis, :, :]
+                    data = torch.from_numpy(data.astype(np.float32))
 
             elif (self.format == "h5") and (self.dataset == "mammoth"):
-                with h5py.File(file, "r") as fp:
-                    ## For DAS continuous data
-                    data = fp["Data"]
+                with h5py.File(os.path.join(self.data_path, file), "r") as fp:
+                    data = fp["Data"][:]
                     if "startTime" in data.attrs:
                         sample["begin_time"] = datetime.fromisoformat(data.attrs["startTime"].rstrip("Z"))
                     if "dt" in data.attrs:
@@ -546,15 +565,9 @@ class DASIterableDataset(IterableDataset):
                     if "nCh" in data.attrs:
                         sample["nx"] = data.attrs["nCh"]
                     data = data[()].T
-
                 data = data[np.newaxis, :, :]  # nchn, nt, nsta
                 data = torch.from_numpy(data.astype(np.float32))
-
-                # b, a = scipy.signal.butter(2, 4, 'hp', fs=100)
-                # data = scipy.signal.filtfilt(b, a, data, axis=-2)
-                # data = torch.from_numpy(data.astype(np.float32))
                 data = torch.diff(data, n=1, dim=1)
-                # data = data - data.median(dim=2, keepdim=True).values
 
             elif self.format == "segy":
                 meta = {}
@@ -572,68 +585,26 @@ class DASIterableDataset(IterableDataset):
             else:
                 raise (f"Unsupported format: {self.format}")
 
+            data = data - torch.mean(data, dim=1, keepdim=True)
             data = data - torch.median(data, dim=2, keepdims=True)[0]
-            # data = normalize(data)  # nch, nt, nsta
 
-            if self.training:
-                if self.stack_noise:
-                    if torch.max(torch.abs(noise)) > 0:
-                        noise = normalize(noise)
-                picks = [meta[x] for x in self.picks]
-                targets = generate_label(data, picks)
-                targets = torch.from_numpy(targets)
-                snr = calc_snr(data, meta["p_picks"])
-                with_event = False
-                if (snr > 3) and (np.random.rand() < 0.3) and self.stack_event:
-                    data, targets = stack_event(data, targets, data, targets, snr)
-                    with_event = True
-                for ii in range(sum([len(x) for x in picks]) // self.min_picks * 10):
-                    pre_nt = 255
-                    data_, targets_ = cut_data(data, targets, pre_nt=pre_nt)
-                    if data_ is None:
-                        continue
-                    if (np.random.rand() < 0.5) and self.add_moveout:
-                        data_, targets_ = add_moveout(data_, targets_)
-                    data_ = data_[:, pre_nt:, :]
-                    targets_ = targets_[:, pre_nt:, :]
-                    # if (snr > 10) and (np.random.rand() < 0.5):
-                    if not with_event and self.stack_noise:
-                        noise_ = cut_noise(noise)
-                        data_ = stack_noise(data_, noise_, snr)
-                    if np.random.rand() < 0.5:
-                        data_, targets_ = flip_lr(data_, targets_)
-
-                    data_ = data_ - np.median(data_, axis=2, keepdims=True)
-
-                    yield {
-                        "data": data_,
-                        "targets": targets_,
-                        "file_name": os.path.splitext(file.split("/")[-1])[0] + f"_{ii:02d}",
-                        "height": data_.shape[-2],
-                        "width": data_.shape[-1],
-                    }
-
+            if not self.cut_patch:
+                yield {
+                    "data": data,
+                    "file_name": os.path.splitext(file.split("/")[-1])[0],
+                    "begin_time": sample["begin_time"].isoformat(timespec="milliseconds"),
+                    "begin_time_index": 0,
+                    "begin_channel_index": 0,
+                    "dt_s": sample["dt_s"] if "dt_s" in sample else self.dt,
+                    "dx_m": sample["dx_m"] if "dx_m" in sample else self.dx,
+                }
             else:
-                sample["data"] = data
-                if self.nt is None:
-                    self.nt = data.shape[1]
-                if self.nx is None:
-                    self.nx = data.shape[2]
-                ## TODO: add padding instead of direct skipping
-                if (data.shape[1] < 512) or (data.shape[2] < 512):
-                    continue
-                for i in list(range(0, data.shape[1], self.nt)):
-                    if self.nt + i + 512 >= data.shape[1]:
-                        tn = data.shape[1]
-                    else:
-                        tn = i + self.nt
-                    for j in list(range(0, data.shape[2], self.nx)):
-                        if self.nx + j + 512 >= data.shape[2]:
-                            xn = data.shape[2]
-                        else:
-                            xn = j + self.nx
+                _, nt, nx = data.shape
+                data = F.pad(data, (0, nx % self.nx, 0, nt % self.nt), mode="constant", value=0)
+                for i in list(range(0, nt, self.nt)):
+                    for j in list(range(0, nx, self.nx)):
                         yield {
-                            "data": data[:, i:tn, j:xn],
+                            "data": data[:, i : i + self.nt, j : j + self.nx],
                             "file_name": os.path.splitext(file.split("/")[-1])[0] + f"_{i:04d}_{j:04d}",
                             "begin_time": (sample["begin_time"] + timedelta(seconds=i * sample["dt_s"])).isoformat(
                                 timespec="milliseconds"
@@ -643,10 +614,6 @@ class DASIterableDataset(IterableDataset):
                             "dt_s": sample["dt_s"] if "dt_s" in sample else self.dt,
                             "dx_m": sample["dx_m"] if "dx_m" in sample else self.dx,
                         }
-                        if xn == data.shape[2]:
-                            break
-                    if tn == data.shape[1]:
-                        break
 
 
 class AutoEncoderIterableDataset(DASIterableDataset):

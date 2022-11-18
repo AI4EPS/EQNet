@@ -111,14 +111,12 @@ def extract_picks(
     return picks
 
 
-def merge_picks(raw_folder="picks_phasenet", merged_folder=None):
+def merge_picks(raw_folder="picks_phasenet_das", merged_folder=None, min_picks=10):
 
     in_path = Path(raw_folder)
 
-    rename_folder = False
     if merged_folder is None:
         out_path = Path(raw_folder + "_merged")
-        rename_folder = True
     else:
         out_path = Path(merged_folder)
 
@@ -134,22 +132,20 @@ def merge_picks(raw_folder="picks_phasenet", merged_folder=None):
     num_picks = 0
     for k in tqdm(file_group, desc=f"{out_path}"):
         picks = []
+        header = None
         for i, file in enumerate(sorted(file_group[k])):
             with open(file, "r") as f:
                 tmp = f.readlines()
-                if i == 0:
-                    picks.extend(tmp)
-                else:
-                    picks.extend(tmp[1:])  ## wihout header
-        with open(out_path.joinpath(f"{k}.csv"), "w") as f:
-            f.writelines(picks)
-        num_picks += len(picks)
+                if (len(tmp) > 0) and (header == None):
+                    header = tmp[0]
+                    picks.append(header)
+                picks.extend(tmp[1:])  ## without header
 
-    if rename_folder:
-        if os.path.exists(raw_folder + "_raw"):
-            shutil.rmtree(raw_folder + "_raw")
-        in_path.rename(raw_folder + "_raw")
-        out_path.rename(raw_folder)
+        if len(picks) > min_picks:
+            with open(out_path.joinpath(f"{k}.csv"), "w") as f:
+                f.writelines(picks)
+
+        num_picks += len(picks)
 
     print(f"Number of picks: {num_picks}")
     return 0

@@ -130,7 +130,7 @@ def visualize_das_train(meta, preds, epoch, figure_dir="figures", dt=0.01, dx=10
         plt.close(fig)
 
 
-def visualize_phasenet_train(meta, phase, event, epoch, figure_dir="figures"):
+def visualize_phasenet_train(meta, phase, event, polarity=None, epoch=0, figure_dir="figures"):
 
     # print(f"{meta['waveform'].shape =}")
     # print(f"{meta['phase_pick'].shape =}")
@@ -140,16 +140,26 @@ def visualize_phasenet_train(meta, phase, event, epoch, figure_dir="figures"):
 
     for i in range(meta["waveform"].shape[0]):
         plt.close("all")
-        fig, axes = plt.subplots(3, 1, figsize=(10, 10))
-        axes[0].plot((meta["waveform"][i, -1, :, 0]) / torch.std(meta["waveform"][i, -1, :]))
+        fig, axes = plt.subplots(4, 1, figsize=(10, 10))
+        axes[0].plot((meta["waveform"][i, -1, :, -1]) / torch.std(meta["waveform"][i, -1, :]), linewidth=0.5)
 
         axes[1].plot(phase[i, 1, :, 0], "r")
         axes[1].plot(phase[i, 2, :, 0], "b")
         axes[1].plot(meta["phase_pick"][i, 1, :, 0], "--C3")
         axes[1].plot(meta["phase_pick"][i, 2, :, 0], "--C0")
 
-        axes[2].plot(event[i, 0, :, 0], "b")
-        axes[2].plot(meta["center_heatmap"][i, 0, :, 0], "--C0")
+        # axes[3].plot(polarity[i, 0, meta["polarity_mask"][i, 0, :, 0] == 1, 0], "b")
+        # axes[3].plot(polarity[i, 0, :, 0], "b")
+        # mask = (meta["phase_pick"][i, 1, :, 0] > 0.1) | (meta["phase_pick"][i, 2, :, 0] > 0.1)
+        # masked_polarity = polarity[i, 0, :, 0].clone()
+        # masked_polarity[~mask] = 0.5
+        # axes[2].plot(masked_polarity, "b")
+        axes[2].plot(polarity[i, 0, :, 0], "b")
+        axes[2].plot(meta["polarity"][i, 0, :, 0], "--C0")
+        axes[2].set_ylim(0, 1)
+
+        axes[3].plot(event[i, 0, :, 0], "b")
+        axes[3].plot(meta["center_heatmap"][i, 0, :, 0], "--C0")
 
         if "LOCAL_RANK" in os.environ:
             local_rank = int(os.environ["LOCAL_RANK"])
@@ -227,8 +237,9 @@ def plot_das(data, pred, picks=None, file_name=None, figure_dir="./figures", epo
         std = np.std(data[i, :, :, 0]) * 2
 
         # fig, axs = plt.subplots(1, 1, sharex=True, figsize=(8, 6))
-        fig, axs = plt.subplots(1, 1)
-        im = axs.pcolormesh(
+        # fig, axs = plt.subplots(1, 1)
+        fig, axs = plt.subplots(2, 1, figsize=(8, 6))
+        im = axs[0].pcolormesh(
             (np.arange(nx) + begin_channel_index[i]) * dx[i] / 1e3,  # km
             (np.arange(nt) + begin_time_index[i]) * dt[i],
             data[i, :, :, 0],
@@ -238,11 +249,12 @@ def plot_das(data, pred, picks=None, file_name=None, figure_dir="./figures", epo
             shading="auto",
             rasterized=True,
         )
-        axs.set_xlabel("Distance (km)")
-        axs.set_ylabel("Time (s)")
-        axs.invert_yaxis()
-        axs.xaxis.tick_top()
-        axs.xaxis.set_label_position("top")
+        axs[0].set_xlabel("Distance (km)")
+        axs[0].set_ylabel("Time (s)")
+        axs[0].invert_yaxis()
+        axs[0].xaxis.tick_top()
+        axs[0].xaxis.set_label_position("top")
+
         # im = axs[0, 0].imshow(
         #     data[i, :, :, 0],
         #     vmin=-std,
@@ -299,7 +311,7 @@ def plot_das(data, pred, picks=None, file_name=None, figure_dir="./figures", epo
         if (picks is not None) and (len(picks[i]) > 0):
             p_picks = picks_[picks_["phase_type"] == "P"]
             s_picks = picks_[picks_["phase_type"] == "S"]
-            axs.plot(
+            axs[0].plot(
                 p_picks["station_name"].astype("int") * dx[i] / 1e3,  # km
                 p_picks["phase_index"] * dt[i],
                 ".C0",
@@ -309,7 +321,7 @@ def plot_das(data, pred, picks=None, file_name=None, figure_dir="./figures", epo
                 alpha=1.0,
                 label="P-phase",
             )
-            axs.plot(
+            axs[0].plot(
                 s_picks["station_name"].astype("int") * dx[i] / 1e3,  # km
                 s_picks["phase_index"] * dt[i],
                 # "-C3",
@@ -320,10 +332,27 @@ def plot_das(data, pred, picks=None, file_name=None, figure_dir="./figures", epo
                 alpha=1.0,
                 label="S-phase",
             )
-            axs.legend(markerscale=10.0)
+            axs[0].legend(markerscale=10.0)
             # axs[1].plot(p_picks["station_name"], p_picks["phase_index"], "r,", linewidth=0)
             # axs[1].plot(s_picks["station_name"], s_picks["phase_index"], "b,", linewidth=0)
 
+        im = axs[1].pcolormesh(
+            (np.arange(nx) + begin_channel_index[i]) * dx[i] / 1e3,  # km
+            (np.arange(nt) + begin_time_index[i]) * dt[i],
+            pred[i, :, :, 0],
+            vmin=0,
+            vmax=1,
+            cmap="hot",
+            shading="auto",
+            rasterized=True,
+        )
+        # axs[1].set_xlabel("Distance (km)")
+        axs[1].set_ylabel("Time (s)")
+        axs[1].invert_yaxis()
+        axs[1].xaxis.tick_top()
+        # axs[1].xaxis.set_label_position("top")
+
+        fig.tight_layout()
         try:
             fig.savefig(
                 os.path.join(figure_dir, file_name[i] + ".png"),

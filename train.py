@@ -106,8 +106,8 @@ def train_one_epoch(
         # if i > len(data_loader):
         if i > 200:
             break
-        if i > iters_per_epoch:
-            break
+        # if i > iters_per_epoch:
+        #     break
         # break
 
     model.eval()
@@ -117,8 +117,10 @@ def train_one_epoch(
             out = model(meta)
             phase = F.softmax(out["phase"], dim=1).cpu()
             event = torch.sigmoid(out["event"]).cpu()
+            # phase, event = None, None
+            polarity = torch.sigmoid(out["polarity"]).cpu()
             print("Plotting...")
-            eqnet.utils.visualize_phasenet_train(meta, phase, event, epoch=epoch, figure_dir=args.output_dir)
+            eqnet.utils.visualize_phasenet_train(meta, phase, event, polarity, epoch=epoch, figure_dir=args.output_dir)
             del phase, event
 
         if args.model == "deepdenoiser":
@@ -179,7 +181,7 @@ def main(args):
             training=True,
         )
         train_sampler = None
-        dataset_test = dataset = DASIterableDataset(
+        dataset_test = DASIterableDataset(
             # data_path="/net/kuafu/mnt/tank/data/EventData/Mammoth_south/data/",
             label_path=["/net/kuafu/mnt/tank/data/EventData/Mammoth_south/picks_phasenet_filtered/"],
             format="h5",
@@ -346,7 +348,7 @@ def get_args_parser(add_help=True):
     parser.add_argument("--epochs", default=100, type=int, metavar="N", help="number of total epochs to run")
 
     parser.add_argument(
-        "-j", "--workers", default=16 * 2, type=int, metavar="N", help="number of data loading workers (default: 16)"
+        "-j", "--workers", default=4, type=int, metavar="N", help="number of data loading workers (default: 16)"
     )
     parser.add_argument("--lr", default=0.01, type=float, help="initial learning rate")
     parser.add_argument("--momentum", default=0.9, type=float, metavar="M", help="momentum")

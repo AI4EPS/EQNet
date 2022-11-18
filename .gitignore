@@ -4,5 +4,12 @@
 
 output/
 Trash/
+results/
+
 autoencoder*
 model_phasenet*
+EQNet.egg-info/
+test_data/
+
+*.whl
+*.tar.gz

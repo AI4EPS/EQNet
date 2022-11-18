@@ -24,7 +24,7 @@ sampling_rate = 100
 
 with h5py.File(h5_file, "r") as fp_in:
     # with h5py.File(output_path.joinpath(f"{event['index']:06}.h5"), "w") as fp_out:
-    with h5py.File("ncedc_seismic_dataset_4.h5", "w") as fp_out:
+    with h5py.File("ncedc_seismic_dataset.h5", "w") as fp_out:
 
         for i, (_, event) in tqdm(enumerate(event_csv.iterrows()), total=len(event_csv)):
 
@@ -42,13 +42,18 @@ with h5py.File(h5_file, "r") as fp_in:
             group = fp_out.create_group(f"{event_id:06d}")
             group.attrs["event_id"] = event_id
             group.attrs["event_time"] = event_time.isoformat(timespec="milliseconds")
-            group.attrs["time_index"] = event_time_index
+            group.attrs["event_time_index"] = event_time_index
+            group.attrs["begin_time"] = (anchor_time - timedelta(pre_window/sampling_rate)).isoformat(timespec="milliseconds")
+            group.attrs["end_time"] = (anchor_time + timedelta(post_window/sampling_rate)).isoformat(timespec="milliseconds")
+            group.attrs["time_reference"] = anchor_time.isoformat(timespec="milliseconds")
+            group.attrs["time_before"] = pre_window/sampling_rate
+            group.attrs["time_after"] = post_window/sampling_rate
             group.attrs["latitude"] = event_latitude
             group.attrs["longitude"] = event_longitude
             group.attrs["depth_km"] = event_depth_km
             group.attrs["magnitude"] = event["magnitude"]
             group.attrs["magnitude_type"] = event["magnitude_type"]
-
+ 
             for j, (_, phase) in enumerate(phase_csv.loc[[event["index"]]].iterrows()):
 
                 trace = fp_in[f"data/{phase['fname']}"]
@@ -67,7 +72,7 @@ with h5py.File(h5_file, "r") as fp_in:
                 waveform = np.zeros([pre_window + post_window, 3])
                 waveform[: trace[max(0, begin_index) : max(0, end_index), :].shape[0], :] = trace[
                     max(0, begin_index) : max(0, end_index), :
-                ]
+                ] * 1e6
                 network = trace.attrs["network"]
                 station = trace.attrs["station"]
                 location = trace.attrs["location_code"] if trace.attrs["location_code"] != "--" else ""
@@ -78,6 +83,8 @@ with h5py.File(h5_file, "r") as fp_in:
                 distance_km = trace.attrs["distance_km"]
                 azimuth = trace.attrs["azimuth"]
                 first_motion = trace.attrs["first_motion"]
+                if first_motion not in ["U", "D"]:
+                    first_motion = "N"
                 emergence_angle = trace.attrs["emergence_angle"]
                 station_latitude = trace.attrs["station_latitude"]
                 station_longitude = trace.attrs["station_longitude"]
@@ -90,41 +97,39 @@ with h5py.File(h5_file, "r") as fp_in:
                 phase_time = [p_time.isoformat(timespec="milliseconds"), s_time.isoformat(timespec="milliseconds")]
                 phase_score = [phase["p_weight"], phase["s_weight"]]
                 phase_remark = [phase["p_remark"], phase["s_remark"]]
+                phase_polarity = [first_motion, 'N']
                 assert dt_s == 1.0 / sampling_rate
 
-                station_id = f"{network}.{station}.{location}.{channels[0][:2]}"
+                station_id = f"{network}.{station}.{location}.{channels[0][:-1]}"
                 fp_out[f"{event_id:06d}/{station_id}"] = waveform * 1e6
                 attrs = fp_out[f"{event_id:06d}/{station_id}"].attrs
                 attrs["network"] = network
                 attrs["station"] = station
                 attrs["location"] = location
-                attrs["component"] = [x[2] for x in channels]
-                attrs["begin_time"] = begin_time.isoformat(timespec="milliseconds")
-                attrs["end_time"] = end_time.isoformat(timespec="milliseconds")
+                attrs["component"] = [x[-1] for x in channels]
                 attrs["distance_km"] = distance_km
                 attrs["azimuth"] = azimuth
-                attrs["first_motion"] = first_motion
                 attrs["emergence_angle"] = emergence_angle
-                attrs["station_id"] = station_id
                 attrs["latitude"] = station_latitude
                 attrs["longitude"] = station_longitude
                 attrs["elevation_m"] = station_elevation_m
                 attrs["dt_s"] = dt_s
-                attrs["unit"] = "u" + unit
+                attrs["unit"] = "1e-6" + unit
                 attrs["snr"] = snr
                 attrs["phase_type"] = phase_type
                 attrs["phase_index"] = phase_index
                 attrs["phase_time"] = phase_time
                 attrs["phase_score"] = phase_score
                 attrs["phase_remark"] = phase_remark
+                attrs["phase_polarity"] = phase_polarity
 
                 # print(begin_time, end_time)
                 # plt.plot(trace[begin_index:end_index,-1]/np.std(trace[begin_index:end_index,-1])/10 + j)
                 # plt.plot([(p_time - begin_time).total_seconds()*sampling_rate, (p_time - begin_time).total_seconds()*sampling_rate], [j-2, j+2], '--r')
                 # plt.plot([(s_time - begin_time).total_seconds()*sampling_rate, (s_time - begin_time).total_seconds()*sampling_rate], [j-2, j+2], '--b')
 
-            # if i > 100:
-            #     break
+            if i > 1000:
+                break
 
 # plt.show()
 
