@@ -44,9 +44,7 @@ def evaluate(model, data_loader, device, num_classes=3, args=None):
                 phase = F.softmax(out["phase"], dim=1).cpu()
                 event = torch.sigmoid(out["event"]).cpu()
                 print("Plotting...")
-                eqnet.utils.visualize_phasenet_train(
-                    meta, phase, event, epoch=i, figure_dir=args.output_dir
-                )
+                eqnet.utils.visualize_phasenet_train(meta, phase, event, epoch=i, figure_dir=args.output_dir)
                 del phase, event
 
             if args.model == "deepdenoiser":
@@ -58,17 +56,13 @@ def evaluate(model, data_loader, device, num_classes=3, args=None):
                 preds = model(meta)
                 preds = F.softmax(preds, dim=1).cpu()
                 print("Plotting...")
-                eqnet.utils.visualize_das_train(
-                    meta, preds, epoch=i, figure_dir=args.output_dir
-                )
+                eqnet.utils.visualize_das_train(meta, preds, epoch=i, figure_dir=args.output_dir)
                 del preds
 
             elif args.model == "autoencoder":
                 preds = model(meta).cpu()
                 print("Plotting...")
-                eqnet.utils.visualize_autoencoder_das_train(
-                    meta, preds, epoch=i, figure_dir=args.output_dir
-                )
+                eqnet.utils.visualize_autoencoder_das_train(meta, preds, epoch=i, figure_dir=args.output_dir)
                 del preds
 
             elif args.model == "eqnet":
@@ -76,9 +70,7 @@ def evaluate(model, data_loader, device, num_classes=3, args=None):
                 phase = F.softmax(out["phase"], dim=1).cpu()
                 event = torch.sigmoid(out["event"]).cpu()
                 print("Plotting...")
-                eqnet.utils.visualize_eqnet_train(
-                    meta, phase, event, epoch=i, figure_dir=args.output_dir
-                )
+                eqnet.utils.visualize_eqnet_train(meta, phase, event, epoch=i, figure_dir=args.output_dir)
                 del phase, event
 
             i += 1
@@ -143,9 +135,7 @@ def train_one_epoch(
             # phase, event = None, None
             polarity = torch.sigmoid(out["polarity"]).cpu()
             print("Plotting...")
-            eqnet.utils.visualize_phasenet_train(
-                meta, phase, event, polarity, epoch=epoch, figure_dir=args.output_dir
-            )
+            eqnet.utils.visualize_phasenet_train(meta, phase, event, polarity, epoch=epoch, figure_dir=args.output_dir)
             del phase, event
 
         if args.model == "deepdenoiser":
@@ -155,17 +145,13 @@ def train_one_epoch(
             preds = model(meta)
             preds = F.softmax(preds, dim=1).cpu()
             print("Plotting...")
-            eqnet.utils.visualize_das_train(
-                meta, preds, epoch=epoch, figure_dir=args.output_dir
-            )
+            eqnet.utils.visualize_das_train(meta, preds, epoch=epoch, figure_dir=args.output_dir)
             del preds
 
         elif args.model == "autoencoder":
             preds = model(meta).cpu()
             print("Plotting...")
-            eqnet.utils.visualize_autoencoder_das_train(
-                meta, preds, epoch=epoch, figure_dir=args.output_dir
-            )
+            eqnet.utils.visualize_autoencoder_das_train(meta, preds, epoch=epoch, figure_dir=args.output_dir)
             del preds
 
         elif args.model == "eqnet":
@@ -173,9 +159,7 @@ def train_one_epoch(
             phase = F.softmax(out["phase"], dim=1).cpu()
             event = torch.sigmoid(out["event"]).cpu()
             print("Plotting...")
-            eqnet.utils.visualize_eqnet_train(
-                meta, phase, event, epoch=epoch, figure_dir=args.output_dir
-            )
+            eqnet.utils.visualize_eqnet_train(meta, phase, event, epoch=epoch, figure_dir=args.output_dir)
             del phase, event
 
 
@@ -208,27 +192,32 @@ def main(args):
                 "/net/kuafu/mnt/tank/data/EventData/Ridgecrest/picks_phasenet_filtered/",
                 "/net/kuafu/mnt/tank/data/EventData/Ridgecrest_South/picks_phasenet_filtered/",
             ],
+            # label_path=["./converted_phase/manualpicks/"],
+            # data_path="/net/kuafu/mnt/tank/data/EventData/Mammoth_south/data",
+            picks=args.picks,
+            nt=args.nt,
+            nx=args.nx,
             format="h5",
             training=True,
             stack_noise=args.stack_noise,
             stack_event=args.stack_event,
             resample_space=args.resample_space,
             resample_time=args.resample_time,
+            mask_edge=args.mask_edge,
             rank=rank,
             world_size=world_size,
         )
         train_sampler = None
         dataset_test = DASIterableDataset(
             # data_path="/net/kuafu/mnt/tank/data/EventData/Mammoth_south/data/",
-            label_path=[
-                "/net/kuafu/mnt/tank/data/EventData/Mammoth_south/picks_phasenet_filtered/"
-            ],
+            label_path=["/net/kuafu/mnt/tank/data/EventData/Mammoth_south/picks_phasenet_filtered/"],
             format="h5",
             training=True,
             stack_event=False,
             stack_noise=False,
             resample_space=False,
             resample_time=False,
+            mask_edge=False,
             rank=rank,
             world_size=world_size,
         )
@@ -274,7 +263,7 @@ def main(args):
         # collate_fn=utils.collate_fn
     )
 
-    model = eqnet.models.__dict__[args.model](backbone=args.backbone)
+    model = eqnet.models.__dict__[args.model](backbone=args.backbone, in_channels=1, out_channels=(len(args.picks) + 1))
     logger.info("Model:\n{}".format(model))
 
     model.to(device)
@@ -290,14 +279,13 @@ def main(args):
 
     params_to_optimize = [p for p in model_without_ddp.parameters() if p.requires_grad]
     # optimizer = torch.optim.SGD(params_to_optimize, lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
-    optimizer = torch.optim.AdamW(
-        params_to_optimize, lr=args.lr, weight_decay=args.weight_decay
-    )
+    optimizer = torch.optim.AdamW(params_to_optimize, lr=args.lr, weight_decay=args.weight_decay)
 
     scaler = torch.cuda.amp.GradScaler() if args.amp else None
 
     iters_per_epoch = len(data_loader) // 100 * 100
-    iters_per_epoch = 100
+    iters_per_epoch = min(100, len(data_loader))
+
     main_lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=iters_per_epoch * (args.epochs - args.lr_warmup_epochs)
     )
@@ -327,9 +315,7 @@ def main(args):
 
     if args.resume:
         checkpoint = torch.load(args.resume, map_location="cpu")
-        model_without_ddp.load_state_dict(
-            checkpoint["model"], strict=not args.test_only
-        )
+        model_without_ddp.load_state_dict(checkpoint["model"], strict=not args.test_only)
         if not args.test_only:
             optimizer.load_state_dict(checkpoint["optimizer"])
             lr_scheduler.load_state_dict(checkpoint["lr_scheduler"])
@@ -369,12 +355,8 @@ def main(args):
         }
         if args.amp:
             checkpoint["scaler"] = scaler.state_dict()
-        utils.save_on_master(
-            checkpoint, os.path.join(args.output_dir, f"model_{epoch}.pth")
-        )
-        utils.save_on_master(
-            checkpoint, os.path.join(args.output_dir, "checkpoint.pth")
-        )
+        utils.save_on_master(checkpoint, os.path.join(args.output_dir, f"model_{epoch}.pth"))
+        utils.save_on_master(checkpoint, os.path.join(args.output_dir, "checkpoint.pth"))
 
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
@@ -384,16 +366,12 @@ def main(args):
 def get_args_parser(add_help=True):
     import argparse
 
-    parser = argparse.ArgumentParser(
-        description="PyTorch Segmentation Training", add_help=add_help
-    )
+    parser = argparse.ArgumentParser(description="PyTorch Segmentation Training", add_help=add_help)
 
     parser.add_argument("--data-path", default="./data/", type=str, help="dataset path")
     parser.add_argument("--dataset", default="", type=str, help="dataset name")
     parser.add_argument("--model", default="phasenet_das", type=str, help="model name")
-    parser.add_argument(
-        "--backbone", default="resnet50", type=str, help="model backbone"
-    )
+    parser.add_argument("--backbone", default="resnet50", type=str, help="model backbone")
     parser.add_argument("--aux-loss", action="store_true", help="auxiliar loss")
     parser.add_argument(
         "--device",
@@ -425,9 +403,7 @@ def get_args_parser(add_help=True):
         help="number of data loading workers (default: 16)",
     )
     parser.add_argument("--lr", default=0.001, type=float, help="initial learning rate")
-    parser.add_argument(
-        "--momentum", default=0.9, type=float, metavar="M", help="momentum"
-    )
+    parser.add_argument("--momentum", default=0.9, type=float, metavar="M", help="momentum")
     parser.add_argument(
         "--wd",
         "--weight-decay",
@@ -449,17 +425,11 @@ def get_args_parser(add_help=True):
         type=str,
         help="the warmup method (default: linear)",
     )
-    parser.add_argument(
-        "--lr-warmup-decay", default=0.01, type=float, help="the decay for lr"
-    )
+    parser.add_argument("--lr-warmup-decay", default=0.01, type=float, help="the decay for lr")
     parser.add_argument("--print-freq", default=10, type=int, help="print frequency")
-    parser.add_argument(
-        "--output-dir", default="./output", type=str, help="path to save outputs"
-    )
+    parser.add_argument("--output-dir", default="./output", type=str, help="path to save outputs")
     parser.add_argument("--resume", default="", type=str, help="path of checkpoint")
-    parser.add_argument(
-        "--start-epoch", default=0, type=int, metavar="N", help="start epoch"
-    )
+    parser.add_argument("--start-epoch", default=0, type=int, metavar="N", help="start epoch")
     parser.add_argument(
         "--test-only",
         dest="test_only",
@@ -472,9 +442,7 @@ def get_args_parser(add_help=True):
         help="Forces the use of deterministic algorithms only.",
     )
     # distributed training parameters
-    parser.add_argument(
-        "--world-size", default=1, type=int, help="number of distributed processes"
-    )
+    parser.add_argument("--world-size", default=1, type=int, help="number of distributed processes")
     parser.add_argument(
         "--dist-url",
         default="env://",
@@ -482,9 +450,7 @@ def get_args_parser(add_help=True):
         help="url used to set up distributed training",
     )
 
-    parser.add_argument(
-        "--weights", default=None, type=str, help="the weights enum name to load"
-    )
+    parser.add_argument("--weights", default=None, type=str, help="the weights enum name to load")
     parser.add_argument(
         "--weights-backbone",
         default=None,
@@ -500,14 +466,14 @@ def get_args_parser(add_help=True):
     )
 
     ## Data Augmentation
+    parser.add_argument("--picks", default=["P", "S"], type=str, nargs="+", help="picks to use")
+    parser.add_argument("--nt", default=1024 * 3, type=int, help="number of time samples")
+    parser.add_argument("--nx", default=1024 * 5, type=int, help="number of space samples")
     parser.add_argument("--stack-noise", action="store_true", help="Stack noise")
     parser.add_argument("--stack-event", action="store_true", help="Stack event")
-    parser.add_argument(
-        "--resample-space", action="store_true", help="Resample space resolution"
-    )
-    parser.add_argument(
-        "--resample-time", action="store_true", help="Resample time  resolution"
-    )
+    parser.add_argument("--resample-space", action="store_true", help="Resample space resolution")
+    parser.add_argument("--resample-time", action="store_true", help="Resample time  resolution")
+    parser.add_argument("--mask-edge", action="store_true", help="Mask edge of the input data")
     return parser
 
 
