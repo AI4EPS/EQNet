@@ -71,9 +71,7 @@ def normalize_local(data, filter=1024, stride=1):
         data_ = F.pad(data, (0, 0, pad1, pad2), mode="reflect")
         # std = (F.lp_pool2d(data_, norm_type=2, kernel_size=(filter, 1), stride=(stride, 1)) / ((filter * nch) ** 0.5))
         # data /= std
-        std = F.avg_pool2d(
-            torch.abs(data_), kernel_size=(filter, 1), stride=(stride, 1)
-        )
+        std = F.avg_pool2d(torch.abs(data_), kernel_size=(filter, 1), stride=(stride, 1))
         mask = std != 0
         data[mask] = data[mask] / std[mask]
 
@@ -143,9 +141,7 @@ def spectrogram(
                 stft_mag = torch.log(1 + F.relu(stft_mag))
             if phase:
                 components = stft.split(1, dim=-1)
-                stft_phase = torch.atan2(
-                    components[1].squeeze(-1), components[0].squeeze(-1)
-                )
+                stft_phase = torch.atan2(components[1].squeeze(-1), components[0].squeeze(-1))
                 stft = torch.stack([stft_mag, stft_phase], dim=-1)
             else:
                 stft = stft_mag
@@ -180,9 +176,7 @@ class UNet(nn.Module):
 
         self.use_stft = use_stft
         if use_stft:
-            self.spectrogram = partial(
-                spectrogram, dt=1 / 40, hop_length=8, select_freq=True, fmin=1, fmax=10
-            )
+            self.spectrogram = partial(spectrogram, dt=1 / 40, hop_length=8, select_freq=True, fmin=1, fmax=10)
 
         features = init_features
         if use_stft:
@@ -222,9 +216,7 @@ class UNet(nn.Module):
         )
         # self.pool3 = nn.MaxPool2d(kernel_size=encoder_stride, stride=encoder_stride)
         if use_stft:
-            self.fc3 = nn.Sequential(
-                nn.Linear(kwargs["n_freq"] // 2**2, 1), activation
-            )
+            self.fc3 = nn.Sequential(nn.Linear(kwargs["n_freq"] // 2**2, 1), activation)
         self.encoder4 = self._block(
             features * 4,
             features * 8,
@@ -236,9 +228,7 @@ class UNet(nn.Module):
         )
         # self.pool4 = nn.MaxPool2d(kernel_size=encoder_stride, stride=encoder_stride)
         if use_stft:
-            self.fc4 = nn.Sequential(
-                nn.Linear(kwargs["n_freq"] // 2**3, 1), activation
-            )
+            self.fc4 = nn.Sequential(nn.Linear(kwargs["n_freq"] // 2**3, 1), activation)
 
         self.bottleneck = self._block(
             features * 8,
@@ -250,16 +240,12 @@ class UNet(nn.Module):
             name="bottleneck",
         )
         if use_stft:
-            self.fc5 = nn.Sequential(
-                nn.Linear(kwargs["n_freq"] // 2**4, 1), activation
-            )
+            self.fc5 = nn.Sequential(nn.Linear(kwargs["n_freq"] // 2**4, 1), activation)
 
         # self.upconv4 = nn.Sequential(
         #     nn.ConvTranspose2d(features * 16, features * 8, kernel_size=decoder_stride, stride=decoder_stride), activation
         # )
-        self.upconv4 = nn.Upsample(
-            scale_factor=tuple(decoder_stride), mode="bilinear", align_corners=False
-        )
+        self.upconv4 = nn.Upsample(scale_factor=tuple(decoder_stride), mode="bilinear", align_corners=False)
         self.decoder4 = self._block(
             (features * 8) * 3,
             features * 8,
@@ -271,9 +257,7 @@ class UNet(nn.Module):
         # self.upconv3 = nn.Sequential(
         #     nn.ConvTranspose2d(features * 8, features * 4, kernel_size=decoder_stride, stride=decoder_stride), activation
         # )
-        self.upconv3 = nn.Upsample(
-            scale_factor=tuple(decoder_stride), mode="bilinear", align_corners=False
-        )
+        self.upconv3 = nn.Upsample(scale_factor=tuple(decoder_stride), mode="bilinear", align_corners=False)
         self.decoder3 = self._block(
             (features * 4) * 3,
             features * 4,
@@ -285,9 +269,7 @@ class UNet(nn.Module):
         # self.upconv2 = nn.Sequential(
         #     nn.ConvTranspose2d(features * 4, features * 2, kernel_size=decoder_stride, stride=decoder_stride), activation
         # )
-        self.upconv2 = nn.Upsample(
-            scale_factor=tuple(decoder_stride), mode="bilinear", align_corners=False
-        )
+        self.upconv2 = nn.Upsample(scale_factor=tuple(decoder_stride), mode="bilinear", align_corners=False)
         self.decoder2 = self._block(
             (features * 2) * 3,
             features * 2,
@@ -299,9 +281,7 @@ class UNet(nn.Module):
         # self.upconv1 = nn.Sequential(
         #     nn.ConvTranspose2d(features * 2, features, kernel_size=decoder_stride, stride=decoder_stride), activation
         # )
-        self.upconv1 = nn.Upsample(
-            scale_factor=tuple(decoder_stride), mode="bilinear", align_corners=False
-        )
+        self.upconv1 = nn.Upsample(scale_factor=tuple(decoder_stride), mode="bilinear", align_corners=False)
         self.decoder1 = self._block(
             features * 3,
             features,
@@ -311,9 +291,7 @@ class UNet(nn.Module):
             name="dec1",
         )
 
-        self.upconv0 = nn.Upsample(
-            scale_factor=tuple(decoder_stride), mode="bilinear", align_corners=False
-        )
+        self.upconv0 = nn.Upsample(scale_factor=tuple(decoder_stride), mode="bilinear", align_corners=False)
         self.conv = nn.Conv2d(
             in_channels=features,
             out_channels=out_channels,
@@ -332,9 +310,7 @@ class UNet(nn.Module):
             sgram = self.spectrogram(sgram.view(-1, nt))  # bt*ch, nf, nt, 2
             sgram = sgram.view(bt, ch, *sgram.shape[-3:])  # bt, ch, nf, nt, 2
             components = sgram.split(1, dim=-1)
-            sgram = torch.cat(
-                [components[1].squeeze(-1), components[0].squeeze(-1)], dim=1
-            )
+            sgram = torch.cat([components[1].squeeze(-1), components[0].squeeze(-1)], dim=1)
             sgram = sgram.transpose(-1, -2)
             x = sgram
 
@@ -472,11 +448,11 @@ class PhaseNetDAS(_SimpleSegmentationModel):
     pass
 
 
-def phasenet_das(in_channels=1, out_channels=3 * args, **kwargs) -> PhaseNetDAS:
+def phasenet_das(in_channels=1, out_channels=3, *args, **kwargs) -> PhaseNetDAS:
 
     backbone = UNet(
-        in_channels=1,
-        out_channels=3,
+        in_channels=in_channels,
+        out_channels=out_channels,
         init_features=16,
         use_stft=False,
         encoder_kernel_size=(7, 7),
