@@ -2,9 +2,11 @@ import datetime
 import logging
 import os
 import time
+import random
 
 import matplotlib
 import matplotlib.pyplot as plt
+import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.utils.data
@@ -20,6 +22,10 @@ from eqnet.data import (
     SeismicTraceIterableDataset,
 )
 from eqnet.models import log_transform, normalize_local
+
+torch.manual_seed(0)
+random.seed(0)
+np.random.seed(0)
 
 matplotlib.use("agg")
 
@@ -47,6 +53,8 @@ def evaluate(model, data_loader, device, num_classes=3, args=None):
                 pass
 
             elif args.model == "phasenet_das":
+                with torch.no_grad():
+                    meta["data"] = normalize_local(meta["data"])
                 preds = model(meta)
                 preds = F.softmax(preds, dim=1).cpu()
                 print("Plotting...")
@@ -104,10 +112,10 @@ def train_one_epoch(
 
         i += 1
         # if i > len(data_loader):
-        if i > 200:
-            break
-        # if i > iters_per_epoch:
+        # if i > 200:
         #     break
+        if i > iters_per_epoch:
+            break
         # break
 
     model.eval()
@@ -156,6 +164,8 @@ def main(args):
         utils.mkdir(args.output_dir)
 
     utils.init_distributed_mode(args)
+    rank = utils.get_rank() if args.distributed else 0
+    world_size = utils.get_world_size() if args.distributed else 1
     print(args)
 
     device = torch.device(args.device)
@@ -179,16 +189,25 @@ def main(args):
             ],
             format="h5",
             training=True,
+            stack_noise=args.stack_noise,
+            stack_event=args.stack_event,
+            resample_space=args.resample_space,
+            resample_time=args.resample_time,
+            rank=rank,
+            world_size=world_size,
         )
         train_sampler = None
         dataset_test = DASIterableDataset(
             # data_path="/net/kuafu/mnt/tank/data/EventData/Mammoth_south/data/",
             label_path=["/net/kuafu/mnt/tank/data/EventData/Mammoth_south/picks_phasenet_filtered/"],
             format="h5",
+            training=True,
             stack_event=False,
             stack_noise=False,
-            add_moveout=False,
-            training=True,
+            resample_space=False,
+            resample_time=False,
+            rank=rank,
+            world_size=world_size,
         )
         test_sampler = None
     elif args.model == "autoencoder":
@@ -260,8 +279,9 @@ def main(args):
 
     scaler = torch.cuda.amp.GradScaler() if args.amp else None
 
-    iters_per_epoch = len(data_loader)
-    # iters_per_epoch = 200
+    iters_per_epoch = len(data_loader)//100 * 100
+    iters_per_epoch = 100
+    # iters_per_epoch = 1000
     # main_lr_scheduler = torch.optim.lr_scheduler.LambdaLR(
     #     optimizer, lambda x: (1 - x / (iters_per_epoch * (args.epochs - args.lr_warmup_epochs))) ** 0.9
     # )
@@ -350,7 +370,7 @@ def get_args_parser(add_help=True):
     parser.add_argument(
         "-j", "--workers", default=4, type=int, metavar="N", help="number of data loading workers (default: 16)"
     )
-    parser.add_argument("--lr", default=0.01, type=float, help="initial learning rate")
+    parser.add_argument("--lr", default=0.001, type=float, help="initial learning rate")
     parser.add_argument("--momentum", default=0.9, type=float, metavar="M", help="momentum")
     parser.add_argument(
         "--wd",
@@ -387,6 +407,11 @@ def get_args_parser(add_help=True):
     # Mixed precision training parameters
     parser.add_argument("--amp", action="store_true", help="Use torch.cuda.amp for mixed precision training")
 
+    ## Data Augmentation
+    parser.add_argument("--stack-noise", action="store_true", help="Stack noise")
+    parser.add_argument("--stack-event", action="store_true", help="Stack event")
+    parser.add_argument("--resample-space", action="store_true", help="Resample space resolution")
+    parser.add_argument("--resample-time", action="store_true", help="Resample time  resolution")
     return parser
 
 

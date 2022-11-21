@@ -29,14 +29,6 @@ def pred_fn(model, data_loader, pick_path, figure_path, args):
 
             with torch.cuda.amp.autocast(enabled=args.amp):
                 scores = torch.softmax(model(meta), dim=1)  # batch, nch, nt, nsta
-                nt1, ns1 = meta["data"].shape[-2:]
-                nt2, ns2 = scores.shape[-2:]
-                scores = scores[
-                    :,
-                    :,
-                    abs(nt2 - nt1) // 2 : abs(nt2 - nt1) // 2 + nt1,
-                    abs(ns2 - ns1) // 2 : abs(ns2 - ns1) // 2 + ns1,
-                ]
                 vmin = 0.6
                 topk_scores, topk_inds = detect_peaks(scores, vmin=vmin, kernel=21)
 
@@ -122,6 +114,7 @@ def main(args):
     if args.resume:
         checkpoint = torch.load(args.resume, map_location="cpu")
         model_without_ddp.load_state_dict(checkpoint["model"], strict=False)
+        print("Loaded checkpoint '{}' (epoch {})".format(args.resume, checkpoint["epoch"]))
     else:
         model_url = "https://github.com/AI4EPS/models/releases/download/PhaseNet-DAS-v2/model_99.pth"
         state_dict = torch.hub.load_state_dict_from_url(

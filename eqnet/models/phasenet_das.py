@@ -22,38 +22,70 @@ class WeightedLoss(_WeightedLoss):
         return -(target * log_pred).sum(dim=1).mean()
 
 
+
+# def normalize_local(data, filter=1024+1, stride=512):
+#     nb, nch, nt, nsta = data.shape
+#     if (nt % stride == 0):
+#         pad = max(filter - stride, 0)
+#     else:
+#         pad = max(filter - (nt % stride), 0)
+#     pad1 = pad // 2
+#     pad2 = pad - pad1
+#     with torch.no_grad(): 
+#         data_ = F.pad(data, (0, 0, pad1, pad2), mode="reflect")
+#         mean = F.avg_pool2d(data_, kernel_size=(filter, 1), stride=(stride, 1))
+#         mean = F.interpolate(mean, size=(nt, nsta), mode="bilinear", align_corners=False)
+#         data -= mean
+#         data_ = F.pad(data, (0, 0, pad1, pad2), mode="reflect")
+#         std = F.lp_pool2d(data_, norm_type=2, kernel_size=(filter, 1), stride=(stride, 1)) / (filter ** 0.5)
+#         std = F.interpolate(std, size=(nt, nsta), mode="bilinear", align_corners=False)
+#         data /= std
+#         data = torch.nan_to_num(data)
+#         data = log_transform(data)
+#     return data
+
 def log_transform(x):
     x = torch.sign(x) * torch.log(1.0 + torch.abs(x))
     return x
 
+def normalize_local(data, filter=1024, stride=1):
 
-def normalize_local(data, filter=1024+1, stride=512):
     nb, nch, nt, nsta = data.shape
+
     if (nt % stride == 0):
         pad = max(filter - stride, 0)
     else:
         pad = max(filter - (nt % stride), 0)
     pad1 = pad // 2
     pad2 = pad - pad1
-    with torch.no_grad(): 
+
+    with torch.no_grad():
+
         data_ = F.pad(data, (0, 0, pad1, pad2), mode="reflect")
-        mean = F.avg_pool2d(data_, kernel_size=(filter, 1), stride=(stride, 1))
-        mean = F.interpolate(mean, size=(nt, nsta), mode="bilinear", align_corners=False)
+        mean = (F.avg_pool2d(data_, kernel_size=(filter, 1), stride=(stride, 1)))
         data -= mean
+
         data_ = F.pad(data, (0, 0, pad1, pad2), mode="reflect")
-        std = F.lp_pool2d(data_, norm_type=2, kernel_size=(filter, 1), stride=(stride, 1)) / (filter ** 0.5)
-        std = F.interpolate(std, size=(nt, nsta), mode="bilinear", align_corners=False)
-        data /= std
-        data = torch.nan_to_num(data)
+        # std = (F.lp_pool2d(data_, norm_type=2, kernel_size=(filter, 1), stride=(stride, 1)) / ((filter * nch) ** 0.5))
+        # data /= std
+        std = (F.avg_pool2d(torch.abs(data_), kernel_size=(filter, 1), stride=(stride, 1)))
+        mask = (std != 0)
+        data[mask] = data[mask] / std[mask]
+
         data = log_transform(data)
+
     return data
 
-def pad_input(data, ratio = (2,2)):
+def pad_input(data, min_w=1024, min_h=1024):
+
     nb, nch, nt, nsta = data.shape
-    nt_ = ((nt - 1)//ratio[0]**4 + 1)*ratio[0]**4
-    nsta_ = ((nsta - 1)//ratio[1]**4 + 1)*ratio[1]**4
-    with torch.no_grad(): 
-        data = F.pad(data, (0, nsta_-nsta, 0, nt_-nt), mode="constant")
+    pad_w = (min_w - nt % min_w) % min_w
+    pad_h = (min_h - nsta % min_h) % min_h
+
+    if (pad_w > 0) or (pad_h > 0):
+        with torch.no_grad():
+            data = F.pad(data, (0, pad_h, 0, pad_w), mode="constant")
+
     return data
 
 def spectrogram(
@@ -109,20 +141,17 @@ def spectrogram(
 
 class UNet(nn.Module):
 
-    def __init__(self, in_channels=1, out_channels=3, init_features=8, use_stft=False, 
-                 encoder_kernel_size = (5, 5), decoder_kernel_size = (5, 5),
-                 encoder_stride = (2, 4), decoder_stride = (2, 4),
-                 encoder_padding = (2, 2), decoder_padding = (2, 2), **kwargs):
+    def __init__(self, in_channels=1, out_channels=3, init_features=16, use_stft=False, 
+                 encoder_kernel_size = (7, 7), decoder_kernel_size = (7, 7),
+                 encoder_stride = (4, 4), decoder_stride = (4, 4), activation=nn.ReLU(inplace=True), **kwargs):
         
         super().__init__()
         self._out_features = ["out"]
         self._out_feature_channels = {"out": out_channels}
         self._out_feature_strides = {"out": 1} 
-        self.activation = nn.ReLU(inplace=True)
-        self.encoder_stride = encoder_stride
-        # self.activation = nn.LeakyReLU(0.2, inplace=True)
-        # self.activation = nn.Tanh()
-        # self.activation = nn.ELU()
+
+        encoder_padding = tuple([x//2 for x in encoder_kernel_size])
+        decoder_padding = tuple([x//2 for x in decoder_kernel_size])
 
         self.use_stft = use_stft
         if use_stft:
@@ -130,78 +159,75 @@ class UNet(nn.Module):
 
         features = init_features
         if use_stft:
-            in_channels *= 2  ## real amd imagenary parts
+            in_channels *= 2  ## real and imagenary parts
         self.encoder1 = self._block(
-            in_channels, features, kernel_size=encoder_kernel_size, padding=encoder_padding, activation=self.activation, name="enc1"
+            in_channels, features, kernel_size=encoder_kernel_size, stride=encoder_stride, padding=encoder_padding, activation=activation, name="enc1"
         )
-        self.pool1 = nn.MaxPool2d(kernel_size=encoder_stride, stride=encoder_stride)
+        # self.pool1 = nn.MaxPool2d(kernel_size=encoder_stride, stride=encoder_stride)
         if use_stft:
-            self.fc1 = nn.Sequential(nn.Linear(kwargs["n_freq"], 1), self.activation)
+            self.fc1 = nn.Sequential(nn.Linear(kwargs["n_freq"], 1), activation)
         self.encoder2 = self._block(
-            features, features * 2, kernel_size=encoder_kernel_size, padding=encoder_padding, activation=self.activation, name="enc2"
+            features, features * 2, kernel_size=encoder_kernel_size, stride=encoder_stride, padding=encoder_padding, activation=activation, name="enc2"
         )
-        self.pool2 = nn.MaxPool2d(kernel_size=encoder_stride, stride=encoder_stride)
+        # self.pool2 = nn.MaxPool2d(kernel_size=encoder_stride, stride=encoder_stride)
         if use_stft:
-            self.fc2 = nn.Sequential(nn.Linear(kwargs["n_freq"] // 2, 1), self.activation)
+            self.fc2 = nn.Sequential(nn.Linear(kwargs["n_freq"] // 2, 1), activation)
         self.encoder3 = self._block(
-            features * 2, features * 4, kernel_size=encoder_kernel_size, padding=encoder_padding, activation=self.activation, name="enc3"
+            features * 2, features * 4, kernel_size=encoder_kernel_size, stride=encoder_stride, padding=encoder_padding, activation=activation, name="enc3"
         )
-        self.pool3 = nn.MaxPool2d(kernel_size=encoder_stride, stride=encoder_stride)
+        # self.pool3 = nn.MaxPool2d(kernel_size=encoder_stride, stride=encoder_stride)
         if use_stft:
-            self.fc3 = nn.Sequential(nn.Linear(kwargs["n_freq"] // 2 ** 2, 1), self.activation)
+            self.fc3 = nn.Sequential(nn.Linear(kwargs["n_freq"] // 2 ** 2, 1), activation)
         self.encoder4 = self._block(
-            features * 4, features * 8, kernel_size=encoder_kernel_size, padding=encoder_padding, activation=self.activation, name="enc4"
+            features * 4, features * 8, kernel_size=encoder_kernel_size, stride=encoder_stride, padding=encoder_padding, activation=activation, name="enc4"
         )
-        self.pool4 = nn.MaxPool2d(kernel_size=encoder_stride, stride=encoder_stride)
+        # self.pool4 = nn.MaxPool2d(kernel_size=encoder_stride, stride=encoder_stride)
         if use_stft:
-            self.fc4 = nn.Sequential(nn.Linear(kwargs["n_freq"] // 2 ** 3, 1), self.activation)
+            self.fc4 = nn.Sequential(nn.Linear(kwargs["n_freq"] // 2 ** 3, 1), activation)
 
         self.bottleneck = self._block(
-            features * 8, features * 16, kernel_size=encoder_kernel_size, padding=encoder_padding, activation=self.activation, name="bottleneck"
+            features * 8, features * 16, kernel_size=encoder_kernel_size, stride=encoder_stride, padding=encoder_padding, activation=activation, name="bottleneck"
         )
         if use_stft:
-            self.fc5 = nn.Sequential(nn.Linear(kwargs["n_freq"] // 2 ** 4, 1), self.activation)
+            self.fc5 = nn.Sequential(nn.Linear(kwargs["n_freq"] // 2 ** 4, 1), activation)
 
         # self.upconv4 = nn.Sequential(
-        #     nn.ConvTranspose2d(features * 16, features * 8, kernel_size=decoder_kernel_size, stride=decoder_stride),
-        #     nn.ReLU(inplace=True),
+        #     nn.ConvTranspose2d(features * 16, features * 8, kernel_size=decoder_stride, stride=decoder_stride), activation
         # )
         self.upconv4 = nn.Upsample(scale_factor=tuple(decoder_stride), mode='bilinear', align_corners=False)
         self.decoder4 = self._block(
-            (features * 8) * 3, features * 8, kernel_size=decoder_kernel_size, padding=decoder_padding, activation=self.activation, name="dec4"
+            (features * 8) * 3, features * 8, kernel_size=decoder_kernel_size, padding=decoder_padding, activation=activation, name="dec4"
         )
         # self.upconv3 = nn.Sequential(
-        #     nn.ConvTranspose2d(features * 8, features * 4, kernel_size=decoder_kernel_size, stride=decoder_stride),
-        #     nn.ReLU(inplace=True),
+        #     nn.ConvTranspose2d(features * 8, features * 4, kernel_size=decoder_stride, stride=decoder_stride), activation
         # )
         self.upconv3 = nn.Upsample(scale_factor=tuple(decoder_stride), mode='bilinear', align_corners=False)
         self.decoder3 = self._block(
-            (features * 4) * 3, features * 4, kernel_size=decoder_kernel_size, padding=decoder_padding, activation=self.activation, name="dec3"
+            (features * 4) * 3, features * 4, kernel_size=decoder_kernel_size, padding=decoder_padding, activation=activation, name="dec3"
         )
         # self.upconv2 = nn.Sequential(
-        #     nn.ConvTranspose2d(features * 4, features * 2, kernel_size=decoder_kernel_size, stride=decoder_stride),
-        #     nn.ReLU(inplace=True),
+        #     nn.ConvTranspose2d(features * 4, features * 2, kernel_size=decoder_stride, stride=decoder_stride), activation
         # )
         self.upconv2 = nn.Upsample(scale_factor=tuple(decoder_stride), mode='bilinear', align_corners=False)
         self.decoder2 = self._block(
-            (features * 2) * 3, features * 2, kernel_size=decoder_kernel_size, padding=decoder_padding, activation=self.activation, name="dec2"
+            (features * 2) * 3, features * 2, kernel_size=decoder_kernel_size, padding=decoder_padding, activation=activation, name="dec2"
         )
         # self.upconv1 = nn.Sequential(
-        #     nn.ConvTranspose2d(features * 2, features, kernel_size=decoder_kernel_size, stride=decoder_stride),
-        #     nn.ReLU(inplace=True),
+        #     nn.ConvTranspose2d(features * 2, features, kernel_size=decoder_stride, stride=decoder_stride), activation
         # )
         self.upconv1 = nn.Upsample(scale_factor=tuple(decoder_stride), mode='bilinear', align_corners=False)
         self.decoder1 = self._block(
-            features * 3, features, kernel_size=decoder_kernel_size, padding=decoder_padding, activation=self.activation, name="dec1"
+            features * 3, features, kernel_size=decoder_kernel_size, padding=decoder_padding, activation=activation, name="dec1"
         )
 
-        self.conv = nn.Conv2d(in_channels=features, out_channels=out_channels, kernel_size=1)
+        self.upconv0 = nn.Upsample(scale_factor=tuple(decoder_stride), mode='bilinear', align_corners=False)
+        self.conv = nn.Conv2d(in_channels=features, out_channels=out_channels, kernel_size=decoder_kernel_size, padding=decoder_padding)
 
     def forward(self, x):
         
         bt, ch, nt, nsta = x.shape
         x = normalize_local(x)
-        # x = pad_input(x, ratio=self.encoder_stride)
+        x = pad_input(x, min_w=1024, min_h=1024)
 
         if self.use_stft:
             sgram = torch.squeeze(x, 3)  # bt, ch, nt, 1
@@ -213,53 +239,68 @@ class UNet(nn.Module):
             x = sgram
 
         enc1 = self.encoder1(x)
-        enc2 = self.encoder2(self.pool1(enc1))
+        # enc2 = self.pool1(enc1)
+        enc2 = self.encoder2(enc1)
         if self.use_stft:
             enc1 = self.fc1(enc1)
-        enc3 = self.encoder3(self.pool2(enc2))
+        # enc3 = self.pool2(enc2)
+        enc3 = self.encoder3(enc2)
         if self.use_stft:
             enc2 = self.fc2(enc2)
-        enc4 = self.encoder4(self.pool3(enc3))
+        # enc4 = self.pool3(enc3)
+        enc4 = self.encoder4(enc3)
         if self.use_stft:
             enc3 = self.fc3(enc3)
-
-        bottleneck = self.bottleneck(self.pool4(enc4))
+        
+        # bottleneck = self.pool4(bottleneck)
+        bottleneck = self.bottleneck(enc4)
         if self.use_stft:
             enc4 = self.fc4(enc4)
             bottleneck = self.fc5(bottleneck)
 
+        # print(f"{x.shape = }, {enc1.shape = }, {enc2.shape = }, {enc3.shape = }, {enc4.shape = }, {bottleneck.shape = }")
+
         dec4 = self.upconv4(bottleneck)
-        dec4 = UNet._cat(enc4, dec4)
+        dec4 = self._cat(enc4, dec4)
         dec4 = self.decoder4(dec4)
+
         dec3 = self.upconv3(dec4)
-        dec3 = UNet._cat(enc3, dec3)
+        dec3 = self._cat(enc3, dec3)
         dec3 = self.decoder3(dec3)
+
         dec2 = self.upconv2(dec3)
-        dec2 = UNet._cat(enc2, dec2)
+        dec2 = self._cat(enc2, dec2)
         dec2 = self.decoder2(dec2)
+
         dec1 = self.upconv1(dec2)
-        dec1 = UNet._cat(enc1, dec1)
+        dec1 = self._cat(enc1, dec1)
         dec1 = self.decoder1(dec1)
-        # return torch.sigmoid(self.conv(dec1))
-        out = self.conv(dec1)
+
+        # dec0 = F.interpolate(out, size=(nt, nsta), mode='bilinear', align_corners=False)
+        dec0 = self.upconv0(dec1)
+        out = self.conv(dec0)
+
         result = {}
-        result["out"] = F.interpolate(out, size=(nt, nsta), mode='bilinear', align_corners=False)
+        result["out"] = out[:, :, :nt, :nsta]
         if self.use_stft:
             result["sgram"] = sgram
         return result
 
     @staticmethod
     def _cat(enc, dec): # size encoder > decoder
-        diffY = enc.size()[2] - dec.size()[2]
-        diffX = enc.size()[3] - dec.size()[3]
-        if (diffX < 0) or (diffY < 0):
-            print(f"{diffY = }, {diffX = }, {enc.size() = }, {dec.size() = }")
-        dec = F.pad(dec, [diffX // 2, diffX - diffX // 2, diffY // 2, diffY - diffY // 2])
+
+        # diffY = enc.size()[2] - dec.size()[2]
+        # diffX = enc.size()[3] - dec.size()[3]
+        # if (diffX < 0) or (diffY < 0):
+        #     print(f"{diffY = }, {diffX = }, {enc.size() = }, {dec.size() = }")
+        # dec = F.pad(dec, [diffX // 2, diffX - diffX // 2, diffY // 2, diffY - diffY // 2])
+        
         x1 = torch.cat((enc, dec), dim=1)
+
         return x1
 
     @staticmethod
-    def _block(in_channels, features, kernel_size=(3, 3), padding=None, activation=nn.ReLU(inplace=True), name=""):
+    def _block(in_channels, features, kernel_size=(3, 3), stride=(1,1), padding=None, activation=nn.ReLU(inplace=True), name=""):
         if padding is None:
             padding = tuple([x//2 for x in kernel_size])
         return nn.Sequential(
@@ -283,6 +324,7 @@ class UNet(nn.Module):
                             in_channels=features,
                             out_channels=features,
                             kernel_size=kernel_size,
+                            stride=stride,
                             padding=padding,
                             bias=False,
                         ),
@@ -324,10 +366,10 @@ def phasenet_das(
     *args, **kwargs
 ) -> PhaseNetDAS:
     
-    backbone = UNet(in_channels=1, out_channels=3, init_features=8, use_stft=False, 
-                    encoder_kernel_size = (5, 5), decoder_kernel_size = (5, 5),
-                    encoder_stride = (2, 4), decoder_stride = (2, 4),
-                    encoder_padding = (2, 2), decoder_padding = (2, 2))
+    backbone = UNet(in_channels=1, out_channels=3, init_features=16, use_stft=False, 
+                    encoder_kernel_size = (7, 7), decoder_kernel_size = (7, 7),
+                    encoder_stride = (4, 4), decoder_stride = (4, 4))
+
     classifier = UNetHead()
 
     return PhaseNetDAS(backbone, classifier)
