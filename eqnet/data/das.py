@@ -58,7 +58,8 @@ def generate_label(
     """
     nch, nt, nsta = data.shape
     target = np.zeros([len(phase_list) + 1, nt, nsta], dtype=np.float32)
-    time_mask = np.zeros([nt, nsta], dtype=np.float32)  ## mask for window near the phase arrival
+    ## mask for window near the phase arrival
+    time_mask = np.zeros([nt, nsta], dtype=np.float32)
 
     if space_mask is None:
         space_mask = np.zeros((len(phase_list), nsta), dtype=np.bool)
@@ -79,11 +80,14 @@ def generate_label(
 
     # plt.figure(figsize=(12, 12))
     # plt.subplot(3, 1, 1)
-    # plt.imshow(data[0,:,:], aspect="auto")
+    # plt.imshow(data[0, :, :], aspect="auto")
     # plt.subplot(3, 1, 2)
-    # plt.imshow(target.transpose(1, 2, 0), aspect="auto")
+    # target_ = np.zeros([3, nt, nsta], dtype=np.float32)
+    # for i in range(target.shape[0]):
+    #     target_[i, :, :] = target[i, :, :]
+    # plt.imshow(target_.transpose(1, 2, 0), aspect="auto")
     # plt.subplot(3, 1, 3)
-    # plt.imshow(phase_mask, aspect="auto")
+    # plt.imshow(time_mask, aspect="auto")
     # plt.savefig("test_label.png")
     # raise
 
@@ -94,7 +98,16 @@ def generate_label(
 
 
 def stack_event(
-    data1, target1, data2, target2, snr1=1, snr2=1, mask1=None, mask2=None, min_shift=0, max_shift=1024 * 3
+    data1,
+    target1,
+    data2,
+    target2,
+    snr1=1,
+    snr2=1,
+    mask1=None,
+    mask2=None,
+    min_shift=0,
+    max_shift=1024 * 2,
 ):
 
     tries = 0
@@ -156,7 +169,12 @@ def pad_data(data, target, mask, nt=1024 * 4, nsta=1024 * 6):
     return data, target, mask
 
 
-def cut_data(data: torch.Tensor, targets: torch.Tensor = None, nt: int = 1024 * 3, nsta: int = 1024 * 5):
+def cut_data(
+    data: torch.Tensor,
+    targets: torch.Tensor = None,
+    nt: int = 1024 * 3,
+    nsta: int = 1024 * 5,
+):
     """cut data window for training"""
 
     nch, w, h = data.shape  # w: time, h: station
@@ -173,6 +191,7 @@ def cut_data(data: torch.Tensor, targets: torch.Tensor = None, nt: int = 1024 * 
         tmp_sum = 0
         tries = 0
         while tmp_sum < label_width / 2 * nsta * 0.1:  ## assuming 10% of traces have picks
+            # while tmp_sum < 50:
             w0 = np.random.randint(0, max(1, w - nt))
             h0 = np.random.randint(0, max(1, h - nsta))
             tmp_sum = torch.sum(targets[1:, w0 : w0 + nt, h0 : h0 + nsta])  # nch, nt, nsta
@@ -388,22 +407,30 @@ def add_moveout(data, targets=None, vmin=2.0, vmax=6.0, dt=0.01, dx=0.01, shift_
 class DASIterableDataset(IterableDataset):
     def __init__(
         self,
-        data_path="./",
+        data_path=None,
         data_list=None,
         format="h5",
         prefix="",
         suffix="",
+        nt=1024 * 3,
+        nx=1024 * 5,
         ## training
         training=False,
-        picks=["p_picks", "s_picks"],
+        picks=["P", "S"],
         noise_path=None,
         label_path=None,
         stack_noise=False,
         stack_event=False,
         resample_time=False,
         resample_space=False,
+        mask_edge=False,
         filtering=False,
-        filter_params={"freqmin": 0.1, "freqmax": 10.0, "corners": 4, "zerophase": True},
+        filter_params={
+            "freqmin": 0.1,
+            "freqmax": 10.0,
+            "corners": 4,
+            "zerophase": True,
+        },
         ## continuous data
         dataset=None,  # "eqnet" or "mammoth" or None
         cut_patch=False,
@@ -421,22 +448,26 @@ class DASIterableDataset(IterableDataset):
         self.suffix = suffix
         if data_list is not None:
             self.data_list = np.loadtxt(data_list, dtype=str).tolist()
-        else:
+        elif data_path is not None:
             self.data_list = [
                 os.path.basename(x) for x in sorted(list(glob(os.path.join(data_path, f"{prefix}*{suffix}.{format}"))))
             ]
+        else:
+            self.data_list = None
         if skip_files is not None:
             self.data_list = self.filt_list(self.data_list, kwargs["skip_files"])
-
-        self.data_list = self.data_list[rank::world_size]
+        if self.data_list is not None:
+            self.data_list = self.data_list[rank::world_size]
 
         ## continuous data
         self.dataset = dataset
         self.cut_patch = cut_patch
         self.dt = kwargs["dt"] if "dt" in kwargs else 0.01  # s
         self.dx = kwargs["dx"] if "dx" in kwargs else 10.0  # m
-        self.nt = kwargs["nt"] if "nt" in kwargs else 1024 * 3
-        self.nx = kwargs["nx"] if "nx" in kwargs else 1024 * 3
+        # self.nt = kwargs["nt"] if "nt" in kwargs else 1024 * 3
+        # self.nx = kwargs["nx"] if "nx" in kwargs else 1024 * 5
+        self.nt = nt
+        self.nx = nx
 
         ## training and data augmentation
         self.training = training
@@ -460,13 +491,16 @@ class DASIterableDataset(IterableDataset):
         self.stack_event = stack_event
         self.resample_space = resample_space
         self.resample_time = resample_time
-        self.add_moveout = add_moveout
+        self.mask_edge = mask_edge
         self.filtering = filtering
 
         if self.training:
             print(f"{label_path}: {len(self.label_list)} files")
         else:
-            print(os.path.join(data_path, f"{prefix}*{suffix}.{format}"), f": {len(self.data_list)} files")
+            print(
+                os.path.join(data_path, f"{prefix}*{suffix}.{format}"),
+                f": {len(self.data_list)} files",
+            )
 
     def filt_list(self, data_list, skip_files):
         skip_data_list = [
@@ -483,7 +517,7 @@ class DASIterableDataset(IterableDataset):
     def __len__(self):
 
         if self.training:
-            return len(self.label_list)
+            return max(100, len(self.label_list))
 
         if not self.cut_patch:
             return len(self.data_list)
@@ -518,20 +552,25 @@ class DASIterableDataset(IterableDataset):
             file = file_list[np.random.randint(0, len(file_list))]
             picks = pd.read_csv(file)
             ## filter channels with all phase types
-            picks = filt_channels(picks)
+            if "event_index" in picks.columns:
+                picks = filt_channels(picks)
 
             meta = {}
-            meta["p_picks"] = picks[picks["phase_type"] == "P"][["channel_index", "phase_index"]].to_numpy()
-            meta["s_picks"] = picks[picks["phase_type"] == "S"][["channel_index", "phase_index"]].to_numpy()
-            if (len(meta["p_picks"]) < 500) or (len(meta["s_picks"]) < 500):
+            for pick_type in self.picks:
+                meta[pick_type] = picks[picks["phase_type"] == pick_type][["channel_index", "phase_index"]].to_numpy()
+            if (len(meta["P"]) < 500) or (len(meta["S"]) < 500):
                 continue
 
             ## load data
-            tmp = file.split("/")
-            tmp[-2] = "data"
-            tmp[-1] = tmp[-1][:-4] + ".h5"  ## remove .csv
+            if self.data_path is not None:
+                tmp = os.path.join(self.data_path, file.split("/")[-1][:-4] + ".h5")
+            else:
+                tmp = file.split("/")
+                tmp[-2] = "data"
+                tmp[-1] = tmp[-1][:-4] + ".h5"  ## remove .csv
+                tmp = "/".join(tmp)
             try:
-                with h5py.File("/".join(tmp), "r") as f:
+                with h5py.File(tmp, "r") as f:
                     data = f["data"][()]
                 data = data[np.newaxis, :, :]  # nchn, nt, nsta
                 data = torch.from_numpy(data.astype(np.float32))
@@ -549,11 +588,15 @@ class DASIterableDataset(IterableDataset):
                     if tmp_picks["phase_index"].min() < 3000:
                         tries += 1
                         continue
-                    tmp = tmp_file.split("/")
-                    tmp[-2] = "data"
-                    tmp[-1] = tmp[-1][:-4] + ".h5"  ## remove .csv
+                    if self.data_path is not None:
+                        tmp = os.path.join(self.data_path, tmp_file.split("/")[-1][:-4] + ".h5")
+                    else:
+                        tmp = tmp_file.split("/")
+                        tmp[-2] = "data"
+                        tmp[-1] = tmp[-1][:-4] + ".h5"  ## remove .csv
+                        tmp = "/".join(tmp)
                     try:
-                        with h5py.File("/".join(tmp), "r") as f:
+                        with h5py.File(tmp, "r") as f:
                             noise = f["data"][()]
                         ## The first 30s are noise in the training data
                         noise = noise[np.newaxis, :2800, :]  # nchn, nt, nsta
@@ -565,7 +608,7 @@ class DASIterableDataset(IterableDataset):
                     noise = noise - torch.median(noise, dim=2, keepdims=True)[0]
                     noise = normalize(noise)
                     # noise = noise / torch.std(noise)
-                    noise = pad_noise(noise)
+                    noise = pad_noise(noise, self.nt, self.nx)
                     break
                 if tries >= max_tries:
                     print(f"Failed to find noise file for {file}")
@@ -578,31 +621,34 @@ class DASIterableDataset(IterableDataset):
             # data = data / torch.std(data)
 
             ## snr
-            snr = calc_snr(data, meta["p_picks"])
+            if "P" in meta:
+                snr = calc_snr(data, meta["P"])
 
             ## generate labels
             picks = [meta[x] for x in self.picks]
 
             ## augmentation
+            rand = np.random.rand()
             if self.resample_time:
-                tmp = np.random.rand()
-                if tmp < 0.2:
-                    data, picks = resample_time(data, picks, 5)
-                elif tmp < 0.4:
+                if rand < 0.2:
+                    data, picks = resample_time(data, picks, 3)
+                elif rand < 0.4:
                     data, picks = resample_time(data, picks, 0.5)
 
             ## generate trainng labels
             targets, phase_mask = generate_label(data, picks, return_time_mask=True)
             targets = torch.from_numpy(targets)
             phase_mask = torch.from_numpy(phase_mask)
-            data, targets, phase_mask = pad_data(data, targets, phase_mask)
+
+            ## pad data
+            data, targets, phase_mask = pad_data(data, targets, phase_mask, self.nt + 1024, self.nx + 1024)
 
             ## augmentation
             if self.resample_space:
-                tmp = np.random.rand()
-                if tmp < 0.2:
+                # tmp = np.random.rand()
+                if rand < 0.2:
                     data, targets = resample_space(data, targets, 5)
-                elif (tmp < 0.4) and (data.shape[-1] > 2000):
+                elif (rand < 0.4) and (data.shape[-1] > 2000):
                     data, targets = resample_space(data, targets, 0.5)
 
             ## augmentation
@@ -614,7 +660,7 @@ class DASIterableDataset(IterableDataset):
 
             # for ii in range(sum([len(x) for x in picks]) // self.min_picks):
             for ii in range(5):
-                data_, targets_ = cut_data(data, targets)
+                data_, targets_ = cut_data(data, targets, self.nt, self.nx)
                 if data_ is None:
                     continue
 
@@ -623,8 +669,8 @@ class DASIterableDataset(IterableDataset):
                 #     data_, targets_ = add_moveout(data_, targets_)
 
                 ## augmentation
-                if self.stack_noise and (not status_stack_event):
-                    noise_ = cut_noise(noise)
+                if self.stack_noise and (not status_stack_event) and (np.random.rand() < 0.5):
+                    noise_ = cut_noise(noise, self.nt, self.nx)
                     data_ = stack_noise(data_, noise_, snr)
 
                 ## augmentation
@@ -632,7 +678,7 @@ class DASIterableDataset(IterableDataset):
                     data_, targets_ = flip_lr(data_, targets_)
 
                 ## augmentation
-                if np.random.rand() < 0.2:
+                if self.mask_edge and (np.random.rand() < 0.2):
                     data_, targets_ = mask_edge(data_, targets_)
 
                 data_ = normalize(data_)
