@@ -1,4 +1,3 @@
-import datetime
 import logging
 import multiprocessing
 import os
@@ -7,15 +6,13 @@ import warnings
 import pandas as pd
 import torch
 import torch.utils.data
-from tqdm import tqdm
 
 import eqnet
 import utils
-from eqnet.data import DASDataset, DASIterableDataset
+from eqnet.data import DASIterableDataset
 from eqnet.utils import detect_peaks, extract_picks, merge_picks, plot_das
 
 warnings.filterwarnings("ignore", ".*Length of IterableDataset.*")
-
 logger = logging.getLogger("EQNet")
 
 
@@ -28,9 +25,8 @@ def pred_fn(model, data_loader, pick_path, figure_path, args):
         for meta in metric_logger.log_every(data_loader, 1, header):
 
             with torch.cuda.amp.autocast(enabled=args.amp):
-                scores = torch.softmax(model(meta), dim=1)  # batch, nch, nt, nsta
-                vmin = 0.6
-                topk_scores, topk_inds = detect_peaks(scores, vmin=vmin, kernel=21)
+                scores = torch.softmax(model(meta), dim=1)  # [batch, nch, nt, nsta]
+                topk_scores, topk_inds = detect_peaks(scores, vmin=args.min_prob, kernel=21)
 
                 picks_ = extract_picks(
                     topk_inds,
@@ -40,7 +36,8 @@ def pred_fn(model, data_loader, pick_path, figure_path, args):
                     begin_time_index=meta["begin_time_index"] if "begin_time_index" in meta else None,
                     begin_channel_index=meta["begin_channel_index"] if "begin_channel_index" in meta else None,
                     dt=meta["dt_s"] if "dt_s" in meta else 0.01,
-                    vmin=vmin,
+                    vmin=args.min_prob,
+                    phases=args.phases,
                 )
 
             for i in range(len(meta["file_name"])):
@@ -60,10 +57,10 @@ def pred_fn(model, data_loader, pick_path, figure_path, args):
 
             if args.plot_figure:
                 plot_das(
-                    # normalize_local(meta["data"]).cpu().numpy(),
                     meta["data"].cpu().numpy(),
                     scores.cpu().numpy(),
                     picks=picks_,
+                    phases=args.phases,
                     file_name=meta["file_name"],
                     begin_time_index=meta["begin_time_index"] if "begin_time_index" in meta else None,
                     begin_channel_index=meta["begin_channel_index"] if "begin_channel_index" in meta else None,
@@ -99,7 +96,9 @@ def main(args):
 
     device = torch.device(args.device)
 
-    model = eqnet.models.__dict__[args.model]()
+    model = eqnet.models.__dict__[args.model](
+        backbone=args.backbone, in_channels=1, out_channels=(len(args.phases) + 1)
+    )
     logger.info("Model:\n{}".format(model))
 
     model.to(device)
@@ -127,18 +126,18 @@ def main(args):
         world_size = utils.get_world_size()
     else:
         rank, world_size = 0, 1
-    
+
     dataset = DASIterableDataset(
         data_path=args.data_path,
         data_list=args.data_list,
         format=args.format,
         rank=rank,
         world_size=world_size,
+        nx=args.nx,
+        nt=args.nt,
         training=False,
         dataset=args.dataset,
         cut_patch=args.cut_patch,
-        nx=args.nx,
-        nt=args.nt,
         filtering=args.filtering,
         skip_files=args.skip_files,
     )
@@ -162,8 +161,12 @@ def get_args_parser(add_help=True):
 
     parser = argparse.ArgumentParser(description="EQNet Model", add_help=add_help)
 
+    # model
     parser.add_argument("--model", default="phasenet_das", type=str, help="model name")
     parser.add_argument("--resume", default="", type=str, help="path of checkpoint")
+    parser.add_argument("--backbone", default="resnet50", type=str, help="model backbone")
+    parser.add_argument("--phases", default=["P", "S"], type=str, nargs="+", help="phases to use")
+
     parser.add_argument("--device", default="cuda", type=str, help="device (Use cuda or cpu Default: cuda)")
     parser.add_argument(
         "-j", "--workers", default=4, type=int, metavar="N", help="number of data loading workers (default: 16)"
@@ -190,7 +193,7 @@ def get_args_parser(add_help=True):
     parser.add_argument("--nt", default=1024 * 3, type=int, help="number of time samples for each patch")
     parser.add_argument("--nx", default=1024 * 3, type=int, help="number of spatial samples for each patch")
     parser.add_argument("--skip_files", default=None, help="If skip the files that have been processed")
-    
+    parser.add_argument("--min_prob", default=0.6, type=float, help="minimum probability for picking")
     return parser
 
 
