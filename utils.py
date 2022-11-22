@@ -75,7 +75,7 @@ class ConfusionMatrix:
         with torch.inference_mode():
             k = (a >= 0) & (a < n)
             inds = n * a[k].to(torch.int64) + b[k]
-            self.mat += torch.bincount(inds, minlength=n ** 2).reshape(n, n)
+            self.mat += torch.bincount(inds, minlength=n**2).reshape(n, n)
 
     def reset(self):
         self.mat.zero_()
@@ -88,12 +88,7 @@ class ConfusionMatrix:
         return acc_global, acc, iu
 
     def reduce_from_all_processes(self):
-        if not torch.distributed.is_available():
-            return
-        if not torch.distributed.is_initialized():
-            return
-        torch.distributed.barrier()
-        torch.distributed.all_reduce(self.mat)
+        reduce_across_processes(self.mat)
 
     def __str__(self):
         acc_global, acc, iu = self.compute()
@@ -114,7 +109,10 @@ class MetricLogger:
         for k, v in kwargs.items():
             if isinstance(v, torch.Tensor):
                 v = v.item()
-            assert isinstance(v, (float, int))
+            if not isinstance(v, (float, int)):
+                raise TypeError(
+                    f"This method expects the value of the input arguments to be of type float or int, instead  got {type(v)}"
+                )
             self.meters[k].update(v)
 
     def __getattr__(self, attr):
@@ -287,7 +285,9 @@ def init_distributed_mode(args):
     torch.distributed.init_process_group(
         backend=args.dist_backend, init_method=args.dist_url, world_size=args.world_size, rank=args.rank
     )
+    torch.distributed.barrier()
     setup_for_distributed(args.rank == 0)
+
 
 def reduce_across_processes(val):
     if not is_dist_avail_and_initialized():
