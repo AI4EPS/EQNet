@@ -421,8 +421,18 @@ class UNet(nn.Module):
 
 
 class UNetHead(nn.Module):
-    def __init__(self):
+    def __init__(self, out_channels=3, reg=0.1):
         super().__init__()
+        self.out_channels = out_channels
+        laplace_kernel = torch.tensor(
+            [
+                [1, 1, 1],
+                [1, -8, 1],
+                [1, 1, 1],
+            ]
+        ).view(1, 1, 3, 3).expand(-1, out_channels, -1, -1).float()
+        self.register_buffer("laplace_kernel", laplace_kernel)
+        self.reg = reg
 
     def forward(self, features, targets=None):
         x = features["out"]
@@ -430,7 +440,7 @@ class UNetHead(nn.Module):
             return None, self.losses(x, targets)
         return x, {}
 
-    def losses(self, inputs, targets):
+    def losses(self, inputs, targets, ):
 
         inputs = inputs.float()  # https://github.com/pytorch/pytorch/issues/48163
         # loss = F.cross_entropy(
@@ -440,6 +450,9 @@ class UNetHead(nn.Module):
         # loss = F.mse_loss(inputs, targets, reduction="mean")
         # loss = F.l1_loss(inputs, targets, reduction="mean")
         loss = torch.sum(-targets * F.log_softmax(inputs, dim=1), dim=1).mean()
+        if self.reg > 0:
+            loss_laplace = F.conv2d(torch.softmax(inputs, dim=1), self.laplace_kernel, padding=1).abs().mean()
+            loss = loss + self.reg * loss_laplace
 
         return loss
 
@@ -448,7 +461,7 @@ class PhaseNetDAS(_SimpleSegmentationModel):
     pass
 
 
-def phasenet_das(in_channels=1, out_channels=3, *args, **kwargs) -> PhaseNetDAS:
+def phasenet_das(in_channels=1, out_channels=3, reg=0.0, *args, **kwargs) -> PhaseNetDAS:
 
     backbone = UNet(
         in_channels=in_channels,
@@ -461,6 +474,6 @@ def phasenet_das(in_channels=1, out_channels=3, *args, **kwargs) -> PhaseNetDAS:
         decoder_stride=(4, 4),
     )
 
-    classifier = UNetHead()
+    classifier = UNetHead(out_channels=out_channels, reg=reg)
 
     return PhaseNetDAS(backbone, classifier)
