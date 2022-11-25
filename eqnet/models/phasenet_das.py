@@ -25,7 +25,7 @@ class WeightedLoss(_WeightedLoss):
 
 
 # def normalize_local(data, filter=1024+1, stride=512):
-#     nb, nch, nt, nsta = data.shape
+#     nb, nch, nt, nx = data.shape
 #     if (nt % stride == 0):
 #         pad = max(filter - stride, 0)
 #     else:
@@ -35,11 +35,11 @@ class WeightedLoss(_WeightedLoss):
 #     with torch.no_grad():
 #         data_ = F.pad(data, (0, 0, pad1, pad2), mode="reflect")
 #         mean = F.avg_pool2d(data_, kernel_size=(filter, 1), stride=(stride, 1))
-#         mean = F.interpolate(mean, size=(nt, nsta), mode="bilinear", align_corners=False)
+#         mean = F.interpolate(mean, size=(nt, nx), mode="bilinear", align_corners=False)
 #         data -= mean
 #         data_ = F.pad(data, (0, 0, pad1, pad2), mode="reflect")
 #         std = F.lp_pool2d(data_, norm_type=2, kernel_size=(filter, 1), stride=(stride, 1)) / (filter ** 0.5)
-#         std = F.interpolate(std, size=(nt, nsta), mode="bilinear", align_corners=False)
+#         std = F.interpolate(std, size=(nt, nx), mode="bilinear", align_corners=False)
 #         data /= std
 #         data = torch.nan_to_num(data)
 #         data = log_transform(data)
@@ -53,7 +53,7 @@ def log_transform(x):
 
 def normalize_local(data, filter=1024, stride=1):
 
-    nb, nch, nt, nsta = data.shape
+    nb, nch, nt, nx = data.shape
 
     if nt % stride == 0:
         pad = max(filter - stride, 0)
@@ -72,8 +72,8 @@ def normalize_local(data, filter=1024, stride=1):
         # std = (F.lp_pool2d(data_, norm_type=2, kernel_size=(filter, 1), stride=(stride, 1)) / ((filter * nch) ** 0.5))
         # data /= std
         std = F.avg_pool2d(torch.abs(data_), kernel_size=(filter, 1), stride=(stride, 1))
-        mask = std != 0
-        data[mask] = data[mask] / std[mask]
+        std[std == 0.0] = 1.0
+        data = data / std
 
         data = log_transform(data)
 
@@ -82,9 +82,9 @@ def normalize_local(data, filter=1024, stride=1):
 
 def pad_input(data, min_w=1024, min_h=1024):
 
-    nb, nch, nt, nsta = data.shape
+    nb, nch, nt, nx = data.shape
     pad_w = (min_w - nt % min_w) % min_w
-    pad_h = (min_h - nsta % min_h) % min_h
+    pad_h = (min_h - nx % min_h) % min_h
 
     if (pad_w > 0) or (pad_h > 0):
         with torch.no_grad():
@@ -301,7 +301,7 @@ class UNet(nn.Module):
 
     def forward(self, x):
 
-        bt, ch, nt, nsta = x.shape
+        bt, ch, nt, nx = x.shape
         x = normalize_local(x)
         x = pad_input(x, min_w=1024, min_h=1024)
 
@@ -352,12 +352,11 @@ class UNet(nn.Module):
         dec1 = self._cat(enc1, dec1)
         dec1 = self.decoder1(dec1)
 
-        # dec0 = F.interpolate(out, size=(nt, nsta), mode='bilinear', align_corners=False)
         dec0 = self.upconv0(dec1)
         out = self.conv(dec0)
 
         result = {}
-        result["out"] = out[:, :, :nt, :nsta]
+        result["out"] = out[:, :, :nt, :nx]
         if self.use_stft:
             result["sgram"] = sgram
         return result
@@ -438,9 +437,9 @@ class UNetHead(nn.Module):
         x = features["out"]
         if self.training:
             return None, self.losses(x, targets)
-        return x, {}
+        return x, None
 
-    def losses(self, inputs, targets, ):
+    def losses(self, inputs, targets):
 
         inputs = inputs.float()  # https://github.com/pytorch/pytorch/issues/48163
         # loss = F.cross_entropy(

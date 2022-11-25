@@ -7,7 +7,7 @@ from torch import Tensor, nn
 from torch.nn import functional as F
 
 from .resnet1d import BasicBlock, Bottleneck, ResNet
-from .unet1d import UNet
+from .unet import UNet
 
 
 class FCNHead(nn.Module):
@@ -25,7 +25,6 @@ class FCNHead(nn.Module):
                 nn.Conv1d(inter_channels, out_channels, 1),
             ]
         )
-
         # super(FCNHead, self).__init__(*layers)
 
     def forward(self, features, targets=None):
@@ -73,7 +72,7 @@ class DeepLabHead(nn.Module):
             ]
         )
 
-    def forward(self, features, targets=None):
+    def forward(self, features, targets=None, mask=None):
 
         x = features["out"]
         bt, st, ch, nt = x.shape  # batch, station, channel, time
@@ -86,14 +85,14 @@ class DeepLabHead(nn.Module):
         x = x.permute(0, 2, 3, 1)
 
         if self.training:
-            return None, self.losses(x, targets)
+            return None, self.losses(x, targets, mask)
         return x, {}
 
-    def losses(self, inputs, targets):
+    def losses(self, inputs, targets, mask=None):
         inputs = inputs.float()
-
+        
         if self.out_channels == 1:
-            loss = F.binary_cross_entropy_with_logits(inputs, targets)
+            loss = F.binary_cross_entropy_with_logits(inputs, targets, weight=mask)
         else:
             loss = torch.sum(-targets.float() * F.log_softmax(inputs, dim=1), dim=1).mean()
 
@@ -103,7 +102,14 @@ class DeepLabHead(nn.Module):
 class ASPPConv(nn.Sequential):
     def __init__(self, in_channels: int, out_channels: int, dilation: int) -> None:
         modules = [
-            nn.Conv1d(in_channels, out_channels, 3, padding=dilation, dilation=dilation, bias=False),
+            nn.Conv1d(
+                in_channels,
+                out_channels,
+                3,
+                padding=dilation,
+                dilation=dilation,
+                bias=False,
+            ),
             nn.BatchNorm1d(out_channels),
             nn.ReLU(),
         ]
@@ -131,7 +137,11 @@ class ASPP(nn.Module):
         super().__init__()
         modules = []
         modules.append(
-            nn.Sequential(nn.Conv1d(in_channels, out_channels, 1, bias=False), nn.BatchNorm1d(out_channels), nn.ReLU())
+            nn.Sequential(
+                nn.Conv1d(in_channels, out_channels, 1, bias=False),
+                nn.BatchNorm1d(out_channels),
+                nn.ReLU(),
+            )
         )
 
         rates = tuple(atrous_rates)
@@ -158,66 +168,65 @@ class ASPP(nn.Module):
 
 
 class UNetHead(nn.Module):
-    def __init__(self, in_channels: int, out_channels: int, feature_names: str = "out") -> None:
+    def __init__(self, in_channels: int, out_channels: int, kernel_size=(7, 1), padding=(3, 0), feature_names: str = "out") -> None:
         super().__init__()
         self.out_channels = out_channels
-        self.layers = nn.Conv1d(in_channels=in_channels, out_channels=out_channels, kernel_size=3, padding=1)
         self.feature_names = feature_names
+        self.layers = nn.Conv2d(in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size, padding=padding)
 
-    def forward(self, features, targets=None):
+    def forward(self, features, targets=None, mask=None):
+
         x = features[self.feature_names]
-        bt, st, ch, nt = x.shape  # batch, station, channel, time
-        x = x.view(bt * st, ch, nt)
-
         x = self.layers(x)
 
-        x = x.view(bt, st, x.shape[1], x.shape[2])
-        x = x.permute(0, 2, 3, 1)  # batch, channel, time,  station
-
         if self.training:
-            return None, self.losses(x, targets)
+            return None, self.losses(x, targets, mask)
 
-        return x, {}
+        return x, None
 
-    def losses(self, inputs, targets):
+    def losses(self, inputs, targets, mask=None):
 
         inputs = inputs.float()
 
         if self.out_channels == 1:
-            loss = F.binary_cross_entropy_with_logits(inputs, targets)
+            if mask is None:
+                loss = F.binary_cross_entropy_with_logits(inputs, targets)
+            else:
+                loss = F.binary_cross_entropy_with_logits(inputs, targets, weight=mask, reduction="sum") / mask.sum()
         else:
             loss = torch.sum(-targets.float() * F.log_softmax(inputs, dim=1), dim=1).mean()
-
-        # # loss = F.kl_div(F.log_softmax(inputs, dim=1), targets, reduction="mean")
-        # # loss = F.mse_loss(inputs, targets, reduction="mean")
-        # # loss = F.l1_loss(inputs, targets, reduction="mean")
-        # # loss = torch.sum(-targets * F.log_softmax(inputs, dim=1), dim=1).mean()
-
         return loss
 
 
 class PhaseNet(nn.Module):
-    def __init__(self, backbone="resnet50") -> None:
+    def __init__(self, backbone="resnet50", use_polarity=True, event_loss_weight=1.0, polarity_loss_weight=1.0) -> None:
         super().__init__()
         self.backbone_name = backbone
+        self.use_polarity = use_polarity
         if backbone == "resnet18":
             self.backbone = ResNet(BasicBlock, [2, 2, 2, 2])  # ResNet18
-            # self.backbone = ResNet(BasicBlock, [3, 4, 6, 3]) #ResNet34
         elif backbone == "resnet50":
             self.backbone = ResNet(Bottleneck, [3, 4, 6, 3])  # ResNet50
         elif backbone == "unet":
             self.backbone = UNet()
         else:
-            raise ValueError("backbone must be one of 'resnet' or 'swin'")
+            raise ValueError("backbone only supports resnet18, resnet50, or unet")
 
         if backbone == "unet":
             self.phase_picker = UNetHead(16, 3, feature_names="out")
-            self.event_detector = UNetHead(256, 1, feature_names="res5")
+            self.event_detector = UNetHead(32, 1, feature_names="res5")
+            if self.use_polarity:
+                self.polarity_picker = UNetHead(16, 1, feature_names="out")
         else:
             self.phase_picker = DeepLabHead(128, 3, scale_factor=32)
             self.event_detector = DeepLabHead(128, 1, scale_factor=2)
+            if self.use_polarity:
+                self.polarity_picker = DeepLabHead(128, 1, scale_factor=32)
             # self.phase_picker = FCNHead(128, 3)
             # self.event_detector = FCNHead(128, 1)
+
+        self.event_loss_weight = event_loss_weight
+        self.polarity_loss_weight = polarity_loss_weight
 
     @property
     def device(self):
@@ -229,61 +238,59 @@ class PhaseNet(nn.Module):
 
         if self.training:
             phase_pick = batched_inputs["phase_pick"].to(self.device)
-            center_heatmap = batched_inputs["center_heatmap"].to(self.device)
+            event_center = batched_inputs["event_center"].to(self.device)
             event_location = batched_inputs["event_location"].to(self.device)
-            event_location_mask = batched_inputs["event_location_mask"].to(self.device)
+            event_mask = batched_inputs["event_mask"].to(self.device)
+            if self.use_polarity:
+                polarity = batched_inputs["polarity"].to(self.device)
+                polarity_mask = batched_inputs["polarity_mask"].to(self.device)
         else:
-            phase_pick, center_heatmap, event_location, event_location_mask = None, None, None, None
+            phase_pick = None
+            event_center = None
+            event_location = None
+            event_mask = None
+            polarity = None
+            polarity_mask = None
 
         if self.backbone_name == "swin2":
             station_location = batched_inputs["station_location"].to(self.device)
-            # features = self.backbone({"waveform": waveform, "station_location": station_location})
             features = self.backbone(waveform, station_location)
         else:
             features = self.backbone(waveform)
         # features: (batch, station, channel, time)
 
         output_phase, loss_phase = self.phase_picker(features, phase_pick)
-        output_event, loss_event = self.event_detector(features, center_heatmap)
+        output_event, loss_event = self.event_detector(features, event_center)
+        if self.use_polarity:
+            output_polarity, loss_polarity = self.polarity_picker(features, polarity, mask=polarity_mask)
+        else:
+            output_polarity, loss_polarity = None, 0.0
 
         # print(f"{waveform.shape = }")
         # print(f"{phase_pick.shape = }")
         # print(f"{center_heatmap.shape = }")
-        # raise
         # print(f"{output_phase.shape = }")
         # print(f"{output_event.shape = }")
 
         if self.training:
-            return loss_phase + loss_event
-            # return loss_phase
-            # return loss_event
+            return {"loss": loss_phase + loss_event * self.event_loss_weight + loss_polarity * self.polarity_loss_weight,
+                    "loss_phase": loss_phase,
+                    "loss_event": loss_event,
+                    "loss_polarity": loss_polarity,
+            }
         else:
-            return {"phase": output_phase, "event": output_event}
-
-        # output_phase = self.phase_picker(features["out"].squeeze(1))
-        # # output_phase: (bt, chn, time)
-        # output_phase = F.interpolate(output_phase, scale_factor=32, mode="linear", align_corners=False)
-
-        # output_event = self.event_detector(features["out"].squeeze(1))
-        # # output_event: (bt, time)
-        # output_event = F.interpolate(output_event, scale_factor=2, mode="linear", align_corners=False).squeeze(1)
-
-        # if self.training:
-        #     # phase_pick: (batch, channel, time, station)
-        #     phase_pick = phase_pick.squeeze(-1)  # one station
-        #     loss_phase = torch.sum(-phase_pick.float() * F.log_softmax(output_phase, dim=1), dim=1).mean()
-
-        #     center_heatmap = center_heatmap.squeeze(-1)  # one station
-        #     output_event = output_event.float()  # https://github.com/pytorch/pytorch/issues/48163
-        #     loss_event = F.binary_cross_entropy_with_logits(output_event, center_heatmap)
-
-        #     return loss_phase + loss_event
-        # else:
-        #     return {"phase": output_phase, "event": output_event}
+            return {
+                "phase": output_phase,
+                "event": output_event,
+                "polarity": output_polarity,
+            }
 
 
-def phasenet(
-    backbone: ResNet,
-) -> PhaseNet:
+def phasenet(backbone="resnet50", use_polarity=True, event_loss_weight=1.0, polarity_loss_weight=1.0, *args, **kargs) -> PhaseNet:
 
-    return PhaseNet(backbone)
+    return PhaseNet(
+        backbone=backbone,
+        use_polarity=use_polarity,
+        event_loss_weight=event_loss_weight,
+        polarity_loss_weight=polarity_loss_weight,
+    )

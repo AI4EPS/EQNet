@@ -49,7 +49,7 @@ class _SimpleSegmentationModel(nn.Module):
         output, loss = self.classifier(features, targets)
 
         if self.training:
-            return loss
+            return {"loss": loss}
         else:
             return output
             

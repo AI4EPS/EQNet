@@ -21,7 +21,8 @@ from eqnet.data import (
     SeismicNetworkIterableDataset,
     SeismicTraceIterableDataset,
 )
-from eqnet.models import normalize_local
+from eqnet.models.unet import normalize_local
+from eqnet.models.phasenet_das import normalize_local as normalize_local_das
 
 torch.manual_seed(0)
 random.seed(0)
@@ -38,47 +39,7 @@ def evaluate(model, data_loader, device, num_classes=3, args=None):
     with torch.inference_mode():
         i = 0
         for meta in metric_logger.log_every(data_loader, 100, header):
-
-            if args.model == "phasenet":
-                out = model(meta)
-                phase = F.softmax(out["phase"], dim=1).cpu()
-                event = torch.sigmoid(out["event"]).cpu()
-                print("Plotting...")
-                eqnet.utils.visualize_phasenet_train(meta, phase, event, epoch=i, figure_dir=args.output_dir)
-                del phase, event
-
-            if args.model == "deepdenoiser":
-                pass
-
-            elif args.model == "phasenet_das":
-                with torch.no_grad():
-                    meta["data"] = normalize_local(meta["data"])
-                preds = model(meta)
-                preds = F.softmax(preds, dim=1).cpu()
-                print("Plotting...")
-                eqnet.utils.visualize_das_train(meta, preds, epoch=i, figure_dir=args.output_dir)
-                del preds
-
-            elif args.model == "autoencoder":
-                preds = model(meta).cpu()
-                print("Plotting...")
-                eqnet.utils.visualize_autoencoder_das_train(meta, preds, epoch=i, figure_dir=args.output_dir)
-                del preds
-
-            elif args.model == "eqnet":
-                out = model(meta)
-                phase = F.softmax(out["phase"], dim=1).cpu()
-                event = torch.sigmoid(out["event"]).cpu()
-                print("Plotting...")
-                eqnet.utils.visualize_eqnet_train(meta, phase, event, epoch=i, figure_dir=args.output_dir)
-                del phase, event
-
-            i += 1
-            # confmat.update(meta["targets"].argmax(1).flatten(), output.argmax(1).flatten().cpu())
-
-        # confmat.reduce_from_all_processes()
-
-    # return confmat
+            plot_results(model, i, args, meta)
     return
 
 
@@ -94,16 +55,23 @@ def train_one_epoch(
     scaler=None,
     args=None,
 ):
-    model.train()
+
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter("lr", utils.SmoothedValue(window_size=1, fmt="{value}"))
+    if args.model == "phasenet":
+        metric_logger.add_meter("loss_phase", utils.SmoothedValue(window_size=1, fmt="{value}"))
+        metric_logger.add_meter("loss_event", utils.SmoothedValue(window_size=1, fmt="{value}"))
+        metric_logger.add_meter("loss_polarity", utils.SmoothedValue(window_size=1, fmt="{value}"))
     header = f"Epoch: [{epoch}]"
+
+    model.train()
     i = 0
     for meta in metric_logger.log_every(data_loader, print_freq, header):
 
         with torch.cuda.amp.autocast(enabled=scaler is not None):
-            loss = model(meta)
+            loss_dict = model(meta)
 
+        loss = loss_dict["loss"]
         optimizer.zero_grad()
         if scaler is not None:
             scaler.scale(loss).backward()
@@ -115,35 +83,40 @@ def train_one_epoch(
 
         lr_scheduler.step()
 
-        metric_logger.update(loss=loss.item(), lr=optimizer.param_groups[0]["lr"])
+        metric_logger.update(lr=optimizer.param_groups[0]["lr"], **loss_dict)
 
         i += 1
-        # if i > len(data_loader):
-        # if i > 200:
-        #     break
         if i > iters_per_epoch:
             break
         # break
 
     model.eval()
-    with torch.inference_mode():
+    plot_results(model, epoch, args, meta)
 
+
+def plot_results(model, epoch, args, meta):
+
+    with torch.inference_mode():
         if args.model == "phasenet":
-            out = model(meta)
-            phase = F.softmax(out["phase"], dim=1).cpu()
-            event = torch.sigmoid(out["event"]).cpu()
-            # phase, event = None, None
-            polarity = torch.sigmoid(out["polarity"]).cpu()
+            with torch.no_grad():
+                out = model(meta)
+                phase = F.softmax(out["phase"], dim=1).cpu()
+                event = torch.sigmoid(out["event"]).cpu()
+                polarity = torch.sigmoid(out["polarity"]).cpu()
+                meta["waveform_raw"] = meta["waveform"].clone()
+                meta["waveform"] = normalize_local(meta["waveform"])
             print("Plotting...")
             eqnet.utils.visualize_phasenet_train(meta, phase, event, polarity, epoch=epoch, figure_dir=args.output_dir)
-            del phase, event
+            del phase, event, polarity
 
         if args.model == "deepdenoiser":
             pass
 
         elif args.model == "phasenet_das":
-            preds = model(meta)
-            preds = F.softmax(preds, dim=1).cpu()
+            with torch.no_grad():
+                preds = model(meta)
+                preds = F.softmax(preds, dim=1).cpu()
+                meta["data"] = normalize_local_das(meta["data"])
             print("Plotting...")
             eqnet.utils.visualize_das_train(meta, preds, epoch=epoch, figure_dir=args.output_dir)
             del preds
@@ -186,15 +159,23 @@ def main(args):
         dataset = DASIterableDataset(
             # data_path="/net/kuafu/mnt/tank/data/EventData/Mammoth_north/data",
             # noise_path="/net/kuafu/mnt/tank/data/EventData/Mammoth_north/data",
-            label_path=[
-                "/net/kuafu/mnt/tank/data/EventData/Mammoth_north/picks_phasenet_filtered/",
-                "/net/kuafu/mnt/tank/data/EventData/Mammoth_south/picks_phasenet_filtered/",
-                "/net/kuafu/mnt/tank/data/EventData/Ridgecrest/picks_phasenet_filtered/",
-                "/net/kuafu/mnt/tank/data/EventData/Ridgecrest_South/picks_phasenet_filtered/",
-            ],
+            # label_path=[
+            #     "/net/kuafu/mnt/tank/data/EventData/Mammoth_north/picks_phasenet_filtered/",
+            #     "/net/kuafu/mnt/tank/data/EventData/Mammoth_south/picks_phasenet_filtered/",
+            #     "/net/kuafu/mnt/tank/data/EventData/Ridgecrest/picks_phasenet_filtered/",
+            #     "/net/kuafu/mnt/tank/data/EventData/Ridgecrest_South/picks_phasenet_filtered/",
+            # ],
+            # noise_path =["/net/kuafu/mnt/tank/data/EventData/Mammoth_north/data",
+            #              "/net/kuafu/mnt/tank/data/EventData/Mammoth_south/data",
+            #              "/net/kuafu/mnt/tank/data/EventData/Ridgecrest/data",
+            #              "/net/kuafu/mnt/tank/data/EventData/Ridgecrest_South/data"],
             # label_path=["./converted_phase/manualpicks/"],
             # data_path="/net/kuafu/mnt/tank/data/EventData/Mammoth_south/data",
-            picks=args.picks,
+            # data_path = "./Forge_Utah/data/",
+            # label_path = "./Forge_Utah/picks/",
+            data_path=args.data_path,
+            label_path=args.label_path,
+            phases=args.phases,
             nt=args.nt,
             nx=args.nx,
             format="h5",
@@ -210,7 +191,9 @@ def main(args):
         train_sampler = None
         dataset_test = DASIterableDataset(
             # data_path="/net/kuafu/mnt/tank/data/EventData/Mammoth_south/data/",
-            label_path=["/net/kuafu/mnt/tank/data/EventData/Mammoth_south/picks_phasenet_filtered/"],
+            # label_path=["/net/kuafu/mnt/tank/data/EventData/Mammoth_south/picks_phasenet_filtered/"],
+            data_path=args.test_data_path,
+            label_path=args.test_label_path,
             format="h5",
             training=True,
             stack_event=False,
@@ -238,7 +221,15 @@ def main(args):
         dataset_test = dataset
         test_sampler = None
     elif args.model == "phasenet":
-        dataset = SeismicTraceIterableDataset(args.dataset)
+        dataset = SeismicTraceIterableDataset(
+            data_path=args.data_path,
+            data_list=args.data_list,
+            hdf5_file=args.hdf5_file,
+            format="h5",
+            training=True,
+            rank=rank,
+            world_size=world_size,
+        )
         train_sampler = None
         dataset_test = dataset
         test_sampler = None
@@ -263,7 +254,14 @@ def main(args):
         # collate_fn=utils.collate_fn
     )
 
-    model = eqnet.models.__dict__[args.model](backbone=args.backbone, in_channels=1, out_channels=(len(args.picks) + 1))
+    model = eqnet.models.__dict__[args.model](
+        backbone=args.backbone,
+        in_channels=1,
+        out_channels=(len(args.phases) + 1),
+        ## phasenet-das
+        reg=args.reg,
+        ## phasenet
+    )
     logger.info("Model:\n{}".format(model))
 
     model.to(device)
@@ -368,7 +366,12 @@ def get_args_parser(add_help=True):
 
     parser = argparse.ArgumentParser(description="PyTorch Segmentation Training", add_help=add_help)
 
-    parser.add_argument("--data-path", default="./data/", type=str, help="dataset path")
+    parser.add_argument("--data-path", default=None, type=str, help="dataset path")
+    parser.add_argument("--data-list", default=None, type=str, help="dataset list")
+    parser.add_argument("--label-path", default=None, type=str, help="label path")
+    parser.add_argument("--hdf5-file", default=None, type=str, help="hdf5 file for training")
+    parser.add_argument("--test-data-path", default=None, type=str, help="test dataset path")
+    parser.add_argument("--test-label-path", default=None, type=str, help="test label path")
     parser.add_argument("--dataset", default="", type=str, help="dataset name")
     parser.add_argument("--model", default="phasenet_das", type=str, help="model name")
     parser.add_argument("--backbone", default="resnet50", type=str, help="model backbone")
@@ -466,7 +469,8 @@ def get_args_parser(add_help=True):
     )
 
     ## Data Augmentation
-    parser.add_argument("--picks", default=["P", "S"], type=str, nargs="+", help="picks to use")
+    parser.add_argument("--phases", default=["P", "S"], type=str, nargs="+", help="phases to use")
+    parser.add_argument("--reg", default=0.0, type=float, help="laplace regularization for phasenet-das")
     parser.add_argument("--nt", default=1024 * 3, type=int, help="number of time samples")
     parser.add_argument("--nx", default=1024 * 5, type=int, help="number of space samples")
     parser.add_argument("--stack-noise", action="store_true", help="Stack noise")

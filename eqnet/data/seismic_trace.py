@@ -94,6 +94,9 @@ class SeismicTraceIterableDataset(IterableDataset):
         phases=["P", "S"],
         sampling_rate=100,
         training=False,
+        phase_width=[100],
+        polarity_width=[100],
+        event_width=[200],
         rank=0,
         world_size=1,
     ):
@@ -106,18 +109,12 @@ class SeismicTraceIterableDataset(IterableDataset):
             self.hdf5_fp = fp
             tmp_hdf5_keys = f"/tmp/{hdf5_file.split('/')[-1]}.txt"
             if not os.path.exists(tmp_hdf5_keys):
-                self.data_list = [
-                    event + "/" + station
-                    for event in fp.keys()
-                    for station in list(fp[event].keys())
-                ]
+                self.data_list = [event + "/" + station for event in fp.keys() for station in list(fp[event].keys())]
                 with open(tmp_hdf5_keys, "w") as f:
                     for x in self.trace_ids:
                         f.write(x + "\n")
             else:
-                self.data_list = pd.read_csv(
-                    tmp_hdf5_keys, header=None, names=["trace_id"]
-                )["trace_id"].values.tolist()
+                self.data_list = pd.read_csv(tmp_hdf5_keys, header=None, names=["trace_id"])["trace_id"].values.tolist()
         elif data_list is not None:
             self.data_list = np.loadtxt(data_list, dtype=str).tolist()
         elif data_path is not None:
@@ -126,11 +123,25 @@ class SeismicTraceIterableDataset(IterableDataset):
             self.data_list = None
         if self.data_list is not None:
             self.data_list = self.data_list[rank::world_size]
-            
+
         self.data_path = data_path
         self.hdf5_file = hdf5_file
         self.phases = phases
         self.sampling_rate = sampling_rate
+
+        ## training
+        self.training = training
+        self.phase_width = phase_width
+        self.polarity_width = polarity_width
+        self.event_width = event_width
+
+        if self.training:
+            print(f"{self.data_path}: {len(self.data_list)} files")
+        else:
+            print(
+                os.path.join(data_path, f".{format}"),
+                f": {len(self.data_list)} files",
+            )
 
     def __iter__(self):
         worker_info = torch.utils.data.get_worker_info()
@@ -165,13 +176,13 @@ class SeismicTraceIterableDataset(IterableDataset):
         for phase in self.phases:
             meta[phase] = attrs["phase_index"][attrs["phase_type"] == phase]
         picks = [meta[x] for x in self.phases]
-        phase_pick, phase_mask = generate_label(picks, nt=nt, return_mask=True)
+        phase_pick, phase_mask = generate_label(picks, nt=nt, label_width=self.phase_width, return_mask=True)
 
         ## phase polarity
         up = attrs["phase_index"][attrs["phase_polarity"] == "U"]
         dn = attrs["phase_index"][attrs["phase_polarity"] == "D"]
-        phase_up, mask_up = generate_label([up], nt=nt, return_mask=True)
-        phase_dn, mask_dn = generate_label([dn], nt=nt, return_mask=True)
+        phase_up, mask_up = generate_label([up], nt=nt, label_width=self.polarity_width, return_mask=True)
+        phase_dn, mask_dn = generate_label([dn], nt=nt, label_width=self.polarity_width, return_mask=True)
         polarity = ((phase_up[1, :] - phase_dn[1, :]) + 1.0) / 2.0
         polarity_mask = mask_up + mask_dn
         # polarity_mask = phase_mask
@@ -181,16 +192,14 @@ class SeismicTraceIterableDataset(IterableDataset):
         c0 = []
         for e in event_ids:
             c0.append(np.mean(attrs["phase_index"][attrs["event_id"] == e]).item())
-        event_center, event_mask = generate_label([c0], nt=nt, return_mask=True)
+        event_center, event_mask = generate_label([c0], nt=nt, label_width=self.event_width, return_mask=True)
         event_center = event_center[1, :]
 
         ## station location
         station_location = np.array(
             [
                 round(
-                    attrs["longitude"]
-                    * np.cos(np.radians(attrs["latitude"]))
-                    * self.degree2km,
+                    attrs["longitude"] * np.cos(np.radians(attrs["latitude"])) * self.degree2km,
                     2,
                 ),
                 round(attrs["latitude"] * self.degree2km, 2),
@@ -206,17 +215,12 @@ class SeismicTraceIterableDataset(IterableDataset):
             2,
         )
         dy = round(
-            (hdf5_fp[event_id].attrs["latitude"] - attrs["latitude"])
-            * self.degree2km,
+            (hdf5_fp[event_id].attrs["latitude"] - attrs["latitude"]) * self.degree2km,
             2,
         )
-        dz = round(
-            hdf5_fp[event_id].attrs["depth_km"] + attrs["elevation_m"] / 1e3, 2
-        )
+        dz = round(hdf5_fp[event_id].attrs["depth_km"] + attrs["elevation_m"] / 1e3, 2)
         event_location = np.zeros([4, nt], dtype=np.float32)
-        event_location[0, :] = (
-            np.arange(nt) - hdf5_fp[event_id].attrs["event_time_index"]
-        )
+        event_location[0, :] = np.arange(nt) - hdf5_fp[event_id].attrs["event_time_index"]
         event_location[1:, event_mask >= 1.0] = np.array([dx, dy, dz])[:, np.newaxis]
 
         if self.hdf5_fp is None:
@@ -284,9 +288,7 @@ if __name__ == "__main__":
         fig, axes = plt.subplots(1, 5, figsize=(15, 5))
         for i in range(x["waveform"].shape[-1]):
 
-            axes[0].plot(
-                (x["waveform"][-1, :, i]) / torch.std(x["waveform"][-1, :, i]) / 10 + i
-            )
+            axes[0].plot((x["waveform"][-1, :, i]) / torch.std(x["waveform"][-1, :, i]) / 10 + i)
 
             axes[1].plot(x["phase_pick"][1, :, i] + i)
             axes[1].plot(x["phase_pick"][2, :, i] + i)
@@ -296,9 +298,7 @@ if __name__ == "__main__":
 
             axes[3].plot(x["event_location"][0, :, i] / 10 + i)
 
-            t = np.arange(x["event_location"].shape[1])[
-                x["event_location_mask"][:, i] == 1
-            ]
+            t = np.arange(x["event_location"].shape[1])[x["event_location_mask"][:, i] == 1]
             axes[4].plot(
                 t,
                 x["event_location"][1, x["event_location_mask"][:, i] == 1, i] / 10 + i,
