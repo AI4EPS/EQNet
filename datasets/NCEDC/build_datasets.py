@@ -7,14 +7,19 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
+import json
+import multiprocessing as mp
 
 plt.rcParams["figure.facecolor"] = "white"
 
 # %%
 h5_file = "ncedc.h5"
 event_csv = pd.read_hdf(h5_file, "events")
+event_csv["time_id"] = event_csv["time"].apply(lambda x: x[0:4] + x[5:7] + x[8:10] + x[11:13] + x[14:16] + x[17:19] + x[20:22])
 phase_csv = pd.read_hdf(h5_file, "catalog")
 phase_csv.set_index("event_index", inplace=True)
+with open("event_id.json", "r") as f:
+    time_to_event_id = json.load(f)
 
 # %%
 pre_window = 3000
@@ -32,22 +37,23 @@ with h5py.File(h5_file, "r") as fp_in:
             anchor_time = first_p_arrival  ## put anchor at 30s of the window
             # anchor_time = event_time
 
-            event_id = event["index"]
+            # event_id = event["index"]
+            event_id = "nc" + time_to_event_id[event["time_id"]]
             event_time = datetime.strptime(event["time"], "%Y-%m-%dT%H:%M:%S.%f")
             event_time_index = int((event_time - anchor_time).total_seconds() * sampling_rate) + pre_window
             event_latitude = event["latitude"]
             event_longitude = event["longitude"]
             event_depth_km = event["depth_km"]
 
-            group = fp_out.create_group(f"{event_id:06d}")
+            group = fp_out.create_group(f"{event_id}")
             group.attrs["event_id"] = event_id
             group.attrs["event_time"] = event_time.isoformat(timespec="milliseconds")
             group.attrs["event_time_index"] = event_time_index
             group.attrs["begin_time"] = (anchor_time - timedelta(pre_window/sampling_rate)).isoformat(timespec="milliseconds")
             group.attrs["end_time"] = (anchor_time + timedelta(post_window/sampling_rate)).isoformat(timespec="milliseconds")
-            group.attrs["time_reference"] = anchor_time.isoformat(timespec="milliseconds")
-            group.attrs["time_before"] = pre_window/sampling_rate
-            group.attrs["time_after"] = post_window/sampling_rate
+            # group.attrs["time_reference"] = anchor_time.isoformat(timespec="milliseconds")
+            # group.attrs["time_before"] = pre_window/sampling_rate
+            # group.attrs["time_after"] = post_window/sampling_rate
             group.attrs["latitude"] = event_latitude
             group.attrs["longitude"] = event_longitude
             group.attrs["depth_km"] = event_depth_km
@@ -98,11 +104,12 @@ with h5py.File(h5_file, "r") as fp_in:
                 phase_score = [phase["p_weight"], phase["s_weight"]]
                 phase_remark = [phase["p_remark"], phase["s_remark"]]
                 phase_polarity = [first_motion, 'N']
+                event_ids = [event_id, event_id]
                 assert dt_s == 1.0 / sampling_rate
 
                 station_id = f"{network}.{station}.{location}.{channels[0][:-1]}"
-                fp_out[f"{event_id:06d}/{station_id}"] = waveform * 1e6
-                attrs = fp_out[f"{event_id:06d}/{station_id}"].attrs
+                fp_out[f"{event_id}/{station_id}"] = waveform * 1e6
+                attrs = fp_out[f"{event_id}/{station_id}"].attrs
                 attrs["network"] = network
                 attrs["station"] = station
                 attrs["location"] = location
@@ -122,14 +129,15 @@ with h5py.File(h5_file, "r") as fp_in:
                 attrs["phase_score"] = phase_score
                 attrs["phase_remark"] = phase_remark
                 attrs["phase_polarity"] = phase_polarity
+                attrs["event_id"] = event_ids
 
                 # print(begin_time, end_time)
                 # plt.plot(trace[begin_index:end_index,-1]/np.std(trace[begin_index:end_index,-1])/10 + j)
                 # plt.plot([(p_time - begin_time).total_seconds()*sampling_rate, (p_time - begin_time).total_seconds()*sampling_rate], [j-2, j+2], '--r')
                 # plt.plot([(s_time - begin_time).total_seconds()*sampling_rate, (s_time - begin_time).total_seconds()*sampling_rate], [j-2, j+2], '--b')
 
-            if i > 1000:
-                break
+            # if i > 1000:
+            #     break
 
 # plt.show()
 
