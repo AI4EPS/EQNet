@@ -1,10 +1,56 @@
 ## Install
-
 ```
 pip install -r requirements.txt
 ```
 
+## Prediction
+### PhaseNet
+```
+python predict.py --model phasenet --data_path /path_to_data --result_path ./results --batch_size=1
+```
+
+### PhaseNet-Polarity
+```
+python predict.py --model phasenet --use_polarity --data_path /path_to_data --result_path ./results --batch_size=1
+```
+e.g.,
+```
+python predict.py --model phasenet --data_path /kuafu/jxli/Data/SeismicEventData/mammoth_south/data/ --data_list mammoth_south.txt  --batch_size=1 --result_path mammoth_south --use_polarity
+```
+
+### PhaseNet-DAS
+```
+python predict.py --model phasenet_das --data_path /path_to_data --result_path ./results --cut_patch
+```
+
+Arguments:
+- add the *--plot_figure* argument to plot results. 
+
+
 ## Training
+
+
+### Training PhaseNet-DAS
+```
+torchrun --standalone --nproc_per_node=4 train.py --model phasenet_das --batch-size=4 --stack-event --stack-noise --resample-space --resample-time --mask-edge --reg 0.1 --amp --output=model --epochs=30 --wd=1e-2
+```
+
+### Training PhaseNet
+```
+torchrun --standalone --nproc_per_node 4 train.py --model phasenet --batch-size=256 --data-path datasets/NCEDC/ncedc_h5 --lr 0.01 --workers=32 --stack-event --flip-polarity --polarity-loss-weight 10
+```
+
+### Training EQNet
+```
+torchrun --standalone --nproc_per_node 4 python train.py --model=eqnet --backbone=resnet50 --output-dir result_eqnet
+```
+
+### Training DeepDenoiser
+
+### Training AutoEncoder
+
+
+Options:
 - Using Single GPU/CPU
 ```bash
 python train.py --output-dir output
@@ -14,33 +60,3 @@ python train.py --output-dir output
 ```bash
 torchrun --standalone --nproc_per_node=4 train.py --output-dir output
 ```
-
-### Training PhaseNet
-```
-python train.py --model=phasenet --backbone=resnet50 --dataset=/atomic-data/poggiali/test1.h5 --output-dir result_phasenet
-```
-
-### Training EQNet
-```
-python train.py --model=eqnet --backbone=resnet50 --output-dir result_eqnet
-```
-
-### Training DeepDenoiser
-### Training PhaseNet-DAS
-### Training AutoEncoder
-
-
-## Prediction
-
-- Using the pretrained model on default
-  - add the *--plot_figure* argument to plot results. 
-```bash
-python predict.py --data_path /path_to_data --result_path ./result
-```
-
-- Using the local pretrained model
-```bash
-python predict.py --data_path /path_to_data --result_path ./result --resume  pretrained_model.pth
-```
-
-
