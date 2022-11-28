@@ -199,7 +199,7 @@ class UNetHead(nn.Module):
 
 
 class PhaseNet(nn.Module):
-    def __init__(self, backbone="resnet50", use_polarity=True, event_loss_weight=1.0, polarity_loss_weight=1.0) -> None:
+    def __init__(self, backbone="unet", use_polarity=True, event_loss_weight=1.0, polarity_loss_weight=1.0) -> None:
         super().__init__()
         self.backbone_name = backbone
         self.use_polarity = use_polarity
@@ -208,15 +208,15 @@ class PhaseNet(nn.Module):
         elif backbone == "resnet50":
             self.backbone = ResNet(Bottleneck, [3, 4, 6, 3])  # ResNet50
         elif backbone == "unet":
-            self.backbone = UNet()
+            self.backbone = UNet(use_polarity=use_polarity)
         else:
             raise ValueError("backbone only supports resnet18, resnet50, or unet")
 
         if backbone == "unet":
             self.phase_picker = UNetHead(16, 3, feature_names="out")
-            self.event_detector = UNetHead(32, 1, feature_names="res5")
+            self.event_detector = UNetHead(32, 1, feature_names="event")
             if self.use_polarity:
-                self.polarity_picker = UNetHead(16, 1, feature_names="out")
+                self.polarity_picker = UNetHead(16, 1, feature_names="polarity")
         else:
             self.phase_picker = DeepLabHead(128, 3, scale_factor=32)
             self.event_detector = DeepLabHead(128, 1, scale_factor=2)

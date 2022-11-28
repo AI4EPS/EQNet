@@ -21,8 +21,11 @@ def detect_peaks(scores, vmin=0.3, kernel=101, K=0):
     batch, chn, nt, ns = scores.size()
     scores = torch.transpose(scores, 2, 3)
     if K == 0:
-        K = max(round(nt * 10 / 3000.0), 3)
-    topk_scores, topk_inds = torch.topk(scores[:, 1:, :, :].view(batch, chn - 1, ns, -1), K)
+        K = max(round(nt * 10.0 / 1000.0), 3)
+    if chn == 1:
+        topk_scores, topk_inds = torch.topk(scores, K)
+    else:
+        topk_scores, topk_inds = torch.topk(scores[:, 1:, :, :].view(batch, chn - 1, ns, -1), K)
     topk_inds = topk_inds % nt
 
     return topk_scores.detach().cpu(), topk_inds.detach().cpu()
@@ -37,6 +40,7 @@ def extract_picks(
     phases=["P", "S"],
     vmin=0.3,
     dt=0.01,
+    polarity_score=None,
     **kwargs,
 ):
     """Extract picks from prediction results.
@@ -72,12 +76,12 @@ def extract_picks(
         if file_name is None:
             file_i = f"{i:04d}"
         else:
-            file_i = file_name[i] if isinstance(file_name[i], str) else file_name[i].decode()
+            file_i = file_name[i]
 
         if begin_time is None:
             begin_i = "1970-01-01T00:00:00.000"
         else:
-            begin_i = begin_time[i] if isinstance(begin_time[i], str) else begin_time[i].decode()
+            begin_i = begin_time[i] 
             if len(begin_i) == 0:
                 begin_i = "1970-01-01T00:00:00.000"
         begin_i = datetime.fromisoformat(begin_i)
@@ -87,7 +91,7 @@ def extract_picks(
                 if station_name is None:
                     station_i = f"{k + begin_channel_index[i]:04d}"
                 else:
-                    station_i = station_name[k] if isinstance(station_name[k], str) else station_name[k].decode()
+                    station_i = station_name[k][i]
 
                 for index, score in zip(topk_index[i, j, k], topk_score[i, j, k]):
                     if score > vmin:
@@ -95,8 +99,7 @@ def extract_picks(
                         pick_time = (begin_i + timedelta(seconds=index.item() * dt[i])).isoformat(
                             timespec="milliseconds"
                         )
-                        picks_per_file.append(
-                            {
+                        pick_dict = {
                                 "file_name": file_i,
                                 "station_name": station_i,
                                 "phase_index": pick_index,
@@ -105,7 +108,10 @@ def extract_picks(
                                 "phase_type": phases[j],
                                 "dt": dt[i],
                             }
-                        )
+                        
+                        pick_dict["phase_polarity"] = f"{polarity_score[i, 0, index, k].item():.3f}" if polarity_score is not None else "0.0"
+
+                        picks_per_file.append(pick_dict)
 
         picks.append(picks_per_file)
     return picks

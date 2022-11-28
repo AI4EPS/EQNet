@@ -227,6 +227,8 @@ def main(args):
             hdf5_file=args.hdf5_file,
             format="h5",
             training=True,
+            stack_event=args.stack_event,
+            flip_polarity=args.flip_polarity,
             rank=rank,
             world_size=world_size,
         )
@@ -261,6 +263,7 @@ def main(args):
         ## phasenet-das
         reg=args.reg,
         ## phasenet
+        polarity_loss_weight=args.polarity_loss_weight,
     )
     logger.info("Model:\n{}".format(model))
 
@@ -475,9 +478,11 @@ def get_args_parser(add_help=True):
     parser.add_argument("--nx", default=1024 * 5, type=int, help="number of space samples")
     parser.add_argument("--stack-noise", action="store_true", help="Stack noise")
     parser.add_argument("--stack-event", action="store_true", help="Stack event")
+    parser.add_argument("--flip-polarity", action="store_true", help="Flip polarity")
     parser.add_argument("--resample-space", action="store_true", help="Resample space resolution")
     parser.add_argument("--resample-time", action="store_true", help="Resample time  resolution")
     parser.add_argument("--mask-edge", action="store_true", help="Mask edge of the input data")
+    parser.add_argument("--polarity-loss-weight", default=1.0, type=float, help="Polarity loss weight")
     return parser
 
 
