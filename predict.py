@@ -17,6 +17,7 @@ from eqnet.models.phasenet_das import normalize_local as normalize_local_das
 warnings.filterwarnings("ignore", ".*Length of IterableDataset.*")
 logger = logging.getLogger("EQNet")
 
+
 def pred_phasenet(model, data_loader, pick_path, figure_path, args):
 
     model.eval()
@@ -43,7 +44,7 @@ def pred_phasenet(model, data_loader, pick_path, figure_path, args):
                         dt=meta["dt_s"] if "dt_s" in meta else 0.01,
                         vmin=args.min_prob,
                         phases=args.phases,
-                        polarity_score=polarity_scores
+                        polarity_score=polarity_scores,
                     )
 
                 if "event" in output:
@@ -58,7 +59,7 @@ def pred_phasenet(model, data_loader, pick_path, figure_path, args):
                         vmin=args.min_prob,
                         phases=["event"],
                     )
-            
+
             for i in range(len(meta["file_name"])):
 
                 if len(phase_picks_[i]) == 0:
@@ -70,7 +71,14 @@ def pred_phasenet(model, data_loader, pick_path, figure_path, args):
                 picks_df.sort_values(by=["phase_index"], inplace=True)
                 picks_df.to_csv(
                     os.path.join(pick_path, meta["file_name"][i].replace("/", "_") + ".csv"),
-                    columns=["station_name", "phase_index", "phase_time", "phase_score", "phase_type", "phase_polarity"],
+                    columns=[
+                        "station_name",
+                        "phase_index",
+                        "phase_time",
+                        "phase_score",
+                        "phase_type",
+                        "phase_polarity",
+                    ],
                     index=False,
                 )
 
@@ -81,7 +89,7 @@ def pred_phasenet(model, data_loader, pick_path, figure_path, args):
                     meta,
                     phase_scores.cpu(),
                     event_scores.cpu(),
-                    polarity = polarity_scores.cpu() if polarity_scores is not None else None,
+                    polarity=polarity_scores.cpu() if polarity_scores is not None else None,
                     picks=phase_picks_,
                     phases=args.phases,
                     file_name=meta["file_name"],
@@ -173,7 +181,7 @@ def main(args):
 
     device = torch.device(args.device)
 
-    model = eqnet.models.__dict__["phasenet"](
+    model = eqnet.models.__dict__[args.model](
         backbone=args.backbone, in_channels=1, out_channels=(len(args.phases) + 1), use_polarity=args.use_polarity
     )
 
@@ -194,11 +202,11 @@ def main(args):
         print("Loaded checkpoint '{}' (epoch {})".format(args.resume, checkpoint["epoch"]))
     else:
         if args.model == "phasenet" and (not args.use_polarity):
-            raise("No pretrained model for phasenet, please use phasenet_polarity instead")
+            raise ("No pretrained model for phasenet, please use phasenet_polarity instead")
         elif (args.model == "phasenet") and (args.use_polarity):
             model_url = "https://github.com/AI4EPS/models/releases/download/PhaseNet-Polarity-v1/model_99.pth"
         elif args.model == "phasenet_das":
-            model_url = "https://github.com/AI4EPS/models/releases/download/PhaseNet-DAS-v2/model_99.pth"
+            model_url = "https://github.com/AI4EPS/models/releases/download/PhaseNet-DAS-v3/model_10.pth"
         else:
             raise
         state_dict = torch.hub.load_state_dict_from_url(
@@ -239,8 +247,7 @@ def main(args):
         )
         sampler = None
     else:
-        raise("Unknown model")
-
+        raise ("Unknown model")
 
     data_loader = torch.utils.data.DataLoader(
         dataset,
