@@ -29,7 +29,7 @@ sampling_rate = 100
 
 with h5py.File(h5_file, "r") as fp_in:
     # with h5py.File(output_path.joinpath(f"{event['index']:06}.h5"), "w") as fp_out:
-    with h5py.File("ncedc_seismic_dataset.h5", "w") as fp_out:
+    with h5py.File("ncedc_event_dataset.h5", "w") as fp_out:
 
         for i, (_, event) in tqdm(enumerate(event_csv.iterrows()), total=len(event_csv)):
 
@@ -45,6 +45,10 @@ with h5py.File(h5_file, "r") as fp_in:
             event_longitude = event["longitude"]
             event_depth_km = event["depth_km"]
 
+            if f"{event_id}" in fp_out:
+                print(f"{event_id} already exists!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+                continue
+
             group = fp_out.create_group(f"{event_id}")
             group.attrs["event_id"] = event_id
             group.attrs["event_time"] = event_time.isoformat(timespec="milliseconds")
@@ -59,6 +63,7 @@ with h5py.File(h5_file, "r") as fp_in:
             group.attrs["depth_km"] = event_depth_km
             group.attrs["magnitude"] = event["magnitude"]
             group.attrs["magnitude_type"] = event["magnitude_type"]
+            group.attrs["num_stations"] = len(phase_csv.loc[[event["index"]]])
  
             for j, (_, phase) in enumerate(phase_csv.loc[[event["index"]]].iterrows()):
 

@@ -2,7 +2,7 @@
 *.pth
 *.h5
 
-output/
+output*/
 Trash/
 results/
 
@@ -10,6 +10,24 @@ autoencoder*
 model_phasenet*
 EQNet.egg-info/
 test_data/
+build/
+Ridgecrest_South_2/
+model0*
+model1*
+C0*
+with_event
+with_noise
+Arcata_*
+result_C*
+Forge_Utah/
+Utah*/
+debug/
+mseed/
+mammoth_south*/
+results*/
+Curie*/
+
+converted_phase/manualpicks*
 
 *.whl
 *.tar.gz
