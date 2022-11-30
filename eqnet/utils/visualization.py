@@ -213,7 +213,8 @@ def plot_phasenet(meta, phase, event=None, polarity=None, picks=None, phases=Non
         x = x / std / 6
         return x
     waveform_raw = normalize(meta["waveform_raw"])
-    waveform = normalize(meta["waveform"])
+    # waveform = normalize(meta["waveform"])
+    waveform = meta["waveform"] / 3.0
 
     for i in range(nb0):
 
@@ -240,12 +241,12 @@ def plot_phasenet(meta, phase, event=None, polarity=None, picks=None, phases=Non
             for k in range(ns0):
                 t = torch.arange(len(phase[i, 1, ii:ii+nt, k])) * dt[i]
                 t_event = torch.arange(len(event[i, 0, ii//event_dt_ratio:(ii+nt)//event_dt_ratio, k])) * dt[i] * event_dt_ratio
-                axes.plot(t, phase[i, 1, ii:ii+nt, k] + k, "-C0", linewidth=1.5)
-                axes.plot(t, phase[i, 2, ii:ii+nt, k] + k, "-C1", linewidth=1.5)
-                mask = ((phase[i, 1, ii:ii+nt, k] > 0.1) | (phase[i, 2, ii:ii+nt, k] > 0.1))
-                axes.plot(t[mask], polarity[i, 0, ii:ii+nt, k][mask] + k, "-C2", linewidth=1.5)
-                axes.plot(t_event, event[i, 0, ii//event_dt_ratio:(ii+nt)//event_dt_ratio, k] + k, "-C3", linewidth=1.5)
-                axes.plot(t, waveform[i, j, ii:ii+nt, k] + k, linewidth=0.5, color="k", label=f"{chn_name[j]}")
+                axes.plot(t, phase[i, 1, ii:ii+nt, k] + k, "-C0", linewidth=1.)
+                axes.plot(t, phase[i, 2, ii:ii+nt, k] + k, "-C1", linewidth=1.)
+                mask = ((phase[i, 1, ii:ii+nt, k] < 0.1) & (phase[i, 2, ii:ii+nt, k] < 0.1))
+                axes.plot(t, np.ma.masked_where(mask, polarity[i, 0, ii:ii+nt, k] + k), "--C2", linewidth=1.)
+                axes.plot(t_event, event[i, 0, ii//event_dt_ratio:(ii+nt)//event_dt_ratio, k] + k, "-C3", linewidth=1.)
+                axes.plot(t, waveform[i, j, ii:ii+nt, k] + k, linewidth=0.2, color="k", label=f"{chn_name[j]}")
             axes.grid("on")
 
             # k = 2
