@@ -9,12 +9,15 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from tqdm import tqdm
 
 
-def detect_peaks(scores, vmin=0.3, kernel=101, K=0):
+def detect_peaks(scores, vmin=0.3, kernel=101, stride=1, K=0):
 
-    smax = nn.functional.max_pool2d(scores, (kernel, 1), stride=1, padding=(kernel // 2, 0))
+    nb, nc, nt, nx = scores.shape
+    pad = kernel // 2
+    smax = F.max_pool2d(scores, (kernel, 1), stride=(stride, 1), padding=(pad, 0))[:, :, :nt, :]
     keep = (smax == scores).float()
     scores = scores * keep
 

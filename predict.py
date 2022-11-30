@@ -35,7 +35,7 @@ def pred_phasenet(model, data_loader, pick_path, figure_path, args):
                     polarity_scores = (torch.sigmoid(output["polarity"]) - 0.5) * 2.0
                 else:
                     polarity_scores = None
-                topk_phase_scores, topk_phase_inds = detect_peaks(phase_scores, vmin=args.min_prob, kernel=21)
+                topk_phase_scores, topk_phase_inds = detect_peaks(phase_scores, vmin=args.min_prob, kernel=128)
                 phase_picks_ = extract_picks(
                     topk_phase_inds,
                     topk_phase_scores,
@@ -50,7 +50,7 @@ def pred_phasenet(model, data_loader, pick_path, figure_path, args):
 
             if "event" in output:
                 event_scores = torch.sigmoid(output["event"])
-                topk_event_scores, topk_event_inds = detect_peaks(event_scores, vmin=args.min_prob, kernel=21)
+                topk_event_scores, topk_event_inds = detect_peaks(event_scores, vmin=args.min_prob, kernel=128)
                 event_picks_ = extract_picks(
                     topk_event_inds,
                     topk_event_scores,
