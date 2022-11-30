@@ -543,7 +543,7 @@ class SeismicTraceIterableDataset(IterableDataset):
             if stream[i].stats.sampling_rate != sampling_rate:
                 logging.warning(f"Resampling {stream[i].id} from {stream[i].stats.sampling_rate} to {sampling_rate} Hz")
                 try:
-                    trace = stream[i].interpolate(self.config.sampling_rate, method="linear")
+                    trace = stream[i].interpolate(sampling_rate, method="linear")
                 except Exception as e:
                     print(f"Error resampling {stream[i].id}:\n{e}")
             else:
