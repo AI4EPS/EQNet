@@ -10,7 +10,7 @@ def log_transform(x):
     return x
 
 
-def normalize_local(data, filter=1024, stride=1):
+def normalize_local(data, filter=512, stride=1):
 
     nb, nch, nt, nx = data.shape
 
@@ -122,6 +122,7 @@ class UNet(nn.Module):
     def forward(self, x):
 
         bt, ch, nt, st = x.shape  # batch, channel, time, station
+        x = normalize_local(x)
         x = pad_input(x)
 
         if self.use_polarity:

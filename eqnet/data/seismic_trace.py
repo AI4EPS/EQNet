@@ -21,7 +21,7 @@ from scipy import signal
 
 def normalize(data):
     """
-    data: [3, nt, nsta]
+    data: [3, nt, nsta] or [3, nt]
     """
     data = data - data.mean(axis=1, keepdims=True)
     std = data.std(axis=1, keepdims=True)
@@ -102,7 +102,7 @@ def stack_event(
 
     max_tries = 30
     # while random.random() < 0.5:
-    for i in range(5):
+    for i in range(random.randint(1, 6)):
         tries = 0
         while tries < max_tries:
 
@@ -258,7 +258,7 @@ class SeismicTraceIterableDataset(IterableDataset):
             if not os.path.exists(tmp_hdf5_keys):
                 self.data_list = [event + "/" + station for event in fp.keys() for station in list(fp[event].keys())]
                 with open(tmp_hdf5_keys, "w") as f:
-                    for x in self.trace_ids:
+                    for x in self.data_list:
                         f.write(x + "\n")
             else:
                 self.data_list = pd.read_csv(tmp_hdf5_keys, header=None, names=["trace_id"])["trace_id"].values.tolist()
@@ -362,12 +362,20 @@ class SeismicTraceIterableDataset(IterableDataset):
         if self.hdf5_fp is None:
             hdf5_fp = h5py.File(os.path.join(self.data_path, trace_id), "r")
             event_id = "data"
-            sta_id = np.random.choice(list(hdf5_fp["data"].keys()))
-            trace_id = event_id + "/" + sta_id
+            sta_ids = list(hdf5_fp["data"].keys())
+            np.random.shuffle(sta_ids)
+            for sta_id in sta_ids:
+                trace_id = event_id + "/" + sta_id
+                waveform = hdf5_fp[trace_id][:, :].T  # [3, Nt]
+                tmp_max = np.max(np.abs(waveform), axis=1)
+                if np.all(tmp_max > 0): ## three component data
+                    break
         else:
+            hdf5_fp = self.hdf5_fp
             event_id, sta_id = trace_id.split("/")
+            waveform = hdf5_fp[trace_id][:, :].T  # [3, Nt]
 
-        waveform = hdf5_fp[trace_id][:, :].T  # [3, Nt]
+        # waveform = hdf5_fp[trace_id][:, :].T  # [3, Nt]
         waveform = normalize(waveform)
         nch, nt = waveform.shape
 
@@ -407,7 +415,10 @@ class SeismicTraceIterableDataset(IterableDataset):
         duration = []
         for e in event_ids:
             c0.append(np.mean(attrs["phase_index"][attrs["event_id"] == e]).item())
-            duration.append([np.min(attrs["phase_index"][attrs["event_id"] == e]).item(), np.max(attrs["phase_index"][attrs["event_id"] == e]).item()])
+            # duration.append([np.min(attrs["phase_index"][attrs["event_id"] == e]).item(), np.max(attrs["phase_index"][attrs["event_id"] == e]).item()])
+            tmp_min = np.min(attrs["phase_index"][attrs["event_id"] == e]).item()
+            tmp_max = np.max(attrs["phase_index"][attrs["event_id"] == e]).item()
+            duration.append([tmp_min, tmp_max + 2 * (tmp_max - tmp_min)])
         event_center, event_mask = generate_label([c0], nt=nt, label_width=self.event_width, return_mask=True)
         event_center = event_center[1, :]
 
@@ -539,8 +550,8 @@ class SeismicTraceIterableDataset(IterableDataset):
                 trace = stream[i]
 
             ## highpass filtering > 1Hz
-            trace = trace.detrend("constant")
-            trace = trace.filter("highpass", freq=1.0)
+            # trace = trace.detrend("constant")
+            # trace = trace.filter("highpass", freq=1.0)
     
             tmp.append(trace)
         stream = tmp

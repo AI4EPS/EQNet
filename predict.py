@@ -28,37 +28,38 @@ def pred_phasenet(model, data_loader, pick_path, figure_path, args):
 
             with torch.cuda.amp.autocast(enabled=args.amp):
                 output = model(meta)
-                if "phase" in output:
-                    phase_scores = torch.softmax(output["phase"], dim=1)  # [batch, nch, nt, nsta]
-                    if "polarity" in output:
-                        polarity_scores = (torch.sigmoid(output["polarity"]) - 0.5) * 2.0
-                    else:
-                        polarity_scores = None
-                    topk_phase_scores, topk_phase_inds = detect_peaks(phase_scores, vmin=args.min_prob, kernel=21)
-                    phase_picks_ = extract_picks(
-                        topk_phase_inds,
-                        topk_phase_scores,
-                        file_name=meta["file_name"],
-                        station_name=meta["station_name"],
-                        begin_time=meta["begin_time"] if "begin_time" in meta else None,
-                        dt=meta["dt_s"] if "dt_s" in meta else 0.01,
-                        vmin=args.min_prob,
-                        phases=args.phases,
-                        polarity_score=polarity_scores,
-                    )
+                
+            if "phase" in output:
+                phase_scores = torch.softmax(output["phase"], dim=1)  # [batch, nch, nt, nsta]
+                if "polarity" in output:
+                    polarity_scores = (torch.sigmoid(output["polarity"]) - 0.5) * 2.0
+                else:
+                    polarity_scores = None
+                topk_phase_scores, topk_phase_inds = detect_peaks(phase_scores, vmin=args.min_prob, kernel=21)
+                phase_picks_ = extract_picks(
+                    topk_phase_inds,
+                    topk_phase_scores,
+                    file_name=meta["file_name"],
+                    station_name=meta["station_name"],
+                    begin_time=meta["begin_time"] if "begin_time" in meta else None,
+                    dt=meta["dt_s"] if "dt_s" in meta else 0.01,
+                    vmin=args.min_prob,
+                    phases=args.phases,
+                    polarity_score=polarity_scores,
+                )
 
-                if "event" in output:
-                    event_scores = torch.sigmoid(output["event"])
-                    topk_event_scores, topk_event_inds = detect_peaks(event_scores, vmin=args.min_prob, kernel=21)
-                    event_picks_ = extract_picks(
-                        topk_event_inds,
-                        topk_event_scores,
-                        file_name=meta["file_name"],
-                        begin_time=meta["begin_time"] if "begin_time" in meta else None,
-                        dt=meta["dt_s"] if "dt_s" in meta else 0.01,
-                        vmin=args.min_prob,
-                        phases=["event"],
-                    )
+            if "event" in output:
+                event_scores = torch.sigmoid(output["event"])
+                topk_event_scores, topk_event_inds = detect_peaks(event_scores, vmin=args.min_prob, kernel=21)
+                event_picks_ = extract_picks(
+                    topk_event_inds,
+                    topk_event_scores,
+                    file_name=meta["file_name"],
+                    begin_time=meta["begin_time"] if "begin_time" in meta else None,
+                    dt=meta["dt_s"] if "dt_s" in meta else 0.01,
+                    vmin=args.min_prob,
+                    phases=["event"],
+                )
 
             for i in range(len(meta["file_name"])):
 
@@ -178,47 +179,14 @@ def main(args):
         utils.mkdir(figure_path)
 
     utils.init_distributed_mode(args)
-
-    device = torch.device(args.device)
-
-    model = eqnet.models.__dict__[args.model](
-        backbone=args.backbone, in_channels=1, out_channels=(len(args.phases) + 1), use_polarity=args.use_polarity
-    )
-
-    logger.info("Model:\n{}".format(model))
-
-    model.to(device)
-    if args.distributed:
-        model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
-
-    model_without_ddp = model
-    if args.distributed:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
-        model_without_ddp = model.module
-
-    if args.resume:
-        checkpoint = torch.load(args.resume, map_location="cpu")
-        model_without_ddp.load_state_dict(checkpoint["model"], strict=False)
-        print("Loaded checkpoint '{}' (epoch {})".format(args.resume, checkpoint["epoch"]))
-    else:
-        if args.model == "phasenet" and (not args.use_polarity):
-            raise ("No pretrained model for phasenet, please use phasenet_polarity instead")
-        elif (args.model == "phasenet") and (args.use_polarity):
-            model_url = "https://github.com/AI4EPS/models/releases/download/PhaseNet-Polarity-v1/model_99.pth"
-        elif args.model == "phasenet_das":
-            model_url = "https://github.com/AI4EPS/models/releases/download/PhaseNet-DAS-v3/model_10.pth"
-        else:
-            raise
-        state_dict = torch.hub.load_state_dict_from_url(
-            model_url, model_dir="./", progress=True, check_hash=True, map_location="cpu"
-        )
-        model_without_ddp.load_state_dict(state_dict["model"], strict=False)
+    print(args)
 
     if args.distributed:
         rank = utils.get_rank()
         world_size = utils.get_world_size()
     else:
         rank, world_size = 0, 1
+    device = torch.device(args.device)
 
     if args.model == "phasenet":
         dataset = SeismicTraceIterableDataset(
@@ -258,6 +226,38 @@ def main(args):
         prefetch_factor=2,
         drop_last=False,
     )
+
+    model = eqnet.models.__dict__[args.model](
+        backbone=args.backbone, in_channels=1, out_channels=(len(args.phases) + 1), use_polarity=args.use_polarity
+    )
+    logger.info("Model:\n{}".format(model))
+
+    model.to(device)
+    if args.distributed:
+        model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
+
+    model_without_ddp = model
+    if args.distributed:
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
+        model_without_ddp = model.module
+
+    if args.resume:
+        checkpoint = torch.load(args.resume, map_location="cpu")
+        model_without_ddp.load_state_dict(checkpoint["model"], strict=True)
+        print("Loaded checkpoint '{}' (epoch {})".format(args.resume, checkpoint["epoch"]))
+    else:
+        if args.model == "phasenet" and (not args.use_polarity):
+            raise ("No pretrained model for phasenet, please use phasenet_polarity instead")
+        elif (args.model == "phasenet") and (args.use_polarity):
+            model_url = "https://github.com/AI4EPS/models/releases/download/PhaseNet-Polarity-v1/model_99.pth"
+        elif args.model == "phasenet_das":
+            model_url = "https://github.com/AI4EPS/models/releases/download/PhaseNet-DAS-v3/model_10.pth"
+        else:
+            raise
+        state_dict = torch.hub.load_state_dict_from_url(
+            model_url, model_dir="./", progress=True, check_hash=True, map_location="cpu"
+        )
+        model_without_ddp.load_state_dict(state_dict["model"], strict=True)
 
     if args.model == "phasenet":
         pred_phasenet(model, data_loader, pick_path, figure_path, args)

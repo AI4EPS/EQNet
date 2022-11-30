@@ -98,13 +98,12 @@ def plot_results(model, epoch, args, meta):
 
     with torch.inference_mode():
         if args.model == "phasenet":
-            with torch.no_grad():
-                out = model(meta)
-                phase = F.softmax(out["phase"], dim=1).cpu()
-                event = torch.sigmoid(out["event"]).cpu()
-                polarity = torch.sigmoid(out["polarity"]).cpu()
-                meta["waveform_raw"] = meta["waveform"].clone()
-                meta["waveform"] = normalize_local(meta["waveform"])
+            out = model(meta)
+            phase = torch.softmax(out["phase"], dim=1).cpu()
+            event = torch.sigmoid(out["event"]).cpu()
+            polarity = torch.sigmoid(out["polarity"]).cpu()
+            meta["waveform_raw"] = meta["waveform"].clone()
+            meta["waveform"] = normalize_local(meta["waveform"])
             print("Plotting...")
             eqnet.utils.visualize_phasenet_train(meta, phase, event, polarity, epoch=epoch, figure_dir=args.output_dir)
             del phase, event, polarity
@@ -113,10 +112,9 @@ def plot_results(model, epoch, args, meta):
             pass
 
         elif args.model == "phasenet_das":
-            with torch.no_grad():
-                preds = model(meta)
-                preds = F.softmax(preds, dim=1).cpu()
-                meta["data"] = normalize_local_das(meta["data"])
+            preds = model(meta)
+            preds = torch.softmax(preds, dim=1).cpu()
+            meta["data"] = normalize_local_das(meta["data"])
             print("Plotting...")
             eqnet.utils.visualize_das_train(meta, preds, epoch=epoch, figure_dir=args.output_dir)
             del preds
@@ -142,9 +140,13 @@ def main(args):
         utils.mkdir(args.output_dir)
 
     utils.init_distributed_mode(args)
-    rank = utils.get_rank() if args.distributed else 0
-    world_size = utils.get_world_size() if args.distributed else 1
     print(args)
+
+    if args.distributed:
+        rank = utils.get_rank()
+        world_size = utils.get_world_size()
+    else:
+        rank, world_size = 0, 1
 
     device = torch.device(args.device)
 
@@ -155,7 +157,22 @@ def main(args):
     #     train_sampler = torch.utils.data.RandomSampler(dataset)
     #     test_sampler = torch.utils.data.SequentialSampler(dataset_test)
 
-    if args.model == "phasenet_das":
+    if args.model == "phasenet":
+        dataset = SeismicTraceIterableDataset(
+            data_path=args.data_path,
+            data_list=args.data_list,
+            hdf5_file=args.hdf5_file,
+            format="h5",
+            training=True,
+            stack_event=args.stack_event,
+            flip_polarity=args.flip_polarity,
+            rank=rank,
+            world_size=world_size,
+        )
+        train_sampler = None
+        dataset_test = dataset
+        test_sampler = None
+    elif args.model == "phasenet_das":
         dataset = DASIterableDataset(
             # data_path="/net/kuafu/mnt/tank/data/EventData/Mammoth_north/data",
             # noise_path="/net/kuafu/mnt/tank/data/EventData/Mammoth_north/data",
@@ -220,21 +237,8 @@ def main(args):
         train_sampler = None
         dataset_test = dataset
         test_sampler = None
-    elif args.model == "phasenet":
-        dataset = SeismicTraceIterableDataset(
-            data_path=args.data_path,
-            data_list=args.data_list,
-            hdf5_file=args.hdf5_file,
-            format="h5",
-            training=True,
-            stack_event=args.stack_event,
-            flip_polarity=args.flip_polarity,
-            rank=rank,
-            world_size=world_size,
-        )
-        train_sampler = None
-        dataset_test = dataset
-        test_sampler = None
+    else:
+        raise ("Unknown model")
 
     data_loader = torch.utils.data.DataLoader(
         dataset,
@@ -253,7 +257,6 @@ def main(args):
         sampler=test_sampler,
         num_workers=args.workers,
         collate_fn=None,
-        # collate_fn=utils.collate_fn
     )
 
     model = eqnet.models.__dict__[args.model](
@@ -273,9 +276,7 @@ def main(args):
 
     model_without_ddp = model
     if args.distributed:
-        model = torch.nn.parallel.DistributedDataParallel(
-            model, device_ids=[args.gpu]
-        )  # , find_unused_parameters=True)
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
         model_without_ddp = model.module
 
     params_to_optimize = [p for p in model_without_ddp.parameters() if p.requires_grad]
