@@ -263,7 +263,8 @@ class SeismicTraceIterableDataset(IterableDataset):
             else:
                 self.data_list = pd.read_csv(tmp_hdf5_keys, header=None, names=["trace_id"])["trace_id"].values.tolist()
         elif data_list is not None:
-            self.data_list = np.loadtxt(data_list, dtype=str).tolist()
+            with open(data_list, "r") as f:
+                self.data_list = f.read().splitlines()
         elif data_path is not None:
             self.data_list = [os.path.basename(x) for x in sorted(list(glob(os.path.join(data_path, f"*.{format}"))))]
         else:
