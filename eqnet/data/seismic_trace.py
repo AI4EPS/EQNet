@@ -92,13 +92,13 @@ def stack_event(
     amp_signal1 = meta1["amp_signal"].copy()
     amp_signal2 = meta2["amp_signal"].copy()
 
-    _, nt, nx = waveform1.shape # nch, nt, nx
+    _, nt, nx = waveform1.shape  # nch, nt, nx
     duration_mask1 = np.zeros([nt, nx])
     duration_mask2 = np.zeros([nt, nx])
     for i, x in enumerate(meta1["duration"]):
-        duration_mask1[x[0]:x[1], i] = 1
+        duration_mask1[x[0] : x[1], i] = 1
     for i, x in enumerate(meta2["duration"]):
-        duration_mask2[x[0]:x[1], i] = 1
+        duration_mask2[x[0] : x[1], i] = 1
 
     max_tries = 30
     # while random.random() < 0.5:
@@ -106,8 +106,8 @@ def stack_event(
         tries = 0
         while tries < max_tries:
 
-            min_ratio2 = np.log10(amp_noise1*2 / amp_signal2)
-            max_ratio2 = np.log10(amp_signal1/2 / amp_noise2)
+            min_ratio2 = np.log10(amp_noise1 * 2 / amp_signal2)
+            max_ratio2 = np.log10(amp_signal1 / 2 / amp_noise2)
             if min_ratio2 > max_ratio2:
                 # print(f"min_ratio2 > max_ratio2: {min_ratio2} > {max_ratio2}, {amp_noise1 = }, {amp_signal1 = }, {amp_noise2 = }, {amp_signal2 = }")
                 break
@@ -136,7 +136,7 @@ def stack_event(
             duration_mask2_ = np.roll(duration_mask2, shift, axis=0)
 
             ratio2 = 10 ** (random.uniform(max(-3, min_ratio2), min(3, max_ratio2)))
-            flip = random.choice([-1.0, 1.0]) ## flip waveform2 polarity
+            flip = random.choice([-1.0, 1.0])  ## flip waveform2 polarity
             waveform1 = waveform1 + waveform2_ * ratio2 * flip
             amp_noise1 = amp_noise1 + amp_noise2 * ratio2
             amp_signal1 = min(amp_signal1, amp_signal2 * ratio2)
@@ -153,7 +153,7 @@ def stack_event(
             event_location1 = event_location
             event_center1 = event_center1 + event_center2_
             event_mask1 = np.minimum(1.0, event_mask1 + event_mask2_)
-            polarity1 = ((polarity1 - 0.5) + (polarity2_ - 0.5) *flip) + 0.5
+            polarity1 = ((polarity1 - 0.5) + (polarity2_ - 0.5) * flip) + 0.5
             polarity_mask1 = np.minimum(1.0, polarity_mask1 + polarity_mask2_)
             duration_mask1 = np.minimum(1.0, duration_mask1 + duration_mask2_)
             break
@@ -233,17 +233,18 @@ class SeismicTraceIterableDataset(IterableDataset):
         hdf5_file=None,
         format="h5",
         phases=["P", "S"],
-        sampling_rate=100,
         training=False,
-        # phase_width=[100],
-        # polarity_width=[100],
-        # event_width=[200],
+        ## for training
         phase_width=[50],
         polarity_width=[50],
         event_width=[100],
         min_snr=3.0,
         stack_event=False,
         flip_polarity=False,
+        ## for prediction
+        sampling_rate=100,
+        response_xml=None,
+        highpass_filter=False,
         rank=0,
         world_size=1,
     ):
@@ -275,7 +276,9 @@ class SeismicTraceIterableDataset(IterableDataset):
         self.data_path = data_path
         self.hdf5_file = hdf5_file
         self.phases = phases
+        self.response_xml = response_xml
         self.sampling_rate = sampling_rate
+        self.highpass_filter = highpass_filter
 
         ## training
         self.training = training
@@ -332,15 +335,14 @@ class SeismicTraceIterableDataset(IterableDataset):
                         noises.append(0)
                         snr.append(0)
 
-
         if len(snr) == 0:
             return 0.0, 0.0, 0.0
         else:
             return snr[-1], signals[-1], noises[-1]
         # else:
-            # idx = np.argmax(snr).item()
-            # return snr[idx], signals[idx], noises[idx]
-            
+        # idx = np.argmax(snr).item()
+        # return snr[idx], signals[idx], noises[idx]
+
     # def resample_time(self, waveform, picks, factor=1.0):
     #     nch, nt = waveform.shape
     #     scale_factor = random.uniform(min(1, factor), max(1, factor))
@@ -369,7 +371,7 @@ class SeismicTraceIterableDataset(IterableDataset):
                 trace_id = event_id + "/" + sta_id
                 waveform = hdf5_fp[trace_id][:, :].T  # [3, Nt]
                 tmp_max = np.max(np.abs(waveform), axis=1)
-                if np.all(tmp_max > 0): ## three component data
+                if np.all(tmp_max > 0):  ## three component data
                     break
         else:
             hdf5_fp = self.hdf5_fp
@@ -400,12 +402,8 @@ class SeismicTraceIterableDataset(IterableDataset):
         ## phase polarity
         up = attrs["phase_index"][attrs["phase_polarity"] == "U"]
         dn = attrs["phase_index"][attrs["phase_polarity"] == "D"]
-        phase_up, mask_up = generate_label(
-            [up], nt=nt, label_width=self.polarity_width, return_mask=True #mask_width=self.polarity_width, 
-        )
-        phase_dn, mask_dn = generate_label(
-            [dn], nt=nt, label_width=self.polarity_width, return_mask=True #mask_width=self.polarity_width, 
-        )
+        phase_up, mask_up = generate_label([up], nt=nt, label_width=self.polarity_width, return_mask=True)
+        phase_dn, mask_dn = generate_label([dn], nt=nt, label_width=self.polarity_width, return_mask=True)
         polarity = ((phase_up[1, :] - phase_dn[1, :]) + 1.0) / 2.0
         polarity_mask = mask_up + mask_dn
         # polarity_mask = phase_mask
@@ -496,7 +494,7 @@ class SeismicTraceIterableDataset(IterableDataset):
                 except Exception as e:
                     print(f"Error reading {trace_id2}:\n{e}")
 
-            meta = cut_data(meta, min_point=self.phase_width[0]*2)
+            meta = cut_data(meta, min_point=self.phase_width[0] * 2)
             if self.flip_polarity and (random.random() < 0.5):
                 meta = flip_polarity(meta)
 
@@ -528,34 +526,50 @@ class SeismicTraceIterableDataset(IterableDataset):
             tr.taper(max_percentage=0.05, type="cosine")
         return stream
 
-    def read_mseed(self, fname, sampling_rate=100):
+    def read_mseed(self, fname, response_xml=None, highpass_filter=False, sampling_rate=100):
 
         try:
             stream = obspy.read(fname)
             stream = stream.merge(fill_value="latest")
+            if response_xml is not None:
+                response = obspy.read_inventory(response_xml)
+                stream = stream.remove_sensitivity(response)
         except Exception as e:
             print(f"Error reading {fname}:\n{e}")
             return None
 
-        tmp = obspy.Stream()
-        for i in range(len(stream)):
-            
+        tmp_stream = obspy.Stream()
+        for trace in stream:
+
+            if len(trace.data) < 10:
+                continue
+
             ## interpolate to 100 Hz
-            if stream[i].stats.sampling_rate != sampling_rate:
-                logging.warning(f"Resampling {stream[i].id} from {stream[i].stats.sampling_rate} to {sampling_rate} Hz")
+            if trace.stats.sampling_rate != sampling_rate:
+                logging.warning(f"Resampling {trace.id} from {trace.stats.sampling_rate} to {sampling_rate} Hz")
                 try:
-                    trace = stream[i].interpolate(sampling_rate, method="linear")
+                    trace = trace.interpolate(sampling_rate, method="linear")
                 except Exception as e:
-                    print(f"Error resampling {stream[i].id}:\n{e}")
-            else:
-                trace = stream[i]
+                    print(f"Error resampling {trace.id}:\n{e}")
+
+            trace = trace.detrend("demean")
+
+            ## detrend
+            # try:
+            #     trace = trace.detrend("spline", order=2, dspline=5 * trace.stats.sampling_rate)
+            # except:
+            #     logging.error(f"Error: spline detrend failed at file {fname}")
+            #     trace = trace.detrend("demean")
 
             ## highpass filtering > 1Hz
-            # trace = trace.detrend("constant")
-            # trace = trace.filter("highpass", freq=1.0)
-    
-            tmp.append(trace)
-        stream = tmp
+            if highpass_filter:
+                trace = trace.filter("highpass", freq=1.0)
+
+            tmp_stream.append(trace)
+
+        if len(tmp_stream) == 0:
+            return None
+        stream = tmp_stream
 
         begin_time = min([st.stats.starttime for st in stream])
         end_time = max([st.stats.endtime for st in stream])
@@ -573,7 +587,7 @@ class SeismicTraceIterableDataset(IterableDataset):
         nx = len(station_ids)
         nt = len(stream[0].data)
         data = np.zeros([3, nt, nx], dtype=np.float32)
-        for i, sta in enumerate(station_ids):
+        for i, sta in enumerate(sorted(station_ids)):
 
             for c in station_ids[sta]:
                 j = comp2idx[c]
@@ -583,21 +597,30 @@ class SeismicTraceIterableDataset(IterableDataset):
                     continue
 
                 trace = stream.select(id=sta + c)[0]
+
+                ## accerleration to velocity
+                if sta[-1] == "N":
+                    trace = trace.integrate().filter("highpass", freq=1.0)
+
                 tmp = trace.data.astype("float32")
                 data[j, : len(tmp), i] = tmp[:nt]
 
         return {
             "waveform": torch.from_numpy(data),
-            "station_name": list(station_ids.keys()),
+            "station_id": list(station_ids.keys()),
             "begin_time": begin_time.datetime.isoformat(timespec="milliseconds"),
             "dt_s": 1 / sampling_rate,
         }
 
-
     def sample(self, data_list):
 
         for f in data_list:
-            meta = self.read_mseed(os.path.join(self.data_path, f))
+            meta = self.read_mseed(
+                os.path.join(self.data_path, f),
+                response_xml=self.response_xml,
+                highpass_filter=self.highpass_filter,
+                sampling_rate=self.sampling_rate,
+            )
             if meta is None:
                 continue
             meta["file_name"] = os.path.splitext(f)[0]

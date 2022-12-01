@@ -443,7 +443,7 @@ def plot_das(data, pred, picks=None, phases=["P", "S"], file_name=None, figure_d
             for phase in phases:
                 tmp_picks = picks_[picks_["phase_type"] == phase]
                 axs[0].plot(
-                    tmp_picks["station_name"].astype("int") * dx[i] / 1e3,  # km
+                    tmp_picks["station_id"].astype("int") * dx[i] / 1e3,  # km
                     tmp_picks["phase_index"] * dt[i],
                     # ".C0",
                     # ".C2",
@@ -461,7 +461,7 @@ def plot_das(data, pred, picks=None, phases=["P", "S"], file_name=None, figure_d
             # ps_picks = picks_[picks_["phase_type"] == "PS"]
             # sp_picks = picks_[picks_["phase_type"] == "SP"]
             # axs[0].plot(
-            #     p_picks["station_name"].astype("int") * dx[i] / 1e3,  # km
+            #     p_picks["station_id"].astype("int") * dx[i] / 1e3,  # km
             #     p_picks["phase_index"] * dt[i],
             #     # ".C0",
             #     ".C2",
@@ -472,7 +472,7 @@ def plot_das(data, pred, picks=None, phases=["P", "S"], file_name=None, figure_d
             #     label="P-phase",
             # )
             # axs[0].plot(
-            #     s_picks["station_name"].astype("int") * dx[i] / 1e3,  # km
+            #     s_picks["station_id"].astype("int") * dx[i] / 1e3,  # km
             #     s_picks["phase_index"] * dt[i],
             #     # "-C3",
             #     # ".C2",
@@ -485,7 +485,7 @@ def plot_das(data, pred, picks=None, phases=["P", "S"], file_name=None, figure_d
             # )
 
             # axs[0].plot(
-            #     sp_picks["station_name"].astype("int") * dx[i] / 1e3,  # km
+            #     sp_picks["station_id"].astype("int") * dx[i] / 1e3,  # km
             #     sp_picks["phase_index"] * dt[i],
             #     # ".C0",
             #     ".C1",
@@ -496,7 +496,7 @@ def plot_das(data, pred, picks=None, phases=["P", "S"], file_name=None, figure_d
             #     label="SP-phase",
             # )
             # axs[0].plot(
-            #     ps_picks["station_name"].astype("int") * dx[i] / 1e3,  # km
+            #     ps_picks["station_id"].astype("int") * dx[i] / 1e3,  # km
             #     ps_picks["phase_index"] * dt[i],
             #     # "-C3",
             #     # ".C2",
@@ -509,8 +509,8 @@ def plot_das(data, pred, picks=None, phases=["P", "S"], file_name=None, figure_d
             # )
 
             axs[0].legend(markerscale=20.0)
-            # axs[1].plot(p_picks["station_name"], p_picks["phase_index"], "r,", linewidth=0)
-            # axs[1].plot(s_picks["station_name"], s_picks["phase_index"], "b,", linewidth=0)
+            # axs[1].plot(p_picks["station_id"], p_picks["phase_index"], "r,", linewidth=0)
+            # axs[1].plot(s_picks["station_id"], s_picks["phase_index"], "b,", linewidth=0)
 
         # im = axs[1].pcolormesh(
         #     (np.arange(nx) + begin_channel_index[i]) * dx[i] / 1e3,  # km

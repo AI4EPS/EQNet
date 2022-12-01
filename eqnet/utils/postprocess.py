@@ -2,6 +2,7 @@ import os
 import shutil
 from collections import defaultdict
 from datetime import datetime, timedelta
+from glob import glob
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -24,7 +25,7 @@ def detect_peaks(scores, vmin=0.3, kernel=101, stride=1, K=0):
     batch, chn, nt, ns = scores.size()
     scores = torch.transpose(scores, 2, 3)
     if K == 0:
-        K = max(round(nt * 10.0 / 1000.0), 3)
+        K = max(round(nt * 10.0 / 3000.0), 3)
     if chn == 1:
         topk_scores, topk_inds = torch.topk(scores, K)
     else:
@@ -39,27 +40,30 @@ def extract_picks(
     topk_score,
     file_name=None,
     begin_time=None,
-    station_name=None,
+    station_id=None,
     phases=["P", "S"],
     vmin=0.3,
     dt=0.01,
     polarity_score=None,
+    waveform=None,
+    window_amp=[10, 5],
     **kwargs,
 ):
     """Extract picks from prediction results.
     Args:
         topk_scores ([type]): [Nb, Nc, Ns, Ntopk] "batch, channel, station, topk"
         file_names ([type], optional): [Nb]. Defaults to None.
-        station_names ([type], optional): [Ns]. Defaults to None.
+        station_ids ([type], optional): [Ns]. Defaults to None.
         t0 ([type], optional): [Nb]. Defaults to None.
         config ([type], optional): [description]. Defaults to None.
 
     Returns:
-        picks [type]: {file_name, station_name, pick_time, pick_prob, pick_type}
+        picks [type]: {file_name, station_id, pick_time, pick_prob, pick_type}
     """
 
     batch, nch, nst, ntopk = topk_score.shape
-    assert nch == len(phases)
+    # assert nch == len(phases)
+
     picks = []
     if isinstance(dt, float):
         dt = [dt for i in range(batch)]
@@ -73,6 +77,13 @@ def extract_picks(
         begin_time_index = [x.item() for x in kwargs["begin_time_index"]]
     else:
         begin_time_index = [0 for i in range(batch)]
+
+    if waveform is not None:
+        waveform_amp = torch.max(torch.abs(waveform), dim=1)[0]
+        # waveform_amp = torch.sqrt(torch.mean(waveform ** 2, dim=1))
+
+        if len(window_amp) == 1:
+            window_amp = [window_amp[0] for i in range(len(phases))]
 
     for i in range(batch):
         picks_per_file = []
@@ -90,29 +101,42 @@ def extract_picks(
         begin_i = datetime.fromisoformat(begin_i)
 
         for j in range(nch):
+            if waveform is not None:
+                window_amp_i = int(window_amp[j] / dt[i])
+
             for k in range(nst):
-                if station_name is None:
+                if station_id is None:
                     station_i = f"{k + begin_channel_index[i]:04d}"
                 else:
-                    station_i = station_name[k][i]
+                    station_i = station_id[k][i]
 
-                for index, score in zip(topk_index[i, j, k], topk_score[i, j, k]):
+                topk_index_ijk, ii = torch.sort(topk_index[i, j, k])
+                topk_score_ijk = topk_score[i, j, k][ii]
+
+                # for ii, (index, score) in enumerate(zip(topk_index[i, j, k], topk_score[i, j, k])):
+                for ii, (index, score) in enumerate(zip(topk_index_ijk, topk_score_ijk)):
                     if score > vmin:
                         pick_index = index.item() + begin_time_index[i]
                         pick_time = (begin_i + timedelta(seconds=index.item() * dt[i])).isoformat(
                             timespec="milliseconds"
                         )
                         pick_dict = {
-                                "file_name": file_i,
-                                "station_name": station_i,
+                                # "file_name": file_i,
+                                "station_id": station_i,
                                 "phase_index": pick_index,
                                 "phase_time": pick_time,
                                 "phase_score": f"{score.item():.3f}",
                                 "phase_type": phases[j],
-                                "dt": dt[i],
+                                # "dt": dt[i],
                             }
                         
-                        pick_dict["phase_polarity"] = f"{polarity_score[i, 0, index, k].item():.3f}" if polarity_score is not None else "0.0"
+                        if polarity_score is not None:
+                            pick_dict["phase_polarity"] = f"{polarity_score[i, 0, index, k].item():.3f}"
+                        
+                        if waveform is not None:
+                            j1 = topk_index_ijk[ii]
+                            j2 = min(j1 + window_amp_i, topk_index_ijk[ii + 1]) if ii < len(topk_index_ijk) - 1 else j1 + window_amp_i
+                            pick_dict["phase_amplitude"] = f"{torch.max(waveform_amp[i, j1:j2, k]).item():.3e}"
 
                         picks_per_file.append(pick_dict)
 
@@ -120,7 +144,7 @@ def extract_picks(
     return picks
 
 
-def merge_picks(raw_folder="picks_phasenet_das", merged_folder=None, min_picks=10):
+def merge_das_picks(raw_folder="picks_phasenet_das", merged_folder=None, min_picks=10):
 
     in_path = Path(raw_folder)
 
@@ -158,3 +182,17 @@ def merge_picks(raw_folder="picks_phasenet_das", merged_folder=None, min_picks=1
 
     print(f"Number of picks: {num_picks}")
     return 0
+
+
+def merge_seismic_picks(pick_path):
+    csv_fils = sorted(glob(os.path.join(pick_path, "*.csv")))
+    num_picks = 0
+    with open(pick_path.rstrip("/")+".csv", "w") as fp_out:
+        for i, file in enumerate(tqdm(csv_fils, desc="Merging picks")):
+            with open(file, "r") as fp_in:
+                lines = fp_in.readlines()
+                if i == 0:
+                    fp_out.writelines(lines[0])
+                fp_out.writelines(lines[1:])
+                num_picks += len(lines) - 1
+    print("Total number of picks: {}".format(num_picks))

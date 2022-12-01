@@ -443,7 +443,7 @@ class DASIterableDataset(IterableDataset):
         resample_time=False,
         resample_space=False,
         mask_edge=False,
-        filtering=False,
+        highpass_filter=False,
         filter_params={
             "freqmin": 0.1,
             "freqmax": 10.0,
@@ -514,7 +514,7 @@ class DASIterableDataset(IterableDataset):
         self.resample_space = resample_space
         self.resample_time = resample_time
         self.mask_edge = mask_edge
-        self.filtering = filtering
+        self.highpass_filter = highpass_filter
 
         if self.training:
             print(f"{label_path}: {len(self.label_list)} files")
@@ -766,7 +766,7 @@ class DASIterableDataset(IterableDataset):
             elif self.format == "h5" and (self.dataset is None):
                 with h5py.File(os.path.join(self.data_path, file), "r") as fp:
                     data = fp["data"][:]  # nt x nx
-                    if self.filtering:
+                    if self.highpass_filter:
                         b, a = scipy.signal.butter(2, 1.0, "hp", fs=100)
                         data = scipy.signal.filtfilt(b, a, data, axis=0)
                     if "begin_time" in fp["data"].attrs:
@@ -866,7 +866,7 @@ class AutoEncoderIterableDataset(DASIterableDataset):
         suffix="",
         training=False,
         stack_noise=False,
-        filtering=False,
+        highpass_filter=False,
         **kwargs,
     ):
         super().__init__(data_path, noise_path, format=format, training=training)
