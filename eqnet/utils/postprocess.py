@@ -98,7 +98,7 @@ def extract_picks(
             begin_i = begin_time[i] 
             if len(begin_i) == 0:
                 begin_i = "1970-01-01T00:00:00.000"
-        begin_i = datetime.fromisoformat(begin_i)
+        begin_i = datetime.fromisoformat(begin_i.rstrip("Z"))
 
         for j in range(nch):
             if waveform is not None:

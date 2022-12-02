@@ -119,7 +119,7 @@ def pred_phasenet(args, model, data_loader, pick_path, figure_path, event_path=N
     return 0
 
 
-def pred_phasenet_das(model, data_loader, pick_path, figure_path, args):
+def pred_phasenet_das(args, model, data_loader, pick_path, figure_path):
 
     model.eval()
     metric_logger = utils.MetricLogger(delimiter="  ")
@@ -212,7 +212,7 @@ def main(args):
         dataset = SeismicTraceIterableDataset(
             data_path=args.data_path,
             data_list=args.data_list,
-            format="mseed",
+            format=args.format,
             training=False,
             highpass_filter=args.highpass_filter,
             response_xml=args.response_xml,
@@ -273,7 +273,12 @@ def main(args):
         elif (args.model == "phasenet") and (args.use_polarity):
             model_url = "https://github.com/AI4EPS/models/releases/download/PhaseNet-Polarity-v1/model_99.pth"
         elif args.model == "phasenet_das":
-            model_url = "https://github.com/AI4EPS/models/releases/download/PhaseNet-DAS-v3/model_10.pth"
+            if args.area is None:
+                model_url = "https://github.com/AI4EPS/models/releases/download/PhaseNet-DAS-v3/model_10.pth"
+            elif args.area == "forge":
+                model_url = "https://github.com/AI4EPS/models/releases/download/PhaseNet-DAS-ConvertedPhase/model_99.pth"
+            else:
+                raise ("Missing pretrained model for this area")
         else:
             raise
         state_dict = torch.hub.load_state_dict_from_url(
@@ -332,6 +337,7 @@ def get_args_parser(add_help=True):
     parser.add_argument("--cut_patch", action="store_true", help="If cut patch for continuous data")
     parser.add_argument("--nt", default=1024 * 3, type=int, help="number of time samples for each patch")
     parser.add_argument("--nx", default=1024 * 3, type=int, help="number of spatial samples for each patch")
+    parser.add_argument("--area", type=str, default=None, help="The name of area of different areas")
 
     return parser
 

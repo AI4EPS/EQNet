@@ -279,6 +279,7 @@ class SeismicTraceIterableDataset(IterableDataset):
         self.response_xml = response_xml
         self.sampling_rate = sampling_rate
         self.highpass_filter = highpass_filter
+        self.format = format
 
         ## training
         self.training = training
@@ -612,15 +613,44 @@ class SeismicTraceIterableDataset(IterableDataset):
             "dt_s": 1 / sampling_rate,
         }
 
+
+    def read_hdf5(self, fname):
+        meta = {}
+        with h5py.File(fname, 'r', libver='latest', swmr=True) as fp:
+            raw_data = fp["data"][()] # [nt, nx]
+            raw_data = raw_data - np.mean(raw_data, axis=0, keepdims=True)
+            raw_data = raw_data - np.median(raw_data, axis=1, keepdims=True)
+            std = np.std(raw_data, axis=0, keepdims=True)
+            std[std == 0] = 1.0
+            raw_data = raw_data / std
+            attrs = fp["data"].attrs
+            nt, nx = raw_data.shape
+            data = np.zeros([3, nt, nx], dtype=np.float32)
+            data[-1, :, :] = raw_data[:, :]
+            meta["waveform"] = torch.from_numpy(data)
+            if "station_name" in attrs:
+                station_name = attrs["station_name"]
+            else:
+                station_name = [f"{i}" for i in range(nt)]
+            meta["station_name"] = station_name
+            meta["begin_time"] = attrs["begin_time"]
+            meta["dt_s"] = attrs["dt_s"]
+        return meta
+
     def sample(self, data_list):
 
         for f in data_list:
-            meta = self.read_mseed(
-                os.path.join(self.data_path, f),
-                response_xml=self.response_xml,
-                highpass_filter=self.highpass_filter,
-                sampling_rate=self.sampling_rate,
-            )
+            if self.format == "mseed":
+                meta = self.read_mseed(
+                    os.path.join(self.data_path, f),
+                    response_xml=self.response_xml,
+                    highpass_filter=self.highpass_filter,
+                    sampling_rate=self.sampling_rate,
+                )
+            elif self.format == "h5":
+                meta = self.read_hdf5(os.path.join(self.data_path, f))
+            else:
+                raise NotImplementedError
             if meta is None:
                 continue
             meta["file_name"] = os.path.splitext(f)[0]

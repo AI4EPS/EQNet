@@ -5,6 +5,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn, Tensor
 from ._utils import _ovewrite_named_param
+from torch.fx import wrap
 
 __all__ = [
     "SwinTransformer",
