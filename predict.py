@@ -276,7 +276,7 @@ def main(args):
         if args.model == "phasenet" and (not args.use_polarity):
             raise ("No pretrained model for phasenet, please use phasenet_polarity instead")
         elif (args.model == "phasenet") and (args.use_polarity):
-            model_url = "https://github.com/AI4EPS/models/releases/download/PhaseNet-Polarity-v1/model_99.pth"
+            model_url = "https://github.com/AI4EPS/models/releases/download/PhaseNet-Polarity-v2/model_99.pth"
         elif args.model == "phasenet_das":
             if args.area is None:
                 model_url = "https://github.com/AI4EPS/models/releases/download/PhaseNet-DAS-v4/model_29.pth"
