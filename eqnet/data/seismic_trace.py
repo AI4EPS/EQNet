@@ -646,7 +646,7 @@ class SeismicTraceIterableDataset(IterableDataset):
             "dt_s": 1 / sampling_rate,
         }
 
-    def read_segy(self, fname, highpass_filter=False, sampling_rate=2000):
+    def read_segy(self, fname, highpass_filter=False, sampling_rate=2000, channels=[2,1,0]):
 
         try:
             stream = obspy.read(fname, format="SEGY")
@@ -658,14 +658,19 @@ class SeismicTraceIterableDataset(IterableDataset):
         end_time = max([st.stats.endtime for st in stream])
         stream = stream.trim(begin_time, end_time, pad=True, fill_value=0)
 
-        nx = len(stream)
+        n_chn = len(channels)
+        nx = (len(stream) - 1) // n_chn + 1
         nt = len(stream[0].data)
         dt = 1.0 / stream[0].stats.sampling_rate
         data = np.zeros([3, nt, nx], dtype=np.float32)
 
-        for i, trace in enumerate(stream):
-            tmp = trace.data.astype("float32")
-            data[-1, : len(tmp), i] = tmp[:nt] ## put data to Z component
+        for i in range(nx):
+            for j in range(n_chn):
+                if i * n_chn + j >= len(stream):
+                    break
+                trace = stream[i * n_chn + j]
+                tmp = trace.data.astype("float32")
+                data[channels[j], : len(tmp), i] = tmp[:nt]
 
         return {
             "waveform": torch.from_numpy(data),
