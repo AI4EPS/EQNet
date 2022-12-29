@@ -261,8 +261,8 @@ def plot_phasenet(meta, phase, event=None, polarity=None, picks=None, phases=Non
                 else:
                     waveform_ijk = waveform[i, 2, ii:ii+nt, k]
                     waveform_ijk -= torch.mean(waveform_ijk)
-                    waveform_ijk /= torch.std(waveform_ijk)
-                axes[0].plot(t, waveform_ijk + k, linewidth=0.2, color="k", label=f"{chn_name[j]}")
+                    waveform_ijk /= torch.std(waveform_ijk) * 6
+                axes[0].plot(t, waveform_ijk + k, linewidth=0.2, color="k", label=f"{chn_name[2]}")
 
                 axes[1].plot(t, phase[i, 1, ii:ii+nt, k] + k, "-C0", linewidth=1.)
                 axes[1].plot(t, phase[i, 2, ii:ii+nt, k] + k, "-C1", linewidth=1.)

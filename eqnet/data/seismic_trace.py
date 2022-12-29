@@ -249,6 +249,7 @@ class SeismicTraceIterableDataset(IterableDataset):
         data_path=None,
         data_list=None,
         hdf5_file=None,
+        prefix="",
         format="h5",
         dataset="seismic_trace",
         phases=["P", "S"],
@@ -287,7 +288,7 @@ class SeismicTraceIterableDataset(IterableDataset):
             with open(data_list, "r") as f:
                 self.data_list = f.read().splitlines()
         elif data_path is not None:
-            self.data_list = [os.path.basename(x) for x in sorted(list(glob(os.path.join(data_path, f"*.{format}"))))]
+            self.data_list = [os.path.basename(x) for x in sorted(list(glob(os.path.join(data_path, f"{prefix}*.{format}"))))]
         else:
             self.data_list = None
         if self.data_list is not None:
@@ -645,6 +646,34 @@ class SeismicTraceIterableDataset(IterableDataset):
             "dt_s": 1 / sampling_rate,
         }
 
+    def read_segy(self, fname, highpass_filter=False, sampling_rate=2000):
+
+        try:
+            stream = obspy.read(fname, format="SEGY")
+        except Exception as e:
+            print(f"Error reading {fname}:\n{e}")
+            return None
+
+        begin_time = min([st.stats.starttime for st in stream])
+        end_time = max([st.stats.endtime for st in stream])
+        stream = stream.trim(begin_time, end_time, pad=True, fill_value=0)
+
+        nx = len(stream)
+        nt = len(stream[0].data)
+        dt = 1.0 / stream[0].stats.sampling_rate
+        data = np.zeros([3, nt, nx], dtype=np.float32)
+
+        for i, trace in enumerate(stream):
+            tmp = trace.data.astype("float32")
+            data[-1, : len(tmp), i] = tmp[:nt] ## put data to Z component
+
+        return {
+            "waveform": torch.from_numpy(data),
+            "station_id": [f"{i:03d}" for i in range(nx)],
+            "begin_time": begin_time.datetime.isoformat(timespec="milliseconds"),
+            "dt_s": dt,
+        }
+
     def read_hdf5(self, trace_id):
         meta = {}
         if self.hdf5_fp is None:
@@ -700,6 +729,8 @@ class SeismicTraceIterableDataset(IterableDataset):
                 meta = self.read_hdf5(f)
             elif (self.format == "h5") and (self.dataset == "das"):
                 meta = self.read_das_hdf5(os.path.join(self.data_path, f))
+            elif (self.format == "segy") or (self.format == "sgy"):
+                meta = self.read_segy(os.path.join(self.data_path, f))
             else:
                 raise NotImplementedError
             if meta is None:

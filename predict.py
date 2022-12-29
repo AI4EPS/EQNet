@@ -216,6 +216,7 @@ def main(args):
             data_path=args.data_path,
             data_list=args.data_list,
             hdf5_file=args.hdf5_file,
+            prefix=args.prefix,
             format=args.format,
             dataset=args.dataset,
             training=False,
@@ -327,6 +328,7 @@ def get_args_parser(add_help=True):
     parser.add_argument("--data_path", type=str, default="./", help="path to data directory")
     parser.add_argument("--data_list", type=str, default=None, help="selectecd data list")
     parser.add_argument("--hdf5-file", default=None, type=str, help="hdf5 file for training")
+    parser.add_argument("--prefix", default="", type=str, help="prefix for the file name")
     parser.add_argument("--skip_files", default=None, help="If skip the files that have been processed")
     parser.add_argument("--format", type=str, default="h5", help="data format")
     parser.add_argument("--result_path", type=str, default="results", help="path to result directory")
