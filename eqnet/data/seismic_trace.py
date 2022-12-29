@@ -65,7 +65,7 @@ def generate_label(
 def stack_event(
     meta1,
     meta2,
-    max_shift=2048,
+    max_shift=1024 * 4,
 ):
 
     waveform1 = meta1["waveform"].copy()
@@ -102,7 +102,7 @@ def stack_event(
 
     max_tries = 30
     # while random.random() < 0.5:
-    for i in range(random.randint(1, 6)):
+    for i in range(random.randint(1, 10)):
         tries = 0
         while tries < max_tries:
 
@@ -218,6 +218,24 @@ def flip_polarity(meta):
     meta["polarity"] = 1 - meta["polarity"]
     return meta
 
+def drop_channel(meta):
+
+    nch, nt, nx = meta["waveform"].shape
+    drop_EH = False
+    random_i = random.random() 
+    if random_i < 0.2:
+        meta["waveform"][0, :, :] = 0.0
+    elif random_i < 0.4:
+        meta["waveform"][1, :, :] = 0.0
+    elif random_i < 0.6:
+        meta["waveform"][:2, :, :] = 0.0
+        drop_EH = True
+
+    if (random.random() < 0.2) and (not drop_EH):
+        meta["waveform"][2, :, :] = 0.0
+        meta["polarity_mask"] *= 0.0
+
+    return meta
 
 class SeismicTraceIterableDataset(IterableDataset):
 
@@ -232,6 +250,7 @@ class SeismicTraceIterableDataset(IterableDataset):
         data_list=None,
         hdf5_file=None,
         format="h5",
+        dataset="seismic_trace",
         phases=["P", "S"],
         training=False,
         ## for training
@@ -241,6 +260,7 @@ class SeismicTraceIterableDataset(IterableDataset):
         min_snr=3.0,
         stack_event=False,
         flip_polarity=False,
+        drop_channel=False,
         ## for prediction
         sampling_rate=100,
         response_xml=None,
@@ -272,7 +292,7 @@ class SeismicTraceIterableDataset(IterableDataset):
             self.data_list = None
         if self.data_list is not None:
             self.data_list = self.data_list[rank::world_size]
-
+            
         self.data_path = data_path
         self.hdf5_file = hdf5_file
         self.phases = phases
@@ -280,6 +300,7 @@ class SeismicTraceIterableDataset(IterableDataset):
         self.sampling_rate = sampling_rate
         self.highpass_filter = highpass_filter
         self.format = format
+        self.dataset = dataset
 
         ## training
         self.training = training
@@ -288,6 +309,7 @@ class SeismicTraceIterableDataset(IterableDataset):
         self.event_width = event_width
         self.stack_event = stack_event
         self.flip_polarity = flip_polarity
+        self.drop_channel = drop_channel
         self.min_snr = min_snr
 
         if self.training:
@@ -320,6 +342,7 @@ class SeismicTraceIterableDataset(IterableDataset):
         noises = []
         signals = []
         snr = []
+
         for i in range(waveform.shape[0]):
             for j in picks:
                 if j + gap_window < waveform.shape[1]:
@@ -339,7 +362,8 @@ class SeismicTraceIterableDataset(IterableDataset):
         if len(snr) == 0:
             return 0.0, 0.0, 0.0
         else:
-            return snr[-1], signals[-1], noises[-1]
+            # return snr[-1], signals[-1], noises[-1]
+            return np.max(snr), np.max(signals), np.max(noises)
         # else:
         # idx = np.argmax(snr).item()
         # return snr[idx], signals[idx], noises[idx]
@@ -370,14 +394,18 @@ class SeismicTraceIterableDataset(IterableDataset):
             np.random.shuffle(sta_ids)
             for sta_id in sta_ids:
                 trace_id = event_id + "/" + sta_id
-                waveform = hdf5_fp[trace_id][:, :].T  # [3, Nt]
+                waveform = hdf5_fp[trace_id][:, :]
+                if waveform.shape[1] == 3:
+                    waveform = waveform.T  # [3, Nt]
                 tmp_max = np.max(np.abs(waveform), axis=1)
                 if np.all(tmp_max > 0):  ## three component data
                     break
         else:
             hdf5_fp = self.hdf5_fp
             event_id, sta_id = trace_id.split("/")
-            waveform = hdf5_fp[trace_id][:, :].T  # [3, Nt]
+            waveform = hdf5_fp[trace_id][:, :]
+            if waveform.shape[1] == 3:
+                waveform = waveform.T  # [3, Nt]
 
         # waveform = hdf5_fp[trace_id][:, :].T  # [3, Nt]
         waveform = normalize(waveform)
@@ -474,7 +502,7 @@ class SeismicTraceIterableDataset(IterableDataset):
     def sample_train(self, data_list):
 
         while True:
-
+            
             trace_id = np.random.choice(data_list)
             # if True:
             try:
@@ -482,10 +510,12 @@ class SeismicTraceIterableDataset(IterableDataset):
             except Exception as e:
                 print(f"Error reading {trace_id}:\n{e}")
                 continue
+
             if meta is None:
                 continue
 
-            if self.stack_event and (random.random() < 0.6):
+            # if self.stack_event and (random.random() < 0.6):
+            if self.stack_event:
                 # if True:
                 try:
                     trace_id2 = np.random.choice(self.data_list)
@@ -498,6 +528,8 @@ class SeismicTraceIterableDataset(IterableDataset):
             meta = cut_data(meta, min_point=self.phase_width[0] * 2)
             if self.flip_polarity and (random.random() < 0.5):
                 meta = flip_polarity(meta)
+            if self.drop_channel and (random.random() < 0.1):
+                meta = drop_channel(meta)
 
             waveform = meta["waveform"]
             # waveform = normalize(waveform)
@@ -613,8 +645,25 @@ class SeismicTraceIterableDataset(IterableDataset):
             "dt_s": 1 / sampling_rate,
         }
 
+    def read_hdf5(self, trace_id):
+        meta = {}
+        if self.hdf5_fp is None:
+            raise("HDF5 file is not opened")
+        else:
+            hdf5_fp = self.hdf5_fp
+            event_id, sta_id = trace_id.split("/")
+            waveform = hdf5_fp[trace_id][:, :]
+            if waveform.shape[1] == 3:
+                waveform = waveform.T  # [3, Nt]
+            waveform = waveform[:,:,np.newaxis]
+            meta["waveform"] = waveform.astype(np.float32)
+            meta["station_id"] = [sta_id]
+            meta["begin_time"] = hdf5_fp[event_id].attrs["begin_time"]
+            meta["dt_s"] = hdf5_fp[trace_id].attrs["dt_s"]
 
-    def read_hdf5(self, fname):
+        return meta
+
+    def read_das_hdf5(self, fname):
         meta = {}
         with h5py.File(fname, 'r', libver='latest', swmr=True) as fp:
             raw_data = fp["data"][()] # [nt, nx]
@@ -628,11 +677,11 @@ class SeismicTraceIterableDataset(IterableDataset):
             data = np.zeros([3, nt, nx], dtype=np.float32)
             data[-1, :, :] = raw_data[:, :]
             meta["waveform"] = torch.from_numpy(data)
-            if "station_name" in attrs:
-                station_name = attrs["station_name"]
+            if "station_id" in attrs:
+                station_id = attrs["station_name"]
             else:
-                station_name = [f"{i}" for i in range(nt)]
-            meta["station_name"] = station_name
+                station_id = [f"{i}" for i in range(nt)]
+            meta["station_id"] = station_id
             meta["begin_time"] = attrs["begin_time"]
             meta["dt_s"] = attrs["dt_s"]
         return meta
@@ -647,13 +696,15 @@ class SeismicTraceIterableDataset(IterableDataset):
                     highpass_filter=self.highpass_filter,
                     sampling_rate=self.sampling_rate,
                 )
-            elif self.format == "h5":
-                meta = self.read_hdf5(os.path.join(self.data_path, f))
+            elif (self.format == "h5") and (self.dataset == "seismic_trace"):
+                meta = self.read_hdf5(f)
+            elif (self.format == "h5") and (self.dataset == "das"):
+                meta = self.read_das_hdf5(os.path.join(self.data_path, f))
             else:
                 raise NotImplementedError
             if meta is None:
                 continue
-            meta["file_name"] = os.path.splitext(f)[0]
+            meta["file_name"] = f
             yield meta
 
 

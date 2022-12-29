@@ -51,7 +51,7 @@ def log_transform(x):
     return x
 
 
-def normalize_local(data, filter=1024, stride=1):
+def normalize_local(data, filter=2048, stride=256):
 
     nb, nch, nt, nx = data.shape
 
@@ -66,12 +66,18 @@ def normalize_local(data, filter=1024, stride=1):
 
         data_ = F.pad(data, (0, 0, pad1, pad2), mode="reflect")
         mean = F.avg_pool2d(data_, kernel_size=(filter, 1), stride=(stride, 1))
+        mean = F.interpolate(mean, scale_factor=(stride, 1), mode="bilinear", align_corners=False)[:,:,:nt,:]
         data -= mean
 
+        # data_ = F.pad(data, (pad1, pad2, 0, 0), mode="reflect")
+        # median = data_.unfold(3, filter, stride)
+        # median = median.contiguous().median(dim=-1)[0]
+        # data -= median
+
         data_ = F.pad(data, (0, 0, pad1, pad2), mode="reflect")
-        # std = (F.lp_pool2d(data_, norm_type=2, kernel_size=(filter, 1), stride=(stride, 1)) / ((filter * nch) ** 0.5))
-        # data /= std
+        # std = (F.lp_pool2d(data_, norm_type=2, kernel_size=(filter, 1), stride=(stride, 1)) / (filter ** 0.5))
         std = F.avg_pool2d(torch.abs(data_), kernel_size=(filter, 1), stride=(stride, 1))
+        std = F.interpolate(std, scale_factor=(stride, 1), mode="bilinear", align_corners=False)[:,:,:nt,:]
         std[std == 0.0] = 1.0
         data = data / std
 
@@ -79,6 +85,46 @@ def normalize_local(data, filter=1024, stride=1):
 
     return data
 
+
+def normalize_local_2d(data, filter=(1024, 1024), stride=(1,1)):
+
+    nb, nch, nt, nx = data.shape
+
+    if nt % stride[0] == 0:
+        padt = max(filter[0] - stride[0], 0)
+    else:
+        padt = max(filter[1] - (nt % stride[0]), 0)
+    if nx % stride[1] == 0:
+        padx = max(filter[1] - stride[1], 0)
+    else:
+        padx = max(filter[1] - (nt % stride[1]), 0)
+    padt1 = padt // 2
+    padt2 = padt - padt1
+    padx1 = padx // 2
+    padx2 = padx - padx1
+
+    with torch.no_grad():
+
+        data_ = F.pad(data, (padx1, padx2, padt1, padt2), mode="reflect")
+        mean = F.avg_pool2d(data_, kernel_size=filter, stride=stride)
+        data -= mean
+
+        data_ = F.pad(data, (padx1, padx2, padt1, padt2), mode="reflect")
+        median = data_.unfold(3, filter[1], stride[1])
+        median = median.contiguous().median(dim=-1)[0]
+        data -= median
+
+        data_ = F.pad(data, (padx1, padx2, padt1, padt2), mode="reflect")
+        std = (F.lp_pool2d(data_, norm_type=2, kernel_size=filter, stride=stride) / ((filter[0] * filter[1]) ** 0.5))
+        std[std==0.0] = 1.0
+        data /= std
+        # std = F.avg_pool2d(torch.abs(data_), kernel_size=filter, stride=stride)
+        # std[std == 0.0] = 1.0
+        data = data / std
+
+        data = log_transform(data)
+
+    return data
 
 def pad_input(data, min_w=1024, min_h=1024):
 

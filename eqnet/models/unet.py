@@ -10,7 +10,7 @@ def log_transform(x):
     return x
 
 
-def normalize_local(data, filter=512, stride=1):
+def normalize_local(data, filter=1024, stride=128):
 
     nb, nch, nt, nx = data.shape
 
@@ -25,12 +25,13 @@ def normalize_local(data, filter=512, stride=1):
 
         data_ = F.pad(data, (0, 0, pad1, pad2), mode="reflect")
         mean = F.avg_pool2d(data_, kernel_size=(filter, 1), stride=(stride, 1))
+        mean = F.interpolate(mean, scale_factor=(stride, 1), mode="bilinear", align_corners=False)[:,:,:nt,:]
         data -= mean
 
         data_ = F.pad(data, (0, 0, pad1, pad2), mode="reflect")
-        # std = (F.lp_pool2d(data_, norm_type=2, kernel_size=(filter, 1), stride=(stride, 1)) / ((filter * nch) ** 0.5))
-        # data /= std
+        # std = (F.lp_pool2d(data_, norm_type=2, kernel_size=(filter, 1), stride=(stride, 1)) / ((filter) ** 0.5))
         std = F.avg_pool2d(torch.abs(data_), kernel_size=(filter, 1), stride=(stride, 1))
+        std = F.interpolate(std, scale_factor=(stride, 1), mode="bilinear", align_corners=False)[:,:,:nt,:]
         std[std == 0.0] = 1.0
         data = data / std
 

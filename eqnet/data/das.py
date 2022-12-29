@@ -13,7 +13,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, IterableDataset
-
+from scipy.interpolate import interp1d
 
 def normalize(data: torch.Tensor):
     """channel-wise normalization
@@ -28,10 +28,8 @@ def normalize(data: torch.Tensor):
     data = data.double()
     mean = torch.mean(data, dim=(1), keepdims=True)
     std = torch.std(data, dim=(1), keepdims=True)
-    std = std.repeat((1, nt, 1))
-    data = data - mean
-    mask = std != 0
-    data[mask] = data[mask] / std[mask]
+    std[std == 0.0] = 1.0
+    data = data / std
     return data.float()
 
 
@@ -274,13 +272,18 @@ def flip_lr(data, targets=None):
 def calc_snr(data: torch.Tensor, picks: list, noise_window: int = 200, signal_window: int = 200):
 
     SNR = []
+    S = []
+    N = []
     for trace, phase_time in picks:
         trace = int(trace)
         phase_time = int(phase_time)
         noise = torch.std(data[:, max(0, phase_time - noise_window) : phase_time, trace])
         signal = torch.std(data[:, phase_time : phase_time + signal_window, trace])
+        S.append(signal)
+        N.append(noise)
         SNR.append(signal / noise)
-    return np.median(SNR)
+        
+    return np.median(SNR), np.median(S), np.median(N)
 
 
 def stack_noise(data, noise, snr):
@@ -309,6 +312,26 @@ def mask_edge(data, target, nt=256, nx=256):
         data_[:, :, -nx_:] = 0.0
         target_[0:1, :, -nx_:] = 1.0
         target_[1:, :, -nx_:] = 0.0
+    return data_, target_
+
+def masking(data, target, nt=256, nx=256):
+    """masking edges to prevent edge effects"""
+
+    nch0, nt0, nx0 = data.shape
+    nt_ = random.randint(32, nt)
+    # nx_ = random.randint(32, nx)
+    nt0_ = random.randint(0, nt0-nt_)
+    # nx0_ = random.randint(0, nx0-nx_)
+    data_ = torch.clone(data)
+    target_ = torch.clone(target)
+
+    data_[:, nt0_:nt0_+nt_, :] = 0.0
+    target_[0, nt0_:nt0_+nt_, :] = 1.0
+    target_[1:, nt0_:nt0_+nt_, :] = 0.0
+    # data_[:, :, nx0_:nx0_+nx_] = 0.0
+    # target_[0, :, nx0_:nx0_+nx_] = 1.0
+    # target_[1:, :, nx0_:nx0_+nx_] = 0.0
+
     return data_, target_
 
 
@@ -442,7 +465,7 @@ class DASIterableDataset(IterableDataset):
         stack_event=False,
         resample_time=False,
         resample_space=False,
-        mask_edge=False,
+        masking=False,
         highpass_filter=False,
         filter_params={
             "freqmin": 0.1,
@@ -502,18 +525,21 @@ class DASIterableDataset(IterableDataset):
             else:
                 self.label_list = sorted(glob(os.path.join(label_path, f"{prefix}*{suffix}.csv")))
             self.label_list = self.label_list[rank::world_size]
+            if self.data_list is None:
+                self.data_list = [x.replace("picks_phasenet_filtered", "data").replace(".csv", ".h5") for x in self.label_list]
         else:
             self.label_list = None
         self.min_picks = kwargs["min_picks"] if "min_picks" in kwargs else 500
         if self.noise_path is not None:
-            self.noise_list = []
+            noise_list = []
             for i in range(len(noise_path)):
-                self.noise_list += list(sorted(glob(os.path.join(noise_path[i], f"{prefix}*{suffix}.{format}"))))
+                noise_list += list(sorted(glob(os.path.join(noise_path[i], f"{prefix}*{suffix}.{format}"))))
+            self.noise_list = [x for x in noise_list if x not in self.data_list]
         self.stack_noise = stack_noise
         self.stack_event = stack_event
         self.resample_space = resample_space
         self.resample_time = resample_time
-        self.mask_edge = mask_edge
+        self.masking = masking
         self.highpass_filter = highpass_filter
 
         if self.training:
@@ -587,102 +613,62 @@ class DASIterableDataset(IterableDataset):
             # if len(meta["SP"]) < 10:
             #     continue
 
-            ## load data
+            ## load event data
             if self.data_path is not None:
                 tmp = os.path.join(self.data_path, file.split("/")[-1][:-4] + ".h5")
             else:
-                tmp = file.split("/")
-                tmp[-2] = "data"
-                tmp[-1] = tmp[-1][:-4] + ".h5"  ## remove .csv
-                tmp = "/".join(tmp)
+                tmp = file.replace("picks_phasenet_filtered", "data").replace(".csv", ".h5")
             try:
                 with h5py.File(tmp, "r") as f:
                     data = f["data"][()]
                 data = data[np.newaxis, :, :]  # nchn, nt, nx
+                data = data / np.std(data)
                 data = torch.from_numpy(data.astype(np.float32))
             except:
                 print(f"Failed to load signal: {file}")
                 continue
 
-            # load noise
-            noise = None
-            if self.stack_noise and (self.noise_path is None):
-                tries = 0
-                max_tries = 10
-                while tries < max_tries:
-                    tmp_file = file_list[np.random.randint(0, len(file_list))]
-                    tmp_picks = pd.read_csv(tmp_file)
-                    if tmp_picks["phase_index"].min() < 3000:
-                        tries += 1
-                        continue
-                    if self.data_path is not None:
-                        tmp = os.path.join(self.data_path, tmp_file.split("/")[-1][:-4] + ".h5")
-                    else:
-                        tmp = tmp_file.split("/")
-                        tmp[-2] = "data"
-                        tmp[-1] = tmp[-1][:-4] + ".h5"  ## remove .csv
-                        tmp = "/".join(tmp)
-                    try:
-                        with h5py.File(tmp, "r") as f:
-                            noise = f["data"][()]
-                        ## The first 30s are noise in the training data
-                        noise = noise[np.newaxis, :3000, :]  # nchn, nt, nx
-                        noise = torch.from_numpy(noise.astype(np.float32))
-                    except:
-                        print(f"Failed to load noise: {tmp_file}")
-                        noise = torch.zeros_like(data)
-                    noise = noise - torch.mean(noise, dim=1, keepdim=True)
-                    noise = noise - torch.median(noise, dim=2, keepdims=True)[0]
-                    noise = normalize(noise)
-                    # noise = noise / torch.std(noise)
-                    # noise = pad_noise(noise, self.nt, self.nx)
-                    break
-                if tries >= max_tries:
-                    print(f"Failed to find noise file for {file}")
-                    noise = torch.zeros_like(data)
-            elif self.stack_noise and (self.noise_path is not None):
-                tries = 0
-                max_tries = 10
-                while tries < max_tries:
-                    file = self.noise_list[np.random.randint(0,  len(self.noise_list))]
-                    try:
-                        with h5py.File(tmp, "r") as f:
-                            noise = f["data"][()]
-                        ## The first 30s are noise in the training data
-                        noise = noise[np.newaxis, :3000, :]  # nchn, nt, nx
-                        noise = torch.from_numpy(noise.astype(np.float32))
-                    except:
-                        print(f"Failed to load noise: {tmp_file}")
-                        noise = torch.zeros_like(data)
-                    noise = noise - torch.mean(noise, dim=1, keepdim=True)
-                    noise = noise - torch.median(noise, dim=2, keepdims=True)[0]
-                    noise = normalize(noise)
-                    # noise = noise / torch.std(noise)
-                    # noise = pad_noise(noise, self.nt, self.nx)
-                    break
-                if tries >= max_tries:
-                    print(f"Failed to find noise file for {file}")
-                    noise = torch.zeros_like(data)
-
             ## basic normalize
             data = data - torch.mean(data, dim=1, keepdim=True)
-            data = data - torch.median(data, dim=2, keepdims=True)[0]
-            data = normalize(data)
+            # data = data - torch.median(data, dim=2, keepdims=True)[0]
+            # data = normalize(data)
             # data = data / torch.std(data)
+
+            # load noise
+            noise = None
+            if self.stack_noise and (self.noise_path is not None):
+                tmp = self.noise_list[np.random.randint(0,  len(self.noise_list))]
+                try:
+                    with h5py.File(tmp, "r") as f:
+                        noise = f["data"][()]
+                    ## The first 30s are noise in the training data
+                    noise = np.roll(noise, max(0, self.nt-3000), axis=0) # nt, nx
+                    noise = noise[np.newaxis, :self.nt, :]  # nchn, nt, nx
+                    noise = noise / np.std(noise)
+                    noise = torch.from_numpy(noise.astype(np.float32))
+                except:
+                    print(f"Failed to load noise: {file}")
+                    noise = torch.zeros_like(data)
+                noise = noise - torch.mean(noise, dim=1, keepdim=True)
+                # noise = noise - torch.median(noise, dim=2, keepdims=True)[0]
+                # noise = normalize(noise)
+                # noise = noise / torch.std(noise)
+                # noise = pad_noise(noise, self.nt, self.nx)
+
 
             ## snr
             if "P" in meta:
-                snr = calc_snr(data, meta["P"])
+                snr, S, N = calc_snr(data, meta["P"])
 
             ## generate training labels
             picks = [meta[x] for x in self.phases]
 
             ## augmentation
-            rand = np.random.rand()
+            rand_i = np.random.rand()
             if self.resample_time:
-                if rand < 0.2:
+                if rand_i < 0.2:
                     data, picks, noise = resample_time(data, picks, noise, 3)
-                elif rand < 0.4:
+                elif rand_i < 0.4:
                     data, picks, noise = resample_time(data, picks, noise, 0.5)
 
             ## generate training labels
@@ -692,7 +678,7 @@ class DASIterableDataset(IterableDataset):
 
             ## augmentation
             status_stack_event = False
-            if self.stack_event and (snr > 10) and (np.random.rand() < 0.5):
+            if self.stack_event and (snr > 10) and (np.random.rand() < 0.3):
                 data, targets, status_stack_event = stack_event(
                     data, targets, data, targets, snr, snr, phase_time_mask, phase_time_mask
                 )
@@ -700,15 +686,15 @@ class DASIterableDataset(IterableDataset):
             ## augmentation
             if self.resample_space:
                 # tmp = np.random.rand()
-                if rand < 0.2:
+                if rand_i < 0.2:
                     data, targets, noise = resample_space(data, targets, noise, 5)
-                elif (rand < 0.4) and (data.shape[-1] > 2000):
+                elif (rand_i < 0.4) and (data.shape[-1] > 2000):
                     data, targets, noise = resample_space(data, targets, noise, 0.5)
 
             ## pad data
-            data, targets = pad_data(data, targets, nx=self.nx+2048)
+            data, targets = pad_data(data, targets, nx=self.nx+self.nx//2)
             if self.stack_noise:
-                noise = pad_noise(noise, self.nt, self.nx+2048)
+                noise = pad_noise(noise, self.nt, self.nx+self.nx//2)
 
             # for ii in range(sum([len(x) for x in picks]) // self.min_picks):
             for ii in range(3):
@@ -721,7 +707,8 @@ class DASIterableDataset(IterableDataset):
                 #     data_, targets_ = add_moveout(data_, targets_)
 
                 ## augmentation
-                if self.stack_noise and (not status_stack_event) and (np.random.rand() < 0.5):
+                # if self.stack_noise and (not status_stack_event) and (np.random.rand() < 0.6):
+                if self.stack_noise and (not status_stack_event) and (np.random.rand() < 0.8):
                     noise_ = cut_noise(noise, self.nt, self.nx)
                     data_ = stack_noise(data_, noise_, snr)
 
@@ -730,11 +717,13 @@ class DASIterableDataset(IterableDataset):
                     data_, targets_ = flip_lr(data_, targets_)
 
                 ## augmentation
-                if self.mask_edge and (np.random.rand() < 0.2):
-                    data_, targets_ = mask_edge(data_, targets_)
+                # if self.mask_edge and (np.random.rand() < 0.2):
+                #     data_, targets_ = mask_edge(data_, targets_)
+                if self.masking and (np.random.rand() < 0.3):
+                    data_, targets_ = masking(data_, targets_)
 
-                data_ = normalize(data_)
-                data_ = data_ - torch.median(data_, dim=2, keepdims=True)[0]
+                # data_ = normalize(data_)
+                # data_ = data_ - torch.median(data_, dim=2, keepdims=True)[0]
 
                 yield {
                     "data": torch.nan_to_num(data_),
@@ -747,6 +736,12 @@ class DASIterableDataset(IterableDataset):
     def sample(self, file_list):
 
         for file in file_list:
+            if file == "0219neiszm.h5":
+                print(f"skip {file}")
+                continue
+            if not os.path.exists(os.path.join(self.data_path, file)):
+                print(f"{file} does not exist.")
+                continue
 
             sample = {}
 
@@ -764,6 +759,7 @@ class DASIterableDataset(IterableDataset):
                 sample["dx_m"] = 10.0
 
             elif self.format == "h5" and (self.dataset is None):
+
                 with h5py.File(os.path.join(self.data_path, file), "r") as fp:
                     data = fp["data"][:]  # nt x nx
                     if self.highpass_filter:
@@ -789,6 +785,18 @@ class DASIterableDataset(IterableDataset):
                         sample["dx_m"] = self.dx
 
                     data = data[np.newaxis, :, :]
+
+                    ## debug converted phase
+                    # N = data[:, 0:3000, :] 
+                    # S = data[:, 3000:6000, :] 
+                    # data = S / np.std(S) + N / np.std(N) * 0
+
+                    ## debug resampling
+                    # t = np.linspace(0, 1, data.shape[1])
+                    # f = interp1d(t, data, axis=1)
+                    # t_interp = np.linspace(0, 1, data.shape[1]*3)
+                    # data = f(t_interp)
+                    
                     data = torch.from_numpy(data.astype(np.float32))
 
             elif (self.format == "h5") and (self.dataset == "mammoth"):

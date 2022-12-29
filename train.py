@@ -24,6 +24,7 @@ from eqnet.data import (
 from eqnet.models.unet import normalize_local
 from eqnet.models.phasenet_das import normalize_local as normalize_local_das
 
+
 torch.manual_seed(0)
 random.seed(0)
 np.random.seed(0)
@@ -31,16 +32,20 @@ matplotlib.use("agg")
 logger = logging.getLogger("EQNet")
 
 
-def evaluate(model, data_loader, device, num_classes=3, args=None):
+def evaluate(model, data_loader, device, epoch=0, print_freq=100, scaler=None, args=None):
     model.eval()
     # confmat = utils.ConfusionMatrix(num_classes)
     metric_logger = utils.MetricLogger(delimiter="  ")
     header = "Test:"
     with torch.inference_mode():
-        i = 0
-        for meta in metric_logger.log_every(data_loader, 100, header):
-            plot_results(model, i, args, meta)
-    return
+        for meta in metric_logger.log_every(data_loader, print_freq, header):
+            with torch.cuda.amp.autocast(enabled=scaler is not None):
+                preds = model(meta)
+                targets = meta["targets"].to(preds.device)
+                loss = torch.sum(-targets * F.log_softmax(preds, dim=1), dim=1).mean()
+                metric_logger.update(**{"loss": loss})
+
+    return metric_logger
 
 
 def train_one_epoch(
@@ -166,6 +171,7 @@ def main(args):
             training=True,
             stack_event=args.stack_event,
             flip_polarity=args.flip_polarity,
+            drop_channel=args.drop_channel,
             rank=rank,
             world_size=world_size,
         )
@@ -176,22 +182,24 @@ def main(args):
         dataset = DASIterableDataset(
             # data_path="/net/kuafu/mnt/tank/data/EventData/Mammoth_north/data",
             # noise_path="/net/kuafu/mnt/tank/data/EventData/Mammoth_north/data",
-            # label_path=[
-            #     "/net/kuafu/mnt/tank/data/EventData/Mammoth_north/picks_phasenet_filtered/",
-            #     "/net/kuafu/mnt/tank/data/EventData/Mammoth_south/picks_phasenet_filtered/",
-            #     "/net/kuafu/mnt/tank/data/EventData/Ridgecrest/picks_phasenet_filtered/",
-            #     "/net/kuafu/mnt/tank/data/EventData/Ridgecrest_South/picks_phasenet_filtered/",
-            # ],
-            # noise_path =["/net/kuafu/mnt/tank/data/EventData/Mammoth_north/data",
-            #              "/net/kuafu/mnt/tank/data/EventData/Mammoth_south/data",
-            #              "/net/kuafu/mnt/tank/data/EventData/Ridgecrest/data",
-            #              "/net/kuafu/mnt/tank/data/EventData/Ridgecrest_South/data"],
+            label_path=[
+                "/net/kuafu/mnt/tank/data/EventData/Mammoth_north/picks_phasenet_filtered/",
+                "/net/kuafu/mnt/tank/data/EventData/Mammoth_south/picks_phasenet_filtered/",
+                "/net/kuafu/mnt/tank/data/EventData/Ridgecrest/picks_phasenet_filtered/",
+                "/net/kuafu/mnt/tank/data/EventData/Ridgecrest_South/picks_phasenet_filtered/",
+            ],
+            noise_path=[
+                "/net/kuafu/mnt/tank/data/EventData/Mammoth_north/data",
+                "/net/kuafu/mnt/tank/data/EventData/Mammoth_south/data",
+                "/net/kuafu/mnt/tank/data/EventData/Ridgecrest/data",
+                "/net/kuafu/mnt/tank/data/EventData/Ridgecrest_South/data",
+            ],
             # label_path=["./converted_phase/manualpicks/"],
             # data_path="/net/kuafu/mnt/tank/data/EventData/Mammoth_south/data",
             # data_path = "./Forge_Utah/data/",
             # label_path = "./Forge_Utah/picks/",
-            data_path=args.data_path,
-            label_path=args.label_path,
+            # data_path=args.data_path,
+            # label_path=args.label_path,
             phases=args.phases,
             nt=args.nt,
             nx=args.nx,
@@ -201,23 +209,26 @@ def main(args):
             stack_event=args.stack_event,
             resample_space=args.resample_space,
             resample_time=args.resample_time,
-            mask_edge=args.mask_edge,
+            masking=args.masking,
             rank=rank,
             world_size=world_size,
         )
         train_sampler = None
         dataset_test = DASIterableDataset(
-            # data_path="/net/kuafu/mnt/tank/data/EventData/Mammoth_south/data/",
-            # label_path=["/net/kuafu/mnt/tank/data/EventData/Mammoth_south/picks_phasenet_filtered/"],
-            data_path=args.test_data_path,
-            label_path=args.test_label_path,
+            data_path="/net/kuafu/mnt/tank/data/EventData/Ridgecrest/data/",
+            label_path=["/net/kuafu/mnt/tank/data/EventData/Ridgecrest/picks_phasenet_filtered/"],
+            # data_path=args.test_data_path,
+            # label_path=args.test_label_path,
+            phases=args.phases,
+            nt=args.nt,
+            nx=args.nx,
             format="h5",
             training=True,
             stack_event=False,
             stack_noise=False,
             resample_space=False,
             resample_time=False,
-            mask_edge=False,
+            masking=False,
             rank=rank,
             world_size=world_size,
         )
@@ -253,10 +264,11 @@ def main(args):
 
     data_loader_test = torch.utils.data.DataLoader(
         dataset_test,
-        batch_size=1,
+        batch_size=args.batch_size,
         sampler=test_sampler,
         num_workers=args.workers,
         collate_fn=None,
+        drop_last=False,
     )
 
     model = eqnet.models.__dict__[args.model](
@@ -325,16 +337,17 @@ def main(args):
             if args.amp:
                 scaler.load_state_dict(checkpoint["scaler"])
 
-    if args.test_only:
-        confmat = evaluate(model, data_loader_test, device=device, args=args)
-        print(confmat)
-        return
+    # if args.test_only:
+    #     confmat = evaluate(model, data_loader_test, device=device, epoch=0, print_freq=args.print_freq, scaler=scaler, args=args)
+    #     print(confmat)
+    #     return
 
     start_time = time.time()
     for epoch in range(args.start_epoch, args.epochs):
 
         if args.distributed and (train_sampler is not None):
             train_sampler.set_epoch(epoch)
+
         train_one_epoch(
             model,
             optimizer,
@@ -347,7 +360,9 @@ def main(args):
             scaler,
             args,
         )
-        # confmat = evaluate(model, data_loader_test, device=device, args=args)
+
+        # confmat = evaluate(model, data_loader_test, device=device, epoch=epoch, print_freq=args.print_freq, scaler=scaler, args=args)
+
         checkpoint = {
             "model": model_without_ddp.state_dict(),
             "optimizer": optimizer.state_dict(),
@@ -378,7 +393,7 @@ def get_args_parser(add_help=True):
     parser.add_argument("--test-label-path", default=None, type=str, help="test label path")
     parser.add_argument("--dataset", default="", type=str, help="dataset name")
     parser.add_argument("--model", default="phasenet_das", type=str, help="model name")
-    parser.add_argument("--backbone", default="resnet50", type=str, help="model backbone")
+    parser.add_argument("--backbone", default="unet", type=str, help="model backbone")
     parser.add_argument("--aux-loss", action="store_true", help="auxiliar loss")
     parser.add_argument(
         "--device",
@@ -480,9 +495,10 @@ def get_args_parser(add_help=True):
     parser.add_argument("--stack-noise", action="store_true", help="Stack noise")
     parser.add_argument("--stack-event", action="store_true", help="Stack event")
     parser.add_argument("--flip-polarity", action="store_true", help="Flip polarity")
+    parser.add_argument("--drop-channel", action="store_true", help="Drop channel")
     parser.add_argument("--resample-space", action="store_true", help="Resample space resolution")
     parser.add_argument("--resample-time", action="store_true", help="Resample time  resolution")
-    parser.add_argument("--mask-edge", action="store_true", help="Mask edge of the input data")
+    parser.add_argument("--masking", action="store_true", help="Masking of the input data")
     parser.add_argument("--polarity-loss-weight", default=1.0, type=float, help="Polarity loss weight")
     return parser
 

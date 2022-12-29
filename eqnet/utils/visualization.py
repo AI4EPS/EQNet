@@ -8,6 +8,13 @@ import torch
 import torch.nn as nn
 import random
 
+def normalize(x):
+    """x: [batch, channel, time, station]"""
+    x = x - torch.mean(x, dim=2, keepdim=True)
+    std = torch.std(x, dim=2, keepdim=True)
+    std[std == 0] == 1
+    x = x / std / 6
+    return x
 
 def visualize_autoencoder_das_train(meta, preds, epoch, figure_dir="figures"):
 
@@ -201,31 +208,34 @@ def visualize_phasenet_train(meta, phase, event, polarity=None, epoch=0, figure_
         if i >= 20:
             break
 
-def plot_phasenet(meta, phase, event=None, polarity=None, picks=None, phases=None, dt=0.01, event_dt_ratio=16, nt=4096*3, epoch=0, file_name=None,  figure_dir="figures",  **kwargs):
+def plot_phasenet(meta, phase, event=None, polarity=None, picks=None, phases=None, dt=0.01, event_dt_ratio=16, nt=6000*10, epoch=0, file_name=None,  figure_dir="figures",  **kwargs):
 
     nb0, nc0, nt0, ns0 = phase.shape
     chn_name = ["E", "N", "Z"]
     # normalize = lambda x: (x - torch.mean(x, dim=2, keepdim=True)) / torch.std(x, dim=2, keepdim=True) / 10
-    def normalize(x):
-        x = x - torch.mean(x, dim=2, keepdim=True)
-        std = torch.std(x, dim=2, keepdim=True)
-        std[std == 0] == 1
-        x = x / std / 6
-        return x
-    waveform_raw = normalize(meta["waveform_raw"])
+    # waveform_raw = normalize(meta["waveform_raw"])
     # waveform = normalize(meta["waveform"])
-    waveform = meta["waveform"] / 3.0
+    # waveform = meta["waveform"] / 3.0
+
+    waveform = meta["waveform"]
+    # waveform = normalize(waveform)
+    # vmax = torch.std(waveform) * 3
+    # vmin = -vmax
+    if "begin_time" in meta:
+        begin_time = meta["begin_time"]
+    else:
+        begin_time = [0] * nb0
 
     for i in range(nb0):
 
+        dt = dt[i].item()
 
-        
         for ii in range(0, nt0, nt):
 
             plt.close("all")
-            fig, axes = plt.subplots(1, 1, figsize=(20, 8))#, gridspec_kw={"height_ratios": [5, 5, 1, 1, 1]})
+            fig, axes = plt.subplots(2, 1, figsize=(20, 10))#, gridspec_kw={"height_ratios": [5, 5, 1, 1, 1]})
 
-            j = 2
+            # j = 2
             # # for j in range(3):
             # for k in range(ns0):
             #     axes[0].plot(t, phase[i, 1, ii:ii+nt, k] + k, "-C0")
@@ -239,15 +249,32 @@ def plot_phasenet(meta, phase, event=None, polarity=None, picks=None, phases=Non
 
             # for j in range(3):
             for k in range(ns0):
-                t = torch.arange(len(phase[i, 1, ii:ii+nt, k])) * dt[i]
-                t_event = torch.arange(len(event[i, 0, ii//event_dt_ratio:(ii+nt)//event_dt_ratio, k])) * dt[i] * event_dt_ratio
-                axes.plot(t, phase[i, 1, ii:ii+nt, k] + k, "-C0", linewidth=1.)
-                axes.plot(t, phase[i, 2, ii:ii+nt, k] + k, "-C1", linewidth=1.)
+                begin_time_i = datetime.fromisoformat(begin_time[i])
+                t = [begin_time_i + timedelta(seconds=(ii + it) * dt) for it in range(len(phase[i, 1, ii:ii+nt, k]))] 
+
+                if ns0 == 1:
+                    for j in range(3):
+                        waveform_ijk = waveform[i, j, ii:ii+nt, k]
+                        waveform_ijk -= torch.mean(waveform_ijk)
+                        waveform_ijk /= torch.std(waveform_ijk) * 6
+                        axes[0].plot(t,  waveform_ijk + j, linewidth=0.2, color="k", label=f"{chn_name[j]}")
+                else:
+                    waveform_ijk = waveform[i, 2, ii:ii+nt, k]
+                    waveform_ijk -= torch.mean(waveform_ijk)
+                    waveform_ijk /= torch.std(waveform_ijk)
+                axes[0].plot(t, waveform_ijk + k, linewidth=0.2, color="k", label=f"{chn_name[j]}")
+
+                axes[1].plot(t, phase[i, 1, ii:ii+nt, k] + k, "-C0", linewidth=1.)
+                axes[1].plot(t, phase[i, 2, ii:ii+nt, k] + k, "-C1", linewidth=1.)
+                
                 mask = ((phase[i, 1, ii:ii+nt, k] < 0.1) & (phase[i, 2, ii:ii+nt, k] < 0.1))
-                axes.plot(t, np.ma.masked_where(mask, polarity[i, 0, ii:ii+nt, k] + k), "--C2", linewidth=1.)
-                axes.plot(t_event, event[i, 0, ii//event_dt_ratio:(ii+nt)//event_dt_ratio, k] + k, "-C3", linewidth=1.)
-                axes.plot(t, waveform[i, j, ii:ii+nt, k] + k, linewidth=0.2, color="k", label=f"{chn_name[j]}")
-            axes.grid("on")
+                axes[1].plot(t, np.ma.masked_where(mask, polarity[i, 0, ii:ii+nt, k] + k), "--C2", linewidth=1.)
+                
+                # t_event = torch.arange(len(event[i, 0, ii//event_dt_ratio:(ii+nt)//event_dt_ratio, k])) * dt[i] * event_dt_ratio
+                # axes[1].plot(t_event, event[i, 0, ii//event_dt_ratio:(ii+nt)//event_dt_ratio, k] + k, "-C3", linewidth=1.)
+
+            axes[0].grid("on")
+            axes[1].grid("on")
 
             # k = 2
             # axes[k].plot(phase[i, 1, ii:ii+nt, 0], "b")
@@ -304,6 +331,7 @@ def visualize_eqnet_train(meta, phase, event, epoch, figure_dir="figures"):
 def plot_das(data, pred, picks=None, phases=["P", "S"], file_name=None, figure_dir="./figures", epoch=0, **kwargs):
 
     ## pytorch BCHW => BHWC
+    data = normalize(data)
     data = np.transpose(data, [0, 2, 3, 1])
     pred = np.transpose(pred, [0, 2, 3, 1])
     if pred.shape[-1] < 3:
@@ -350,7 +378,8 @@ def plot_das(data, pred, picks=None, phases=["P", "S"], file_name=None, figure_d
         if (picks is not None) and (len(picks[i]) > 0):
             picks_ = pd.DataFrame(picks[i])  # picks per file
 
-        std = np.std(data[i, :, :, 0])
+        # std = np.std(data[i, :, :, 0])
+        std = torch.std(data[i, :, :, 0]).item()
 
         # fig, axs = plt.subplots(1, 1, sharex=True, figsize=(8, 6))
         # fig, axs = plt.subplots(1, 1)
