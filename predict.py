@@ -279,7 +279,7 @@ def main(args):
             model_url = "https://github.com/AI4EPS/models/releases/download/PhaseNet-Polarity-v1/model_99.pth"
         elif args.model == "phasenet_das":
             if args.area is None:
-                model_url = "https://github.com/AI4EPS/models/releases/download/PhaseNet-DAS-v3/model_10.pth"
+                model_url = "https://github.com/AI4EPS/models/releases/download/PhaseNet-DAS-v4/model_29.pth"
             elif args.area == "forge":
                 model_url = "https://github.com/AI4EPS/models/releases/download/PhaseNet-DAS-ConvertedPhase/model_99.pth"
             else:
