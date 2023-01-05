@@ -192,7 +192,10 @@ class UNetHead(nn.Module):
             if mask is None:
                 loss = F.binary_cross_entropy_with_logits(inputs, targets)
             else:
-                loss = F.binary_cross_entropy_with_logits(inputs, targets, weight=mask, reduction="sum") / mask.sum()
+                mask_sum = mask.sum()
+                if mask_sum == 0.0:
+                    mask_sum = 1.0
+                loss = F.binary_cross_entropy_with_logits(inputs, targets, weight=mask, reduction="sum") / mask_sum
         else:
             loss = torch.sum(-targets.float() * F.log_softmax(inputs, dim=1), dim=1).mean()
         return loss

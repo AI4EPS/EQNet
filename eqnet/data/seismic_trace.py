@@ -95,10 +95,16 @@ def stack_event(
     _, nt, nx = waveform1.shape  # nch, nt, nx
     duration_mask1 = np.zeros([nt, nx])
     duration_mask2 = np.zeros([nt, nx])
-    for i, x in enumerate(meta1["duration"]):
-        duration_mask1[x[0] : x[1], i] = 1
-    for i, x in enumerate(meta2["duration"]):
-        duration_mask2[x[0] : x[1], i] = 1
+    ns, ne, nd = meta1["duration"].shape # stations, events, (t0, t1)
+    for i in range(ns): 
+        for j in range(ne):
+            t0, t1 = meta1["duration"][i, j]
+            duration_mask1[t0 : t1, i] = 1
+    ns, ne, nd = meta2["duration"].shape # stations, events, (t0, t1)
+    for i in range(ns): 
+        for j in range(ne):
+            t0, t1 = meta2["duration"][i, j]
+            duration_mask2[t0 : t1, i] = 1
 
     max_tries = 30
     # while random.random() < 0.5:
@@ -346,10 +352,10 @@ class SeismicTraceIterableDataset(IterableDataset):
 
         for i in range(waveform.shape[0]):
             for j in picks:
-                if j + gap_window < waveform.shape[1]:
+                if (j - gap_window > 0) and (j + gap_window < waveform.shape[1]):
                     # noise = np.std(waveform[i, j - noise_window : j - gap_window])
                     # signal = np.std(waveform[i, j + gap_window : j + signal_window])
-                    noise = np.max(np.abs(waveform[i, j - noise_window : j - gap_window]))
+                    noise = np.max(np.abs(waveform[i, max(0, j - noise_window) : j - gap_window]))
                     signal = np.max(np.abs(waveform[i, j + gap_window : j + signal_window]))
                     if (noise > 0) and (signal > 0):
                         signals.append(signal)
@@ -448,6 +454,7 @@ class SeismicTraceIterableDataset(IterableDataset):
             tmp_min = np.min(attrs["phase_index"][attrs["event_id"] == e]).item()
             tmp_max = np.max(attrs["phase_index"][attrs["event_id"] == e]).item()
             duration.append([tmp_min, tmp_max + 2 * (tmp_max - tmp_min)])
+        duration = np.array([duration]) # for one station and multiple events
         event_center, event_mask = generate_label([c0], nt=nt, label_width=self.event_width, return_mask=True)
         event_center = event_center[1, :]
 
@@ -476,7 +483,8 @@ class SeismicTraceIterableDataset(IterableDataset):
         )
         dz = round(hdf5_fp[event_id].attrs["depth_km"] + attrs["elevation_m"] / 1e3, 2)
         event_location = np.zeros([4, nt], dtype=np.float32)
-        event_location[0, :] = np.arange(nt) - hdf5_fp[event_id].attrs["event_time_index"]
+        # event_location[0, :] = np.arange(nt) - hdf5_fp[event_id].attrs["event_time_index"]
+        event_location[0, :] = np.arange(nt) - hdf5_fp[event_id].attrs["time_index"]
         event_location[1:, event_mask >= 1.0] = np.array([dx, dy, dz])[:, np.newaxis]
 
         if self.hdf5_fp is None:

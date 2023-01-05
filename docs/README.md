@@ -46,7 +46,7 @@ torchrun --standalone --nproc_per_node=4 train.py --model phasenet_das --batch-s
 
 ### Training PhaseNet
 ```
-torchrun --standalone --nproc_per_node 4 train.py --model phasenet --batch-size=256 --data-path datasets/NCEDC/ncedc_h5 --lr 0.01 --workers=32 --stack-event --flip-polarity --polarity-loss-weight 10
+torchrun --standalone --nproc_per_node 4 train.py --model phasenet --batch-size=256 --data-path datasets/NCEDC/ncedc_h5 --lr 0.01 --workers=32 --stack-event --flip-polarity
 ```
 
 ### Training EQNet
