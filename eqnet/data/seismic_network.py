@@ -61,7 +61,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
 
             waveforms = np.zeros([3, self.nt, len(station_ids)])
             phase_pick = np.zeros([3, self.nt, len(station_ids)])
-            center_heatmap = np.zeros([self.nt, len(station_ids)])
+            event_center = np.zeros([self.nt, len(station_ids)])
             event_location = np.zeros([4, self.nt, len(station_ids)])
             event_location_mask = np.zeros([self.nt, len(station_ids)])
             station_location = np.zeros([len(station_ids), 2])
@@ -112,9 +112,9 @@ class SeismicNetworkIterableDataset(IterableDataset):
                 # dt = (c0 - self.hdf5_fp[event_id].attrs["event_time_index"]) / self.sampling_rate
                 # dt = (c0 - 3000) / self.sampling_rate
 
-                # center_heatmap[int(c0//self.feature_scale), i] = 1
+                # event_center[int(c0//self.feature_scale), i] = 1
                 # print(c0_width)
-                center_heatmap[:, i] = generate_label(
+                event_center[:, i] = generate_label(
                     [
                         # [c0 / self.feature_scale],
                         c0,
@@ -128,9 +128,9 @@ class SeismicNetworkIterableDataset(IterableDataset):
                     # nt=self.feature_nt,
                     nt=self.nt,
                 )[1, :]
-                mask = center_heatmap[:, i] >= 0.5
+                mask = event_center[:, i] >= 0.5
                 event_location[0, :, i] = (
-                    np.arange(self.nt) - self.hdf5_fp[event_id].attrs["time_index"]
+                    np.arange(self.nt) - self.hdf5_fp[event_id].attrs["event_time_index"]
                 ) / self.sampling_rate
                 # event_location[0, :, i] = (np.arange(self.feature_nt) - 3000 / self.feature_scale) / self.sampling_rate
                 event_location[1:, mask, i] = np.array([dx, dy, dz])[:, np.newaxis]
@@ -153,7 +153,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
             yield {
                 "waveform": torch.from_numpy(waveforms).float(),
                 "phase_pick": torch.from_numpy(phase_pick).float(),
-                "center_heatmap": torch.from_numpy(center_heatmap[:: self.feature_scale]).float(),
+                "event_center": torch.from_numpy(event_center[:: self.feature_scale]).float(),
                 "event_location": torch.from_numpy(event_location[:: self.feature_scale]).float(),
                 "event_location_mask": torch.from_numpy(event_location_mask[:: self.feature_scale]).float(),
                 "station_location": torch.from_numpy(station_location).float(),
@@ -175,7 +175,7 @@ if __name__ == "__main__":
             axes[1].plot(x["phase_pick"][1, :, i] + i)
             axes[1].plot(x["phase_pick"][2, :, i] + i)
 
-            axes[2].plot(x["center_heatmap"][:, i] + i - 0.5)
+            axes[2].plot(x["event_center"][:, i] + i - 0.5)
             # axes[2].scatter(x["event_location"][0, :, i], x["event_location"][1, :, i])
 
             axes[3].plot(x["event_location"][0, :, i] / 10 + i)
