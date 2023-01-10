@@ -24,12 +24,15 @@ torchrun --standalone --nproc_per_node 8 predict.py --model phasenet --data_path
 
 ### PhaseNet-DAS
 ```
-python predict.py --model phasenet_das --data_path /path_to_data --result_path ./results --cut_patch
+python predict.py --model phasenet_das --amp --data_path /path_to_data --result_path ./results --cut_patch
 ```
 
 e.g.,
 ```
-python predict.py --model phasenet_das --data_path Forge_Utah/data --result_path ./results --area forge --phases P S PS
+python predict.py --model phasenet_das --amp  --data_path /net/kuafu/mnt/tank/data/EventData/Arcata_Spring2022/data --result_path Arcata_Spring2022 --plot_figure
+```
+```
+python predict.py --model phasenet_das --amp --data_path Forge_Utah/data --result_path ./results --area forge --phases P S PS
 ```
 
 Arguments:
