@@ -3,14 +3,18 @@ import multiprocessing
 import os
 import warnings
 
+import matplotlib
+import matplotlib.pyplot as plt
 import pandas as pd
 import torch
 import torch.utils.data
 
+matplotlib.use("agg")
+
+
 import eqnet
 import utils
 from eqnet.data import DASIterableDataset, SeismicTraceIterableDataset
-from eqnet.models.phasenet_das import normalize_local as normalize_local_das
 from eqnet.models.unet import normalize_local
 from eqnet.utils import (
     detect_peaks,
@@ -39,7 +43,7 @@ def pred_phasenet(args, model, data_loader, pick_path, figure_path, event_path=N
 
             if "phase" in output:
                 phase_scores = torch.softmax(output["phase"], dim=1)  # [batch, nch, nt, nsta]
-                if "polarity" in output:
+                if ("polarity" in output) and (output["polarity"] is not None):
                     polarity_scores = (torch.sigmoid(output["polarity"]) - 0.5) * 2.0
                 else:
                     polarity_scores = None
@@ -58,7 +62,7 @@ def pred_phasenet(args, model, data_loader, pick_path, figure_path, event_path=N
                     window_amp=[10, 5],  # s
                 )
 
-            if "event" in output:
+            if ("event" in output) and (output["event"] is not None):
                 event_scores = torch.sigmoid(output["event"])
                 topk_event_scores, topk_event_inds = detect_peaks(event_scores, vmin=args.min_prob, kernel=128)
                 event_picks_ = extract_picks(
@@ -70,7 +74,7 @@ def pred_phasenet(args, model, data_loader, pick_path, figure_path, event_path=N
                     ## event are picked on downsampled time resolution
                     dt=meta["dt_s"] * 16 if "dt_s" in meta else 0.01 * 16,
                     vmin=args.min_prob,
-                    phases=["event"]
+                    phases=["event"],
                 )
 
             for i in range(len(meta["file_name"])):
@@ -83,7 +87,7 @@ def pred_phasenet(args, model, data_loader, pick_path, figure_path, event_path=N
                 picks_df = pd.DataFrame(phase_picks_[i])
                 picks_df.sort_values(by=["phase_time"], inplace=True)
                 picks_df.to_csv(os.path.join(pick_path, meta["file_name"][i].replace("/", "_") + ".csv"), index=False)
-                
+
                 if "event" in output:
                     if len(event_picks_[i]) == 0:
                         with open(os.path.join(event_path, meta["file_name"][i].replace("/", "_") + ".csv"), "a"):
@@ -91,7 +95,9 @@ def pred_phasenet(args, model, data_loader, pick_path, figure_path, event_path=N
                         continue
                     picks_df = pd.DataFrame(event_picks_[i])
                     picks_df.sort_values(by=["phase_time"], inplace=True)
-                    picks_df.to_csv(os.path.join(event_path, meta["file_name"][i].replace("/", "_") + ".csv"), index=False)
+                    picks_df.to_csv(
+                        os.path.join(event_path, meta["file_name"][i].replace("/", "_") + ".csv"), index=False
+                    )
 
             if args.plot_figure:
                 # meta["waveform_raw"] = meta["waveform"].clone()
@@ -159,7 +165,7 @@ def pred_phasenet_das(args, model, data_loader, pick_path, figure_path):
                 )
 
             # if len(picks_[0]) < 1000:
-            #     continue 
+            #     continue
 
             if args.plot_figure:
                 plot_das(
@@ -256,7 +262,11 @@ def main(args):
     )
 
     model = eqnet.models.__dict__[args.model](
-        backbone=args.backbone, in_channels=1, out_channels=(len(args.phases) + 1), use_polarity=args.use_polarity
+        backbone=args.backbone,
+        in_channels=1,
+        out_channels=(len(args.phases) + 1),
+        add_polarity=args.add_polarity,
+        add_event=args.add_event,
     )
     # logger.info("Model:\n{}".format(model))
 
@@ -274,15 +284,17 @@ def main(args):
         model_without_ddp.load_state_dict(checkpoint["model"], strict=True)
         print("Loaded checkpoint '{}' (epoch {})".format(args.resume, checkpoint["epoch"]))
     else:
-        if args.model == "phasenet" and (not args.use_polarity):
+        if args.model == "phasenet" and (not args.add_polarity):
             raise ("No pretrained model for phasenet, please use phasenet_polarity instead")
-        elif (args.model == "phasenet") and (args.use_polarity):
+        elif (args.model == "phasenet") and (args.add_polarity):
             model_url = "https://github.com/AI4EPS/models/releases/download/PhaseNet-Polarity-v2/model_99.pth"
         elif args.model == "phasenet_das":
             if args.area is None:
                 model_url = "https://github.com/AI4EPS/models/releases/download/PhaseNet-DAS-v4/model_29.pth"
             elif args.area == "forge":
-                model_url = "https://github.com/AI4EPS/models/releases/download/PhaseNet-DAS-ConvertedPhase/model_99.pth"
+                model_url = (
+                    "https://github.com/AI4EPS/models/releases/download/PhaseNet-DAS-ConvertedPhase/model_99.pth"
+                )
             else:
                 raise ("Missing pretrained model for this area")
         else:
@@ -336,12 +348,15 @@ def get_args_parser(add_help=True):
     parser.add_argument("--min_prob", default=0.3, type=float, help="minimum probability for picking")
 
     ## Seismic
-    parser.add_argument("--use_polarity", action="store_true", help="If use polarity information")
+    parser.add_argument("--add_polarity", action="store_true", help="If use polarity information")
+    parser.add_argument("--add_event", action="store_true", help="If use event information")
     parser.add_argument("--highpass_filter", action="store_true", help="If highpass fiter the data by 1Hz")
     parser.add_argument("--response_xml", default=None, type=str, help="response xml file")
 
     ## DAS
-    parser.add_argument("--dataset", type=str, default=None, help="The name of dataset of different area: mammoth, eqnet, or None")
+    parser.add_argument(
+        "--dataset", type=str, default=None, help="The name of dataset of different area: mammoth, eqnet, or None"
+    )
     parser.add_argument("--cut_patch", action="store_true", help="If cut patch for continuous data")
     parser.add_argument("--nt", default=1024 * 3, type=int, help="number of time samples for each patch")
     parser.add_argument("--nx", default=1024 * 3, type=int, help="number of spatial samples for each patch")

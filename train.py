@@ -22,8 +22,6 @@ from eqnet.data import (
     SeismicTraceIterableDataset,
 )
 from eqnet.models.unet import normalize_local
-from eqnet.models.phasenet_das import normalize_local as normalize_local_das
-
 
 torch.manual_seed(0)
 random.seed(0)
@@ -119,7 +117,7 @@ def plot_results(model, epoch, args, meta):
         elif args.model == "phasenet_das":
             preds = model(meta)
             preds = torch.softmax(preds, dim=1).cpu()
-            meta["data"] = normalize_local_das(meta["data"])
+            meta["data"] = normalize_local(meta["data"], filter=2048, stride=256)
             print("Plotting...")
             eqnet.utils.visualize_das_train(meta, preds, epoch=epoch, figure_dir=args.output_dir)
             del preds
@@ -281,6 +279,7 @@ def main(args):
         polarity_loss_weight=args.polarity_loss_weight,
     )
     logger.info("Model:\n{}".format(model))
+    print("Model:\n{}".format(model))
 
     model.to(device)
     if args.distributed:

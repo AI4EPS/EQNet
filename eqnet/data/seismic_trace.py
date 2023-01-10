@@ -18,6 +18,8 @@ from scipy import signal
 # import numpy
 # numpy.seterr(all='raise')
 
+default_cfgs = {}
+
 
 def normalize(data):
     """
@@ -95,16 +97,16 @@ def stack_event(
     _, nt, nx = waveform1.shape  # nch, nt, nx
     duration_mask1 = np.zeros([nt, nx])
     duration_mask2 = np.zeros([nt, nx])
-    ns, ne, nd = meta1["duration"].shape # stations, events, (t0, t1)
-    for i in range(ns): 
+    ns, ne, nd = meta1["duration"].shape  # stations, events, (t0, t1)
+    for i in range(ns):
         for j in range(ne):
             t0, t1 = meta1["duration"][i, j]
-            duration_mask1[t0 : t1, i] = 1
-    ns, ne, nd = meta2["duration"].shape # stations, events, (t0, t1)
-    for i in range(ns): 
+            duration_mask1[t0:t1, i] = 1
+    ns, ne, nd = meta2["duration"].shape  # stations, events, (t0, t1)
+    for i in range(ns):
         for j in range(ne):
             t0, t1 = meta2["duration"][i, j]
-            duration_mask2[t0 : t1, i] = 1
+            duration_mask2[t0:t1, i] = 1
 
     max_tries = 30
     # while random.random() < 0.5:
@@ -224,11 +226,12 @@ def flip_polarity(meta):
     meta["polarity"] = 1 - meta["polarity"]
     return meta
 
+
 def drop_channel(meta):
 
     nch, nt, nx = meta["waveform"].shape
     drop_EH = False
-    random_i = random.random() 
+    random_i = random.random()
     if random_i < 0.2:
         meta["waveform"][0, :, :] = 0.0
     elif random_i < 0.4:
@@ -242,6 +245,7 @@ def drop_channel(meta):
         meta["polarity_mask"] *= 0.0
 
     return meta
+
 
 class SeismicTraceIterableDataset(IterableDataset):
 
@@ -294,12 +298,14 @@ class SeismicTraceIterableDataset(IterableDataset):
             with open(data_list, "r") as f:
                 self.data_list = f.read().splitlines()
         elif data_path is not None:
-            self.data_list = [os.path.basename(x) for x in sorted(list(glob(os.path.join(data_path, f"{prefix}*.{format}"))))]
+            self.data_list = [
+                os.path.basename(x) for x in sorted(list(glob(os.path.join(data_path, f"{prefix}*.{format}"))))
+            ]
         else:
             self.data_list = None
         if self.data_list is not None:
             self.data_list = self.data_list[rank::world_size]
-            
+
         self.data_path = data_path
         self.hdf5_file = hdf5_file
         self.phases = phases
@@ -454,7 +460,7 @@ class SeismicTraceIterableDataset(IterableDataset):
             tmp_min = np.min(attrs["phase_index"][attrs["event_id"] == e]).item()
             tmp_max = np.max(attrs["phase_index"][attrs["event_id"] == e]).item()
             duration.append([tmp_min, tmp_max + 2 * (tmp_max - tmp_min)])
-        duration = np.array([duration]) # for one station and multiple events
+        duration = np.array([duration])  # for one station and multiple events
         event_center, event_mask = generate_label([c0], nt=nt, label_width=self.event_width, return_mask=True)
         event_center = event_center[1, :]
 
@@ -483,8 +489,8 @@ class SeismicTraceIterableDataset(IterableDataset):
         )
         dz = round(hdf5_fp[event_id].attrs["depth_km"] + attrs["elevation_m"] / 1e3, 2)
         event_location = np.zeros([4, nt], dtype=np.float32)
-        # event_location[0, :] = np.arange(nt) - hdf5_fp[event_id].attrs["event_time_index"]
-        event_location[0, :] = np.arange(nt) - hdf5_fp[event_id].attrs["time_index"]
+        event_location[0, :] = np.arange(nt) - hdf5_fp[event_id].attrs["event_time_index"]
+        # event_location[0, :] = np.arange(nt) - hdf5_fp[event_id].attrs["time_index"]
         event_location[1:, event_mask >= 1.0] = np.array([dx, dy, dz])[:, np.newaxis]
 
         if self.hdf5_fp is None:
@@ -511,7 +517,7 @@ class SeismicTraceIterableDataset(IterableDataset):
     def sample_train(self, data_list):
 
         while True:
-            
+
             trace_id = np.random.choice(data_list)
             # if True:
             try:
@@ -654,7 +660,7 @@ class SeismicTraceIterableDataset(IterableDataset):
             "dt_s": 1 / sampling_rate,
         }
 
-    def read_segy(self, fname, highpass_filter=False, sampling_rate=2000, channels=[2,1,0]):
+    def read_segy(self, fname, highpass_filter=False, sampling_rate=2000, channels=[2, 1, 0]):
 
         try:
             stream = obspy.read(fname, format="SEGY")
@@ -690,14 +696,14 @@ class SeismicTraceIterableDataset(IterableDataset):
     def read_hdf5(self, trace_id):
         meta = {}
         if self.hdf5_fp is None:
-            raise("HDF5 file is not opened")
+            raise ("HDF5 file is not opened")
         else:
             hdf5_fp = self.hdf5_fp
             event_id, sta_id = trace_id.split("/")
             waveform = hdf5_fp[trace_id][:, :]
             if waveform.shape[1] == 3:
                 waveform = waveform.T  # [3, Nt]
-            waveform = waveform[:,:,np.newaxis]
+            waveform = waveform[:, :, np.newaxis]
             meta["waveform"] = waveform.astype(np.float32)
             meta["station_id"] = [sta_id]
             meta["begin_time"] = hdf5_fp[event_id].attrs["begin_time"]
@@ -707,8 +713,8 @@ class SeismicTraceIterableDataset(IterableDataset):
 
     def read_das_hdf5(self, fname):
         meta = {}
-        with h5py.File(fname, 'r', libver='latest', swmr=True) as fp:
-            raw_data = fp["data"][()] # [nt, nx]
+        with h5py.File(fname, "r", libver="latest", swmr=True) as fp:
+            raw_data = fp["data"][()]  # [nt, nx]
             raw_data = raw_data - np.mean(raw_data, axis=0, keepdims=True)
             raw_data = raw_data - np.median(raw_data, axis=1, keepdims=True)
             std = np.std(raw_data, axis=0, keepdims=True)
@@ -768,7 +774,7 @@ if __name__ == "__main__":
             axes[1].plot(x["phase_pick"][1, :, i] + i)
             axes[1].plot(x["phase_pick"][2, :, i] + i)
 
-            axes[2].plot(x["center_heatmap"][:, i] + i - 0.5)
+            axes[2].plot(x["event_center"][:, i] + i - 0.5)
             # axes[2].scatter(x["event_location"][0, :, i], x["event_location"][1, :, i])
 
             axes[3].plot(x["event_location"][0, :, i] / 10 + i)
