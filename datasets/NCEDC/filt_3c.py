@@ -1,5 +1,5 @@
 # %%
-import h5py 
+import h5py
 import numpy as np
 from tqdm import tqdm
 
@@ -25,12 +25,12 @@ def calc_snr(waveform, picks, noise_window=300, signal_window=300, gap_window=50
                     noises.append(0)
                     snr.append(0)
 
-
     # if len(snr) == 0:
     #     return 0.0, 0.0, 0.0
     # else:
     #     return snr[-1], signals[-1], noises[-1]
     return snr
+
 
 # %%
 h5_in = "ncedc_event_dataset.h5"
@@ -67,7 +67,7 @@ with h5py.File(h5_out, "w") as fp_out:
                             num += 1
                         else:
                             print("Duplicate station", event_id, station_id)
-                    
+
                 #     print("3C", SNR)
                 #     # continue
                 #     raise

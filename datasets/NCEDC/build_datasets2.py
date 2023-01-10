@@ -13,13 +13,41 @@ import multiprocessing as mp
 plt.rcParams["figure.facecolor"] = "white"
 
 
+def calc_snr(waveform, picks, noise_window=300, signal_window=300, gap_window=50):
+
+    noises = []
+    signals = []
+    snr = []
+    for i in range(waveform.shape[0]):
+        for j in picks:
+            if j + gap_window < waveform.shape[1]:
+                # noise = np.std(waveform[i, j - noise_window : j - gap_window])
+                # signal = np.std(waveform[i, j + gap_window : j + signal_window])
+                noise = np.max(np.abs(waveform[i, j - noise_window : j - gap_window]))
+                signal = np.max(np.abs(waveform[i, j + gap_window : j + signal_window]))
+                if (noise > 0) and (signal > 0):
+                    signals.append(signal)
+                    noises.append(noise)
+                    snr.append(signal / noise)
+                else:
+                    signals.append(0)
+                    noises.append(0)
+                    snr.append(0)
+
+    # if len(snr) == 0:
+    #     return 0.0, 0.0, 0.0
+    # else:
+    #     return snr[-1], signals[-1], noises[-1]
+    return snr
+
+
 # %%
 def save(i, event_csv, fp_in, output_path, time_to_event_id):
-# with h5py.File(h5_file, "r") as fp_in:
+    # with h5py.File(h5_file, "r") as fp_in:
     # with h5py.File(output_path.joinpath(f"{event['index']:06}.h5"), "w") as fp_out:
     # with h5py.File("ncedc_seismic_dataset.h5", "w") as fp_out:
 
-        # for i, (_, event) in tqdm(enumerate(event_csv.iterrows()), total=len(event_csv)):
+    # for i, (_, event) in tqdm(enumerate(event_csv.iterrows()), total=len(event_csv)):
 
     event = event_csv.iloc[i]
 
@@ -43,8 +71,12 @@ def save(i, event_csv, fp_in, output_path, time_to_event_id):
         group.attrs["event_id"] = event_id
         group.attrs["event_time"] = event_time.isoformat(timespec="milliseconds")
         group.attrs["event_time_index"] = event_time_index
-        group.attrs["begin_time"] = (anchor_time - timedelta(pre_window/sampling_rate)).isoformat(timespec="milliseconds")
-        group.attrs["end_time"] = (anchor_time + timedelta(post_window/sampling_rate)).isoformat(timespec="milliseconds")
+        group.attrs["begin_time"] = (anchor_time - timedelta(pre_window / sampling_rate)).isoformat(
+            timespec="milliseconds"
+        )
+        group.attrs["end_time"] = (anchor_time + timedelta(post_window / sampling_rate)).isoformat(
+            timespec="milliseconds"
+        )
         # group.attrs["time_reference"] = anchor_time.isoformat(timespec="milliseconds")
         # group.attrs["time_before"] = pre_window/sampling_rate
         # group.attrs["time_after"] = post_window/sampling_rate
@@ -57,6 +89,13 @@ def save(i, event_csv, fp_in, output_path, time_to_event_id):
         for j, (_, phase) in enumerate(phase_csv.loc[[event["index"]]].iterrows()):
 
             trace = fp_in[f"data/{phase['fname']}"]
+
+            SNR = calc_snr(trace[:], 3000)  ## P arrivals are at 3000
+            SNR = np.array(SNR)
+            # if not ((len(SNR) >= 3) and (np.all(SNR) > 0) and (np.max(SNR) > 2.0)):
+            if np.all(SNR) > 0:
+                continue
+
             p_time = datetime.fromisoformat(trace.attrs["p_time"])
             s_time = datetime.fromisoformat(trace.attrs["s_time"])
             p_arrival_index = int((p_time - anchor_time).total_seconds() * sampling_rate) + pre_window
@@ -70,9 +109,9 @@ def save(i, event_csv, fp_in, output_path, time_to_event_id):
             #     print(trace.shape, p_arrival_index, begin_index, end_index)
 
             waveform = np.zeros([pre_window + post_window, 3])
-            waveform[: trace[max(0, begin_index) : max(0, end_index), :].shape[0], :] = trace[
-                max(0, begin_index) : max(0, end_index), :
-            ] * 1e6
+            waveform[: trace[max(0, begin_index) : max(0, end_index), :].shape[0], :] = (
+                trace[max(0, begin_index) : max(0, end_index), :] * 1e6
+            )
             network = trace.attrs["network"]
             station = trace.attrs["station"]
             location = trace.attrs["location_code"] if trace.attrs["location_code"] != "--" else ""
@@ -97,7 +136,7 @@ def save(i, event_csv, fp_in, output_path, time_to_event_id):
             phase_time = [p_time.isoformat(timespec="milliseconds"), s_time.isoformat(timespec="milliseconds")]
             phase_score = [phase["p_weight"], phase["s_weight"]]
             phase_remark = [phase["p_remark"], phase["s_remark"]]
-            phase_polarity = [first_motion, 'N']
+            phase_polarity = [first_motion, "N"]
             event_ids = [event_id, event_id]
             assert dt_s == 1.0 / sampling_rate
 
@@ -118,7 +157,8 @@ def save(i, event_csv, fp_in, output_path, time_to_event_id):
             attrs["elevation_m"] = station_elevation_m
             attrs["dt_s"] = dt_s
             attrs["unit"] = "1e-6" + unit
-            attrs["snr"] = snr
+            # attrs["snr"] = snr
+            attrs["snr"] = SNR
             attrs["phase_type"] = phase_type
             attrs["phase_index"] = phase_index
             attrs["phase_time"] = phase_time
@@ -135,6 +175,7 @@ def save(i, event_csv, fp_in, output_path, time_to_event_id):
         # if i > 1000:
         #     break
 
+
 # plt.show()
 
 # %%
@@ -143,7 +184,9 @@ if __name__ == "__main__":
     # %%
     h5_file = "ncedc.h5"
     event_csv = pd.read_hdf(h5_file, "events")
-    event_csv["time_id"] = event_csv["time"].apply(lambda x: x[0:4] + x[5:7] + x[8:10] + x[11:13] + x[14:16] + x[17:19] + x[20:22])
+    event_csv["time_id"] = event_csv["time"].apply(
+        lambda x: x[0:4] + x[5:7] + x[8:10] + x[11:13] + x[14:16] + x[17:19] + x[20:22]
+    )
     phase_csv = pd.read_hdf(h5_file, "catalog")
     phase_csv.set_index("event_index", inplace=True)
     with open("event_id.json", "r") as f:
@@ -161,7 +204,7 @@ if __name__ == "__main__":
     # plt.figure()
 
     # %%
-    fp_in = h5py.File(h5_file, "r") 
+    fp_in = h5py.File(h5_file, "r")
     # save(0, event_csv, fp_in, output_path, time_to_event_id)
 
     ncpu = mp.cpu_count()
@@ -184,6 +227,5 @@ if __name__ == "__main__":
     for p in processes:
         p.join()
 
-    
     fp_in.close()
 # %%
