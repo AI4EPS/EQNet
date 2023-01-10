@@ -154,11 +154,11 @@ class EQNet(nn.Module):
 
         if self.training:
             phase_pick = batched_inputs["phase_pick"].to(self.device)
-            center_heatmap = batched_inputs["center_heatmap"].to(self.device)
+            event_center = batched_inputs["event_center"].to(self.device)
             event_location = batched_inputs["event_location"].to(self.device)
             event_location_mask = batched_inputs["event_location_mask"].to(self.device)
         else:
-            phase_pick, center_heatmap, event_location, event_location_mask = None, None, None, None
+            phase_pick, event_center, event_location, event_location_mask = None, None, None, None
 
         if self.backbone_name == "swin2":
             station_location = batched_inputs["station_location"].to(self.device)
@@ -168,15 +168,16 @@ class EQNet(nn.Module):
             features = self.backbone(waveform)
 
         output_phase, loss_phase = self.phase_picker(features, phase_pick)
-        output_event, loss_event = self.event_detector(features, center_heatmap, event_location, event_location_mask)
+        output_event, loss_event = self.event_detector(features, event_center, event_location, event_location_mask)
 
         if self.training:
-            return loss_phase + loss_event
+            return {"loss": loss_phase + loss_event, "loss_phase": loss_phase, "loss_event": loss_event}
         else:
             return {"phase": output_phase, "event": output_event}
 
 
 def eqnet(
     backbone="resnet",
+    **kargs
 ) -> EQNet:
     return EQNet(backbone=backbone)
