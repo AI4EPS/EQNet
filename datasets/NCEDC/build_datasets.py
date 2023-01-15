@@ -21,10 +21,10 @@ def calc_snr(waveform, picks, noise_window=300, signal_window=300, gap_window=50
     for i in range(waveform.shape[0]):
         for j in picks:
             if j + gap_window < waveform.shape[1]:
-                # noise = np.std(waveform[i, j - noise_window : j - gap_window])
-                # signal = np.std(waveform[i, j + gap_window : j + signal_window])
-                noise = np.max(np.abs(waveform[i, j - noise_window : j - gap_window]))
-                signal = np.max(np.abs(waveform[i, j + gap_window : j + signal_window]))
+                noise = np.std(waveform[i, j - noise_window : j - gap_window])
+                signal = np.std(waveform[i, j + gap_window : j + signal_window])
+                # noise = np.max(np.abs(waveform[i, j - noise_window : j - gap_window]))
+                # signal = np.max(np.abs(waveform[i, j + gap_window : j + signal_window]))
                 if (noise > 0) and (signal > 0):
                     signals.append(signal)
                     noises.append(noise)
@@ -38,12 +38,13 @@ def calc_snr(waveform, picks, noise_window=300, signal_window=300, gap_window=50
 
 
 # %%
-h5_file = "ncedc.h5"
-event_csv = pd.read_hdf(h5_file, "events")
+h5_in = "ncedc.h5"
+h5_out = "ncedc_event_dataset.h5"
+event_csv = pd.read_hdf(h5_in, "events")
 event_csv["time_id"] = event_csv["time"].apply(
     lambda x: x[0:4] + x[5:7] + x[8:10] + x[11:13] + x[14:16] + x[17:19] + x[20:22]
 )
-phase_csv = pd.read_hdf(h5_file, "catalog")
+phase_csv = pd.read_hdf(h5_in, "catalog")
 phase_csv.set_index("event_index", inplace=True)
 with open("event_id.json", "r") as f:
     time_to_event_id = json.load(f)
@@ -54,9 +55,9 @@ post_window = 9000
 sampling_rate = 100
 # plt.figure()
 
-with h5py.File(h5_file, "r") as fp_in:
+with h5py.File(h5_in, "r") as fp_in:
     # with h5py.File(output_path.joinpath(f"{event['index']:06}.h5"), "w") as fp_out:
-    with h5py.File("ncedc_event_dataset_3c_v2.h5", "w") as fp_out:
+    with h5py.File(h5_out, "w") as fp_out:
 
         for i, (_, event) in tqdm(enumerate(event_csv.iterrows()), total=len(event_csv)):
 
@@ -103,8 +104,8 @@ with h5py.File(h5_file, "r") as fp_in:
                 SNR = calc_snr(trace[:].T, [6000])  ## P arrivals are at 6000
                 SNR = np.array(SNR)
                 # if not ((len(SNR) >= 3) and (np.all(SNR) > 0) and (np.max(SNR) > 2.0)):
-                if np.all(SNR) > 0:
-                    continue
+                # if not (np.all(SNR) > 0):
+                #     continue
 
                 p_time = datetime.fromisoformat(trace.attrs["p_time"])
                 s_time = datetime.fromisoformat(trace.attrs["s_time"])
@@ -165,7 +166,7 @@ with h5py.File(h5_file, "r") as fp_in:
                 attrs["elevation_m"] = station_elevation_m
                 attrs["dt_s"] = dt_s
                 attrs["unit"] = "1e-6" + unit
-                attrs["snr"] = snr
+                attrs["snr"] = SNR
                 attrs["phase_type"] = phase_type
                 attrs["phase_index"] = phase_index
                 attrs["phase_time"] = phase_time

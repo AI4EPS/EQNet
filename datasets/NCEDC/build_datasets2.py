@@ -21,10 +21,10 @@ def calc_snr(waveform, picks, noise_window=300, signal_window=300, gap_window=50
     for i in range(waveform.shape[0]):
         for j in picks:
             if j + gap_window < waveform.shape[1]:
-                # noise = np.std(waveform[i, j - noise_window : j - gap_window])
-                # signal = np.std(waveform[i, j + gap_window : j + signal_window])
-                noise = np.max(np.abs(waveform[i, j - noise_window : j - gap_window]))
-                signal = np.max(np.abs(waveform[i, j + gap_window : j + signal_window]))
+                noise = np.std(waveform[i, j - noise_window : j - gap_window])
+                signal = np.std(waveform[i, j + gap_window : j + signal_window])
+                # noise = np.max(np.abs(waveform[i, j - noise_window : j - gap_window]))
+                # signal = np.max(np.abs(waveform[i, j + gap_window : j + signal_window]))
                 if (noise > 0) and (signal > 0):
                     signals.append(signal)
                     noises.append(noise)
@@ -93,8 +93,8 @@ def save(i, event_csv, fp_in, output_path, time_to_event_id):
             SNR = calc_snr(trace[:], 3000)  ## P arrivals are at 3000
             SNR = np.array(SNR)
             # if not ((len(SNR) >= 3) and (np.all(SNR) > 0) and (np.max(SNR) > 2.0)):
-            if np.all(SNR) > 0:
-                continue
+            # if np.all(SNR) > 0:
+            #     continue
 
             p_time = datetime.fromisoformat(trace.attrs["p_time"])
             s_time = datetime.fromisoformat(trace.attrs["s_time"])

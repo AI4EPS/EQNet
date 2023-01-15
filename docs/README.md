@@ -16,10 +16,13 @@ python predict.py --model phasenet --add_polarity --data_path /path_to_data --re
 
 e.g.,
 ```
-python predict.py --model phasenet --data_path /kuafu/jxli/Data/SeismicEventData/mammoth_south/data/ --data_list mammoth_south.txt  --format mseed --batch_size 1 --result_path mammoth_south --add_polarity
+python predict.py --model phasenet --data_path /kuafu/jxli/Data/SeismicEventData/mammoth_south/data/ --data_list mammoth_south.txt  --format mseed --batch_size 1 --result_path mammoth_south --add_polarity  --add_event
 ```
 ```
-torchrun --standalone --nproc_per_node 8 predict.py --model phasenet --data_path /atomic-data/zhuwq/Hawaii_Loa --format mseed  --batch_size=1 --result_path Hawaii_Loa --response_xml /atomic-data/zhuwq/response_hawaii_loa.xml --min_prob 0.3 --highpass_filter --add_polarity 
+torchrun --standalone --nproc_per_node 8 predict.py --model phasenet --data_path /atomic-data/zhuwq/Hawaii_Loa --format mseed  --batch_size=1 --result_path Hawaii_Loa --response_xml /atomic-data/zhuwq/response_hawaii_loa.xml --min_prob 0.3 --highpass_filter --add_polarity  --add_event
+```
+```
+torchrun --standalone --nproc_per_node 4 predict.py --model phasenet --batch_size=32 --hdf5-file datasets/NCEDC/ncedc_event_dataset.h5 --result_path results_ncedc_event_dataset_0.1 --add_polarity --add_event  --dataset=seismic_trace --min_prob 0.1
 ```
 
 ### PhaseNet-DAS

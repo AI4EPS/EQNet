@@ -761,6 +761,7 @@ class DASIterableDataset(IterableDataset):
             elif self.format == "h5" and (self.dataset is None):
 
                 with h5py.File(os.path.join(self.data_path, file), "r") as fp:
+                    # data = fp["data"][:].T  # nt x nx
                     data = fp["data"][:]  # nt x nx
                     if self.highpass_filter:
                         b, a = scipy.signal.butter(2, 1.0, "hp", fs=100)
