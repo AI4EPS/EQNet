@@ -11,12 +11,12 @@ python predict.py --model phasenet --data_path /path_to_data --result_path ./res
 
 ### PhaseNet-Polarity
 ```
-python predict.py --model phasenet --add_polarity --data_path /path_to_data --result_path ./results --batch_size=1
+python predict.py --model phasenet --add_polarity --add_event --data_path /path_to_data --result_path ./results --batch_size=1 --format mseed
 ```
 
 e.g.,
 ```
-python predict.py --model phasenet --data_path /kuafu/jxli/Data/SeismicEventData/mammoth_south/data/ --data_list mammoth_south.txt  --format mseed --batch_size 1 --result_path mammoth_south --add_polarity  --add_event
+python predict.py --model phasenet --add_polarity --add_event --format mseed --data_path /kuafu/jxli/Data/SeismicEventData/mammoth_south/data/ --data_list mammoth_south.txt --batch_size 1 --result_path mammoth_south 
 ```
 ```
 torchrun --standalone --nproc_per_node 8 predict.py --model phasenet --data_path /atomic-data/zhuwq/Hawaii_Loa --format mseed  --batch_size=1 --result_path Hawaii_Loa --response_xml /atomic-data/zhuwq/response_hawaii_loa.xml --min_prob 0.3 --highpass_filter --add_polarity  --add_event
