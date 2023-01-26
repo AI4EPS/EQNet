@@ -40,7 +40,7 @@ python predict.py --model phasenet_das --amp --data_path Forge_Utah/data --resul
 
 Arguments:
 - add the *--plot_figure* argument to plot results. 
-
+- add the *--highpass_filter 1.0* to add highpass filter.
 
 ## Training
 

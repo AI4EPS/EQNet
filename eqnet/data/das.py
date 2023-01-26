@@ -466,7 +466,7 @@ class DASIterableDataset(IterableDataset):
         resample_time=False,
         resample_space=False,
         masking=False,
-        highpass_filter=False,
+        highpass_filter=0.0,
         filter_params={
             "freqmin": 0.1,
             "freqmax": 10.0,
@@ -763,8 +763,8 @@ class DASIterableDataset(IterableDataset):
                 with h5py.File(os.path.join(self.data_path, file), "r") as fp:
                     # data = fp["data"][:].T  # nt x nx
                     data = fp["data"][:]  # nt x nx
-                    if self.highpass_filter:
-                        b, a = scipy.signal.butter(2, 1.0, "hp", fs=100)
+                    if self.highpass_filter > 0.0:
+                        b, a = scipy.signal.butter(2, self.highpass_filter, "hp", fs=100)
                         data = scipy.signal.filtfilt(b, a, data, axis=0)
                     if "begin_time" in fp["data"].attrs:
                         sample["begin_time"] = datetime.fromisoformat(fp["data"].attrs["begin_time"].rstrip("Z"))
@@ -875,7 +875,7 @@ class AutoEncoderIterableDataset(DASIterableDataset):
         suffix="",
         training=False,
         stack_noise=False,
-        highpass_filter=False,
+        highpass_filter=0.0,
         **kwargs,
     ):
         super().__init__(data_path, noise_path, format=format, training=training)

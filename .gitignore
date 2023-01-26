@@ -31,3 +31,14 @@ converted_phase/manualpicks*
 
 *.whl
 *.tar.gz
+poggiali*
+model/
+model2/
+datasets/NCEDC/figures
+result_eqnet
+Mammoth_north_new
+Mammoth_south_new
+Mammoth_north
+Mammoth_south
+tests/phasenet_das/association/picks_phasenet_das/
+tests/phasenet_das/association/figures_phasenet_filtered/

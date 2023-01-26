@@ -350,7 +350,7 @@ def get_args_parser(add_help=True):
     ## Seismic
     parser.add_argument("--add_polarity", action="store_true", help="If use polarity information")
     parser.add_argument("--add_event", action="store_true", help="If use event information")
-    parser.add_argument("--highpass_filter", action="store_true", help="If highpass fiter the data by 1Hz")
+    parser.add_argument("--highpass_filter", type=float, default=0.0, help="highpass filter; default 0.0 is no filter")
     parser.add_argument("--response_xml", default=None, type=str, help="response xml file")
 
     ## DAS
