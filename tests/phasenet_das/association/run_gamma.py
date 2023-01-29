@@ -7,29 +7,30 @@ from pathlib import Path
 from gamma.utils import association
 import multiprocessing
 from multiprocessing import Manager
-import sys
 from pyproj import Proj
 import warnings
 warnings.filterwarnings("ignore")
 
 
 # %%
-root_dir = "./"
-root_dir = "/net/kuafu/mnt/tank/data/EventData/Ridgecrest_South/"
-root_dir = "/net/kuafu/mnt/tank/data/EventData/Ridgecrest/"
+root_dir = Path("./")
+# root_dir = Path("/net/kuafu/mnt/tank/data/EventData/Ridgecrest_South/")
+# root_dir = Path("/net/kuafu/mnt/tank/data/EventData/Ridgecrest/")
 
 # %%
-picks_path = Path(root_dir+f"picks_phasenet_das/")
-output_path = Path(f"picks_phasenet_filtered/")
-figures_path = Path(f"figures_phasenet_filtered/")
-
+picks_path = root_dir / f"picks_phasenet_das/"
+output_path = Path(f"picks_phasenet_filtered_debug2/")
+figures_path = Path(f"figures_phasenet_filtered_debug2/")
 if not output_path.exists():
     output_path.mkdir(parents=True)
 if not figures_path.exists():
     figures_path.mkdir(parents=True)
 
+# %%
+plot_figure = True
+
 # %% Match data format for GaMMA
-stations = pd.read_csv(root_dir+"das_info.csv", index_col="index")
+stations = pd.read_csv(root_dir / "das_info.csv", index_col="index")
 y0 = stations["latitude"].mean()
 x0 = stations["longitude"].mean()
 proj = Proj(f"+proj=sterea +lon_0={x0} +lat_0={y0} +units=km")
@@ -43,37 +44,39 @@ stations["id"] = stations["id"].astype(str)
 degree2km = 111.32
 config = {
     'center': (x0, y0), 
-    'xlim_degree': [x0-2, x0+2], 
-    'ylim_degree': [y0-2, y0+2], 
+    'xlim_degree': [x0-5, x0+5], 
+    'ylim_degree': [y0-5, y0+5], 
     'degree2km': degree2km}
 config["dims"] = ['x(km)', 'y(km)', 'z(km)']
 config["use_dbscan"] = False
+# config["dbscan_eps"] = 10.0
+# config["dbscan_min_samples"] = 500
 config["use_amplitude"] = False
-config["x(km)"] = (np.array(config["xlim_degree"])-np.array(config["center"][0]))*config["degree2km"]
+config["x(km)"] = (np.array(config["xlim_degree"])-np.array(config["center"][0]))*config["degree2km"]*np.cos(np.deg2rad(config["center"][1]))
 config["y(km)"] = (np.array(config["ylim_degree"])-np.array(config["center"][1]))*config["degree2km"]
-config["z(km)"] = (0, 20)
-# config["vel"] = {"p": 6.0, "s": 6.0 / 1.73}
-config["vel"] = {"p": 5.5, "s": 5.5 / 1.73} ## Mammoth
+config["z(km)"] = (0, 40)
+config["vel"] = {"p": 6.0, "s": 6.0 / 1.73}
+# config["vel"] = {"p": 5.5, "s": 5.5 / 1.73} ## Mammoth
+config["covariance_prior"] = [1000, 1000]
 config["method"] = "BGMM"
 # config["method"] = "GMM"
 if config["method"] == "BGMM":
-    # config["oversample_factor"] = 5
-    config["oversample_factor"] = 2
+    config["oversample_factor"] = 5
 if config["method"] == "GMM":
     config["oversample_factor"] = 1
 config["bfgs_bounds"] = (
     (config["x(km)"][0] - 1, config["x(km)"][1] + 1),  # x
     (config["y(km)"][0] - 1, config["y(km)"][1] + 1),  # y
     (0, config["z(km)"][1] + 1),  # x
-    (0, None),  # t
+    (None, None),  # t
 )
-config["initial_mode"] = "one_point"
+config["initial_points"] = [2, 2, 1] # x, y, z dimension
 
 # Filtering
 config["min_picks_per_eq"] = 2000 #len(stations)//10
-config["min_p_picks_per_eq"] = 1000 #len(stations)//20
-config["min_s_picks_per_eq"] = 1000 #len(stations)//20
-config["max_sigma11"] = 1.0
+# config["min_p_picks_per_eq"] = 500 #len(stations)//20
+# config["min_s_picks_per_eq"] = 500 #len(stations)//20
+config["max_sigma11"] = 2.0
 
 for k, v in config.items():
     print(f"{k}: {v}")
@@ -82,28 +85,16 @@ for k, v in config.items():
 def associate(picks, stations, config):
 
     ## match format from PhaseNet to PhaseNet-DAS
-    # picks["phase_type"] = picks["phase_type"].apply(lambda x: x.upper())
-    # picks["channel_index"] = picks["station_id"]
-    # picks["phase_score"] = picks["phase_prob"]
     picks = picks.join(stations, on="channel_index", how="inner")
 
     ## match data format for GaMMA 
     picks["id"] = picks["channel_index"].astype(str)
-    picks["id"] = picks["id"].astype(str)
-
-    # picks["type"] = picks["phase_type"]
-    # picks["prob"] = picks["phase_prob"]
     picks["type"] = picks["phase_type"]
     picks["prob"] = picks["phase_score"]
     picks["timestamp"] = picks["phase_time"].apply(lambda x: datetime.fromisoformat(x))
 
-    event_idx0 = 0 ## current earthquake index
-    # catalogs, assignments = association(picks, stations, config, event_idx0, config["method"])
-    try:
-        catalogs, assignments = association(picks, stations, config, event_idx0, config["method"])
-    except:
-        # print(f"Failed {picks.isnull().values.any()}")
-        return None, None
+    event_idx0 = 0
+    catalogs, assignments = association(picks, stations, config, event_idx0, config["method"])
 
     assignments = pd.DataFrame(assignments, columns=["pick_idx", "event_idx", "prob_gamma"])
     picks = picks.join(assignments.set_index("pick_idx")).fillna(-1).astype({'event_idx': int})
@@ -137,11 +128,6 @@ def filter_close_false_picks(picks, events, tol=500):
                         index_selected.remove(event_index[i])
     return picks[picks["event_index"].isin(index_selected)]
 
-# %%
-# event_list = []
-# files = data_path.rglob('picks_phasenet_raw/*.csv')
-# if True:
-plot_figure = False
 
 def run(files, event_list):
     for file in files:
@@ -158,61 +144,57 @@ def run(files, event_list):
             e["event_id"] = file.stem
             event_list.append(e)
 
-        picks_ = picks.copy()
-        picks["event_index"] = picks["event_idx"]
-        picks = picks[picks["event_idx"] != -1]
-
-        if len(picks) == 0:
-            continue 
-        ## filter: keep both P/S picks
-        picks["event_index"] = picks["event_idx"]
-        picks["station_id"] = picks["channel_index"]
-        # for i, phase_type in enumerate(picks["phase_type"].unique()):
-        for i, phase_type in enumerate(["P", "S"]):
-            if i == 0:
-                filt_picks = picks[(picks["event_index"] != -1) & (picks["phase_type"] == phase_type)][["station_id", "event_index"]]
-            else:
-                filt_picks = filt_picks.merge(picks[(picks["event_index"] != -1) & (picks["phase_type"] == phase_type)][["station_id", "event_index"]], how="inner", on=["station_id", "event_index"])
-        picks = picks.merge(filt_picks, on=["station_id", "event_index"], how='right')
-        if len(picks) == 0:
-            continue
-        ## filter: 
-        for i, k in enumerate(picks["event_index"].unique()):
-            if len(picks[(picks["event_index"] == k) & (picks["phase_type"] == "P")]) < config["min_p_picks_per_eq"]:
-                picks = picks[picks["event_index"] != k]
-            if len(picks[(picks["event_index"] == k) & (picks["phase_type"] == "S")]) < config["min_s_picks_per_eq"]:
-                picks = picks[picks["event_index"] != k]
-            if len(picks[(picks["event_index"] == k)]) < config["min_picks_per_eq"]:
-                picks = picks[picks["event_index"] != k]
-        ## filter 
-        # if len(picks) == 0:
-        #     continue 
-        # picks = filter_close_false_picks(picks, events)
-
-        if len(picks) == 0:
-            continue 
-        picks.sort_values(by=["channel_index", "phase_index"], inplace=True)
-        picks.to_csv(output_path.joinpath(file.name), index=False, columns=["channel_index", "phase_index", "phase_time", "phase_score", "phase_type", "event_index"], float_format='%.3f')
-        
         if plot_figure:
-            fig, axs = plt.subplots(1, 1, figsize=(20, 10))
-            axs.scatter(picks_["channel_index"][picks_["phase_type"] == "P"], picks_["phase_index"][picks_["phase_type"] == "P"], c=picks_["event_idx"][picks_["phase_type"] == "P"].apply(lambda x: f"C{x}" if x != -1 else "k"), s=1, marker=".")
-            axs.scatter(picks_["channel_index"][picks_["phase_type"] == "S"], picks_["phase_index"][picks_["phase_type"] == "S"], c=picks_["event_idx"][picks_["phase_type"] == "S"].apply(lambda x: f"C{x}" if x != -1 else "k"), s=1, marker="x")
-            axs.invert_yaxis()
-
-            # picks_ = picks.copy()
-            # axs[1].scatter(picks_["channel_index"][picks_["phase_type"] == "P"], picks_["phase_index"][picks_["phase_type"] == "P"], c=picks_["event_idx"][picks_["phase_type"] == "P"].apply(lambda x: f"C{x}" if x != -1 else "gray"), s=1, marker=".")
-            # axs[1].scatter(picks_["channel_index"][picks_["phase_type"] == "S"], picks_["phase_index"][picks_["phase_type"] == "S"], c=picks_["event_idx"][picks_["phase_type"] == "S"].apply(lambda x: f"C{x}" if x != -1 else "gray"), s=1, marker="x")
-            # axs[1].invert_yaxis()
+            fig, axs = plt.subplots(1, 1, squeeze=False, figsize=(20, 10))
+            axs[0,0].scatter(picks["channel_index"][picks["phase_type"] == "S"], picks["phase_index"][picks["phase_type"] == "S"], edgecolors=picks["event_idx"][picks["phase_type"] == "S"].apply(lambda x: f"C{x}" if x != -1 else "k"), s=10, marker="o", facecolors="none", linewidths=0.1)
+            axs[0,0].scatter(picks["channel_index"][picks["phase_type"] == "P"], picks["phase_index"][picks["phase_type"] == "P"], c=picks["event_idx"][picks["phase_type"] == "P"].apply(lambda x: f"C{x}" if x != -1 else "k"), s=1, marker=".")
+            axs[0,0].invert_yaxis()
             plt.savefig(figures_path.joinpath(file.stem + ".jpg"), bbox_inches='tight')
             plt.close(fig)
 
+        ## match pick format of PhaseNet-DAS
+        picks = picks[picks["event_idx"] != -1]
+        if len(picks) == 0:
+            continue
+        picks["event_index"] = picks["event_idx"]
+        picks["station_id"] = picks["channel_index"]
+
+        ## filter: keep both P and S picks
+        # for i, phase_type in enumerate(["P", "S"]):
+        #     if i == 0:
+        #         filt_picks = picks[(picks["event_index"] != -1) & (picks["phase_type"] == phase_type)][["station_id", "event_index"]]
+        #     else:
+        #         filt_picks = filt_picks.merge(picks[(picks["event_index"] != -1) & (picks["phase_type"] == phase_type)][["station_id", "event_index"]], how="inner", on=["station_id", "event_index"])
+        # picks = picks.merge(filt_picks, on=["station_id", "event_index"], how='right')
+        # if len(picks) == 0:
+        #     continue
+
+        ## filter very close events
+        # picks = filter_close_false_picks(picks, events)
+        if len(picks) == 0:
+            continue 
+
+        picks.sort_values(by=["channel_index", "phase_index"], inplace=True)
+        picks.to_csv(output_path.joinpath(file.name), index=False, columns=["channel_index", "phase_index", "phase_time", "phase_score", "phase_type", "event_index"], float_format='%.3f')
 # %%
 if __name__ == "__main__":
     manager = Manager()
     event_list = manager.list()
     files = sorted(list(picks_path.rglob('*.csv')))
-
+    # event_id = "ci39488679"
+    # event_id = "ci39463055"
+    # event_id = "ci39550567"
+    # event_id = "nc73642105"
+    # event_id = "nc73581316"
+    # event_id = "nc73514575"
+    # event_id = "nc73566210"
+    # event_id = "nc73563905"
+    # event_id = "nc73560470"
+    # event_id = "nc73511770"
+    # event_id = "nc73566210"
+    # event_id = "ci39759432"
+    # files = sorted(list(picks_path.rglob(f'{event_id}.csv')))
+    
     # run(files, event_list)
     # raise
 
@@ -226,27 +208,21 @@ if __name__ == "__main__":
     for p in jobs:
         p.join()
 
-    events = pd.DataFrame(list(event_list))
-    events["event_index"] = events["event_idx"]
+    if len(event_list) > 0:
+        events = pd.DataFrame(list(event_list))
 
-    events[["longitude","latitude"]] = events.apply(lambda x: pd.Series(proj(longitude=x["x(km)"], latitude=x["y(km)"], inverse=True)), axis=1)
-    events["depth_km"] = events["z(km)"]
+        events[["longitude","latitude"]] = events.apply(lambda x: pd.Series(proj(longitude=x["x(km)"], latitude=x["y(km)"], inverse=True)), axis=1)
+        events["depth_km"] = events["z(km)"]
 
-    # events["longitude"] = events["x(km)"].apply(
-    #     lambda x: x / config["degree2km"] + config["center"][0]
-    # )
-    # events["latitude"] = events["y(km)"].apply(
-    #     lambda x: x / config["degree2km"] + config["center"][1]
-    # )
-    # events["depth_km"] = events["z(km)"]
-
-    events.to_csv("catalog_gamma.csv", index=False, columns=["event_id", "time", "longitude", "latitude","depth_km","event_index"], float_format="%.6f")
+        events.to_csv("catalog_gamma_debug2.csv", index=False, columns=["event_id", "time", "longitude", "latitude","depth_km","event_index"], float_format="%.6f")
+    else:
+        print("No events found!")
 
 # %%
 
 
 # %%
-print(output_path.joinpath("events.csv"))
+# print(output_path.joinpath("events.csv"))
 
 # %%
 # plt.figure()
