@@ -631,11 +631,12 @@ class SeismicTraceIterableDataset(IterableDataset):
             station_ids[tr.id[:-1]].append(tr.id[-1])
             if tr.id[-1] not in comp:
                 print(f"Unknown component {tr.id[-1]}")
-
+                
+        station_keys = sorted(list(station_ids.keys()))
         nx = len(station_ids)
         nt = len(stream[0].data)
         data = np.zeros([3, nt, nx], dtype=np.float32)
-        for i, sta in enumerate(sorted(station_ids)):
+        for i, sta in enumerate(station_keys):
 
             for c in station_ids[sta]:
                 j = comp2idx[c]
@@ -655,7 +656,7 @@ class SeismicTraceIterableDataset(IterableDataset):
 
         return {
             "waveform": torch.from_numpy(data),
-            "station_id": list(station_ids.keys()),
+            "station_id": station_keys,
             "begin_time": begin_time.datetime.isoformat(timespec="milliseconds"),
             "dt_s": 1 / sampling_rate,
         }
