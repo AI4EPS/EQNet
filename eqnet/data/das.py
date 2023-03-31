@@ -76,6 +76,7 @@ def generate_label(
             time_mask[0, int(phase_time) - w : int(phase_time) + w, trace] = 1
 
     space_mask = np.all(space_mask, axis=0)  ## traces with all picks
+    # space_mask = np.ones(nx, dtype=np.bool) ## ignore space_mask
 
     # target[0:1, :, :] = np.maximum(0, 1 - np.sum(target[1:, :, :], axis=0, keepdims=True))
 
@@ -291,28 +292,6 @@ def stack_noise(data, noise, snr):
     return data + noise * max(0, snr - 2) * torch.rand(1)
 
 
-def mask_edge(data, target, nt=256, nx=256):
-    """masking edges to prevent edge effects"""
-    # nch, nt, nx = data.shape
-    nt_ = random.randint(1, nt)
-    nx_ = random.randint(1, nx)
-    data_ = torch.clone(data)
-    target_ = torch.clone(target)
-    if np.random.rand() > 0.5:
-        data_[:, :nt_, :] = 0.0
-        target_[0, :nt_, :] = 1.0
-        target_[1:, :nt_, :] = 0.0
-        data_[:, :, :nx_] = 0.0
-        target_[0, :, :nx_] = 1.0
-        target_[1:, :, :nx_] = 0.0
-    else:
-        data_[:, -nt_:, :] = 0.0
-        target_[0:1, -nt_:, :] = 1.0
-        target_[1:, -nt_:, :] = 0.0
-        data_[:, :, -nx_:] = 0.0
-        target_[0:1, :, -nx_:] = 1.0
-        target_[1:, :, -nx_:] = 0.0
-    return data_, target_
 
 def masking(data, target, nt=256, nx=256):
     """masking edges to prevent edge effects"""
@@ -802,21 +781,28 @@ class DASIterableDataset(IterableDataset):
 
             elif (self.format == "h5") and (self.dataset == "mammoth"):
                 with h5py.File(os.path.join(self.data_path, file), "r") as fp:
-                    data = fp["Data"][:]
-                    if "startTime" in data.attrs:
-                        sample["begin_time"] = datetime.fromisoformat(data.attrs["startTime"].rstrip("Z"))
-                    if "dt" in data.attrs:
-                        sample["dt_s"] = data.attrs["dt"]
-                    if "dCh" in data.attrs:
-                        sample["dx_m"] = data.attrs["dCh"]
-                    if "nt" in data.attrs:
-                        sample["nt"] = data.attrs["nt"]
-                    if "nCh" in data.attrs:
-                        sample["nx"] = data.attrs["nCh"]
-                    data = data[()].T
+                    dataset = fp["Data"]
+                    if "startTime" in dataset.attrs:
+                        sample["begin_time"] = datetime.fromisoformat(dataset.attrs["startTime"].rstrip("Z"))
+                    if "dt" in dataset.attrs:
+                        sample["dt_s"] = dataset.attrs["dt"]
+                    if "dCh" in dataset.attrs:
+                        sample["dx_m"] = dataset.attrs["dCh"]
+                    if "nt" in dataset.attrs:
+                        sample["nt"] = dataset.attrs["nt"]
+                    if "nCh" in dataset.attrs:
+                        sample["nx"] = dataset.attrs["nCh"]
+                    data = dataset[:].T
+                    data = np.gradient(data, axis=0)
+
+                if self.highpass_filter > 0.0:
+                    b, a = scipy.signal.butter(2, self.highpass_filter, "hp", fs=100)
+                    data = scipy.signal.filtfilt(b, a, data, axis=0)
                 data = data[np.newaxis, :, :]  # nchn, nt, nx
+                # data = torch.from_numpy(data.astype(np.float32))
+                # data = torch.diff(data, n=1, dim=1)
+                
                 data = torch.from_numpy(data.astype(np.float32))
-                data = torch.diff(data, n=1, dim=1)
 
             elif self.format == "segy":
                 meta = {}

@@ -47,6 +47,9 @@ def generate_label(
         label_width = label_width * len(phase_list)
     if mask_width is None:
         mask_width = [int(x * 1.5) for x in label_width]
+    else:
+        width = mask_width
+        mask_width =  [min(int(x * 1.5), width) for x in label_width]
 
     for i, (picks, w, m) in enumerate(zip(phase_list, label_width, mask_width)):
         for phase_time in picks:
@@ -444,8 +447,13 @@ class SeismicTraceIterableDataset(IterableDataset):
         ## phase polarity
         up = attrs["phase_index"][attrs["phase_polarity"] == "U"]
         dn = attrs["phase_index"][attrs["phase_polarity"] == "D"]
-        phase_up, mask_up = generate_label([up], nt=nt, label_width=self.polarity_width, return_mask=True)
-        phase_dn, mask_dn = generate_label([dn], nt=nt, label_width=self.polarity_width, return_mask=True)
+        ## assuming having both P and S picks
+        mask_width = (attrs["phase_index"][attrs["phase_type"] == "S"] - attrs["phase_index"][attrs["phase_type"] == "P"])//2
+        mask_width = int(min(mask_width))
+        phase_up, mask_up = generate_label([up], nt=nt, label_width=self.polarity_width, mask_width=mask_width, return_mask=True)
+        phase_dn, mask_dn = generate_label([dn], nt=nt, label_width=self.polarity_width, mask_width=mask_width, return_mask=True)
+        # phase_up, mask_up = generate_label([up], nt=nt, label_width=self.polarity_width, return_mask=True)
+        # phase_dn, mask_dn = generate_label([dn], nt=nt, label_width=self.polarity_width, return_mask=True)
         polarity = ((phase_up[1, :] - phase_dn[1, :]) + 1.0) / 2.0
         polarity_mask = mask_up + mask_dn
         # polarity_mask = phase_mask
@@ -543,8 +551,18 @@ class SeismicTraceIterableDataset(IterableDataset):
             meta = cut_data(meta, min_point=self.phase_width[0] * 2)
             if self.flip_polarity and (random.random() < 0.5):
                 meta = flip_polarity(meta)
+
+            if np.std(meta["waveform"], axis=(1,2))[-1] == 0:
+                ## polarity is picked by the last channel
+                # print(f"Error reading {trace_id}: zeros in Z channel {np.std(meta['waveform'], axis=(1,2))}")
+                meta["polarity_mask"] = np.zeros_like(meta["polarity_mask"])
+                
             if self.drop_channel and (random.random() < 0.1):
                 meta = drop_channel(meta)
+        
+            if (np.std(meta["waveform"], axis=(1,2)) == 0).all():
+                # print(f"Error reading {trace_id}: all zeros {np.std(meta['waveform'], axis=(1,2))}")
+                continue
 
             waveform = meta["waveform"]
             # waveform = normalize(waveform)

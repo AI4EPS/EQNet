@@ -257,7 +257,7 @@ class UNet(nn.Module):
 
     def forward(self, x):
 
-        bt, ch, nt, st = x.shape  # batch, channel, time, station
+        bt, ch, nt, nx = x.shape  # batch, channel, time, station
         x = normalize_local(x, filter=self.local_norm[0], stride=self.local_norm[1])
         x = pad_input(x, min_w=self.pad_input[0], min_h=self.pad_input[1])
 
@@ -290,12 +290,14 @@ class UNet(nn.Module):
         out = self.output_conv(dec1)
         if self.output_upsample is not None:
             out = self.output_upsample(out)
+        out = out[:, :, :nt, :nx]
 
         if self.add_polarity:
             dec1_polarity = torch.cat((dec1, enc1_polarity), dim=1)
             out_polarity = self.decoder1_polarity(dec1_polarity)
             if self.output_upsample is not None:
                 out_polarity = self.output_upsample(out_polarity)
+            out_polarity = out_polarity[:, :, :nt, :nx]
         else:
             out_polarity = None
 
@@ -303,6 +305,7 @@ class UNet(nn.Module):
             out_event = self.output_event(dec3)
             if self.output_upsample is not None:
                 out_event = self.output_upsample(out_event)
+            out_event = out_event[:, :, :nt, :nx]
         else:
             out_event = None
 
@@ -324,7 +327,7 @@ class UNet(nn.Module):
     #         return x1
 
     @staticmethod
-    def encoder_block(in_channels, out_channels, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), name=""):
+    def encoder_block(in_channels, out_channels, kernel_size=(7, 7), stride=(4, 4), padding=(3, 3), name=""):
         return nn.Sequential(
             OrderedDict(
                 [
@@ -358,7 +361,7 @@ class UNet(nn.Module):
         )
 
     @staticmethod
-    def decoder_block(in_channels, out_channels, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), name=""):
+    def decoder_block(in_channels, out_channels, kernel_size=(7, 7), stride=(4, 4), padding=(3, 3), name=""):
         return nn.Sequential(
             OrderedDict(
                 [

@@ -70,6 +70,12 @@ def train_one_epoch(
     model.train()
     i = 0
     for meta in metric_logger.log_every(data_loader, print_freq, header):
+        
+        if args.random_crop:
+            crop_nt = random.randint(1,args.crop_nt)
+            crop_nx = random.randint(1,args.crop_nx)
+            meta["data"] = meta["data"][:, :, :-crop_nt, :-crop_nx]
+            meta["targets"] = meta["targets"][:, :, :-crop_nt, :-crop_nx]
 
         with torch.cuda.amp.autocast(enabled=scaler is not None):
             loss_dict = model(meta)
@@ -180,6 +186,7 @@ def main(args):
         dataset = DASIterableDataset(
             # data_path="/net/kuafu/mnt/tank/data/EventData/Mammoth_north/data",
             # noise_path="/net/kuafu/mnt/tank/data/EventData/Mammoth_north/data",
+
             label_path=[
                 "/net/kuafu/mnt/tank/data/EventData/Mammoth_north/picks_phasenet_filtered/",
                 "/net/kuafu/mnt/tank/data/EventData/Mammoth_south/picks_phasenet_filtered/",
@@ -192,10 +199,13 @@ def main(args):
                 "/net/kuafu/mnt/tank/data/EventData/Ridgecrest/data",
                 "/net/kuafu/mnt/tank/data/EventData/Ridgecrest_South/data",
             ],
-            # label_path=["./converted_phase/manualpicks/"],
+            
             # data_path="/net/kuafu/mnt/tank/data/EventData/Mammoth_south/data",
+            # label_path=["./converted_phase/manualpicks/"],
+
             # data_path = "./Forge_Utah/data/",
             # label_path = "./Forge_Utah/picks/",
+
             # data_path=args.data_path,
             # label_path=args.label_path,
             phases=args.phases,
@@ -213,10 +223,16 @@ def main(args):
         )
         train_sampler = None
         dataset_test = DASIterableDataset(
+
             data_path="/net/kuafu/mnt/tank/data/EventData/Ridgecrest/data/",
             label_path=["/net/kuafu/mnt/tank/data/EventData/Ridgecrest/picks_phasenet_filtered/"],
+
             # data_path=args.test_data_path,
             # label_path=args.test_label_path,
+
+            # data_path = "./Forge_Utah/data/",
+            # label_path = "./Forge_Utah/picks/",
+
             phases=args.phases,
             nt=args.nt,
             nx=args.nx,
@@ -499,6 +515,9 @@ def get_args_parser(add_help=True):
     parser.add_argument("--resample-time", action="store_true", help="Resample time  resolution")
     parser.add_argument("--masking", action="store_true", help="Masking of the input data")
     parser.add_argument("--polarity-loss-weight", default=1.0, type=float, help="Polarity loss weight")
+    parser.add_argument("--random-crop", action="store_true", help="Random size")
+    parser.add_argument("--crop-nt", default=1024, type=int, help="Crop time samples")
+    parser.add_argument("--crop-nx", default=1024, type=int, help="Crop space samples")
     return parser
 
 

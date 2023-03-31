@@ -37,6 +37,10 @@ python predict.py --model phasenet_das --amp  --data_path /net/kuafu/mnt/tank/da
 ```
 python predict.py --model phasenet_das --amp --data_path Forge_Utah/data --result_path ./results --area forge --phases P S PS
 ```
+Continous data:
+```
+torchrun --standalone --nproc_per_node=4 predict.py --data_path /kuafu/DASdata/Hawaii_desampled/ --result_path Hawaii_5Hz --dataset mammoth --cut_patch --nt=20480 --nx=3000 --workers=4 --batch_size=1 --amp --highpass_filter=5.0
+```
 
 Arguments:
 - add the *--plot_figure* argument to plot results. 
@@ -47,7 +51,7 @@ Arguments:
 
 ### Training PhaseNet-DAS
 ```
-torchrun --standalone --nproc_per_node=4 train.py --model phasenet_das --batch-size=4 --stack-event --stack-noise --resample-space --resample-time --masking --amp --output=model_phasenet_das --epochs=30 --wd=1e-1
+torchrun --standalone --nproc_per_node=4 train.py --model phasenet_das --batch-size=4 --stack-event --stack-noise --resample-space --resample-time --masking --amp --random-crop --output=model_phasenet_das --epochs=30 --wd=1e-1
 ```
 
 e.g.,
