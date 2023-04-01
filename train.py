@@ -37,6 +37,13 @@ def evaluate(model, data_loader, device, epoch=0, print_freq=100, scaler=None, a
     header = "Test:"
     with torch.inference_mode():
         for meta in metric_logger.log_every(data_loader, print_freq, header):
+
+            if args.random_crop:
+                crop_nt = random.randint(1,args.crop_nt)
+                crop_nx = random.randint(1,args.crop_nx)
+                meta["data"] = meta["data"][:, :, :-crop_nt, :-crop_nx]
+                meta["targets"] = meta["targets"][:, :, :-crop_nt, :-crop_nx]
+                
             with torch.cuda.amp.autocast(enabled=scaler is not None):
                 preds = model(meta)
                 targets = meta["targets"].to(preds.device)

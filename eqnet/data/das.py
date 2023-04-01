@@ -835,7 +835,6 @@ class DASIterableDataset(IterableDataset):
                 }
             else:
                 _, nt, nx = data.shape
-                data = F.pad(data, (0, nx % self.nx, 0, nt % self.nt), mode="constant", value=0)
                 for i in list(range(0, nt, self.nt)):
                     for j in list(range(0, nx, self.nx)):
                         yield {
