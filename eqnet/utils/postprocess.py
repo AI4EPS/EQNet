@@ -185,11 +185,11 @@ def merge_das_picks(raw_folder="picks_phasenet_das", merged_folder=None, min_pic
 
 
 def merge_seismic_picks(pick_path):
-    csv_fils = sorted(glob(os.path.join(pick_path, "*.csv")))
+    csv_files = sorted(glob(os.path.join(pick_path, "*.csv")))
     num_picks = 0
     with open(pick_path.rstrip("/")+".csv", "w") as fp_out:
         first_non_empty = True
-        for i, file in enumerate(tqdm(csv_fils, desc="Merging picks")):
+        for i, file in enumerate(tqdm(csv_files, desc="Merging picks")):
             with open(file, "r") as fp_in:
                 lines = fp_in.readlines()
                 if first_non_empty and (len(lines) > 0):
