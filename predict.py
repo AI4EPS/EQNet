@@ -1,5 +1,4 @@
 import logging
-import multiprocessing
 import os
 import warnings
 
@@ -8,6 +7,8 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import torch
 import torch.utils.data
+import torch.multiprocessing as mp
+mp.set_start_method("spawn", force=True)
 
 matplotlib.use("agg")
 
@@ -255,7 +256,7 @@ def main(args):
         dataset,
         batch_size=args.batch_size,
         sampler=sampler,
-        num_workers=min(args.workers, multiprocessing.cpu_count()),
+        num_workers=min(args.workers, mp.cpu_count()),
         collate_fn=None,
         prefetch_factor=2,
         drop_last=False,

@@ -471,9 +471,15 @@ class DASIterableDataset(IterableDataset):
             with open(data_list, "r") as f:
                 self.data_list = f.read().splitlines()
         elif data_path is not None:
-            self.data_list = [
-                os.path.basename(x) for x in sorted(list(glob(os.path.join(data_path, f"{prefix}*{suffix}.{format}"))))
-            ]
+            if data_path.startswith("gs://"):
+                import gcsfs
+                self.fs = gcsfs.GCSFileSystem()
+                self.data_list = self.fs.glob(data_path + f"/{prefix}*{suffix}.{format}")
+                self.data_path = "gs://"
+            else:
+                self.data_list = [
+                    os.path.basename(x) for x in sorted(list(glob(os.path.join(data_path, f"{prefix}*{suffix}.{format}"))))
+                ]
         else:
             self.data_list = None
         if skip_files is not None:
@@ -550,7 +556,10 @@ class DASIterableDataset(IterableDataset):
             return len(self.data_list)
         else:
             if self.dataset is None:
-                nt, nch = h5py.File(os.path.join(self.data_path, self.data_list[0]), "r")["data"].shape
+                if self.data_path == "gs://":
+                    nt, nch = h5py.File(self.fs.open(self.data_path + self.data_list[0]), "r")["data"].shape
+                else:
+                    nt, nch = h5py.File(os.path.join(self.data_path, self.data_list[0]), "r")["data"].shape
             elif self.dataset == "mammoth":
                 nch, nt = h5py.File(os.path.join(self.data_path, self.data_list[0]), "r")["Data"].shape
             else:
@@ -718,7 +727,12 @@ class DASIterableDataset(IterableDataset):
             if file == "0219neiszm.h5":
                 print(f"skip {file}")
                 continue
-            if not os.path.exists(os.path.join(self.data_path, file)):
+
+            if self.data_path == "gs://":
+                exists = self.fs.exists(self.data_path + file)
+            else:
+                exists =os.path.exists(os.path.join(self.data_path, file))
+            if not exists:
                 print(f"{file} does not exist.")
                 continue
 
@@ -739,7 +753,11 @@ class DASIterableDataset(IterableDataset):
 
             elif self.format == "h5" and (self.dataset is None):
 
-                with h5py.File(os.path.join(self.data_path, file), "r") as fp:
+                if self.data_path == "gs://":
+                    file_path = self.fs.open(self.data_path + file)
+                else:
+                    file_path = os.path.join(self.data_path, file)
+                with h5py.File(file_path, "r") as fp:
                     # data = fp["data"][:].T  # nt x nx
                     data = fp["data"][:]  # nt x nx
                     if self.highpass_filter > 0.0:
