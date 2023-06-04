@@ -5,6 +5,7 @@ import warnings
 import matplotlib
 import matplotlib.pyplot as plt
 import pandas as pd
+from contextlib import nullcontext
 import torch
 import torch.utils.data
 import torch.multiprocessing as mp
@@ -36,10 +37,11 @@ def pred_phasenet(args, model, data_loader, pick_path, figure_path, event_path=N
     model.eval()
     metric_logger = utils.MetricLogger(delimiter="  ")
     header = "Predicting:"
+    ctx = nullcontext() if args.device == "cpu" else torch.cuda.amp.autocast(enabled=args.amp)
     with torch.inference_mode():
         for meta in metric_logger.log_every(data_loader, 1, header):
 
-            with torch.cuda.amp.autocast(enabled=args.amp):
+            with ctx:
                 output = model(meta)
 
             if "phase" in output:
@@ -131,10 +133,10 @@ def pred_phasenet_das(args, model, data_loader, pick_path, figure_path):
     model.eval()
     metric_logger = utils.MetricLogger(delimiter="  ")
     header = "Predicting:"
+    ctx = nullcontext() if args.device == "cpu" else torch.cuda.amp.autocast(enabled=args.amp)
     with torch.inference_mode():
         for meta in metric_logger.log_every(data_loader, 1, header):
-
-            with torch.cuda.amp.autocast(enabled=args.amp):
+            with ctx:
                 scores = torch.softmax(model(meta), dim=1)  # [batch, nch, nt, nsta]
                 topk_scores, topk_inds = detect_peaks(scores, vmin=args.min_prob, kernel=21)
 

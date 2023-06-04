@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 import scipy
 import scipy.signal
+import fsspec
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -428,7 +429,7 @@ def add_moveout(data, targets=None, vmin=2.0, vmax=6.0, dt=0.01, dx=0.01, shift_
 class DASIterableDataset(IterableDataset):
     def __init__(
         self,
-        data_path=None,
+        data_path="./",
         data_list=None,
         format="h5",
         prefix="",
@@ -467,25 +468,22 @@ class DASIterableDataset(IterableDataset):
         self.format = format
         self.prefix = prefix
         self.suffix = suffix
+
+        self.data_path = data_path
+        if self.data_path.startswith("s3://"):
+            self.fs = fsspec.filesystem("s3")
+        elif self.data_path.startswith("gs://"):
+            self.fs = fsspec.filesystem("gs")
+        else:
+            self.fs = fsspec.filesystem("file")
+        
         if data_list is not None:
             with open(data_list, "r") as f:
-                self.data_list = f.read().splitlines()
-        elif data_path is not None:
-            if data_path.startswith("gs://"):
-                import gcsfs
-                self.fs = gcsfs.GCSFileSystem()
-                self.data_list = self.fs.glob(data_path + f"/{prefix}*{suffix}.{format}")
-                self.data_path = "gs://"
-            else:
-                self.data_list = [
-                    os.path.basename(x) for x in sorted(list(glob(os.path.join(data_path, f"{prefix}*{suffix}.{format}"))))
-                ]
+                self.data_list = [os.path.join(self.data_path, x) for x in f.read().splitlines()]
         else:
-            self.data_list = None
-        if skip_files is not None:
-            self.data_list = self.filt_list(self.data_list, kwargs["skip_files"])
-        if self.data_list is not None:
-            self.data_list = self.data_list[rank::world_size]
+            self.data_list = self.fs.glob(os.path.join(self.data_path, f"{prefix}*{suffix}.{format}"))
+            
+        self.data_list = self.data_list[rank::world_size]
 
         ## continuous data
         self.dataset = dataset
@@ -530,10 +528,7 @@ class DASIterableDataset(IterableDataset):
         if self.training:
             print(f"{label_path}: {len(self.label_list)} files")
         else:
-            print(
-                os.path.join(data_path, f"{prefix}*{suffix}.{format}"),
-                f": {len(self.data_list)} files",
-            )
+            print(f"{self.data_path}: {len(self.data_list)} files")
 
     def filt_list(self, data_list, skip_files):
         skip_data_list = [
@@ -728,11 +723,7 @@ class DASIterableDataset(IterableDataset):
                 print(f"skip {file}")
                 continue
 
-            if self.data_path == "gs://":
-                exists = self.fs.exists(self.data_path + file)
-            else:
-                exists =os.path.exists(os.path.join(self.data_path, file))
-            if not exists:
+            if not self.fs.exists(file):
                 print(f"{file} does not exist.")
                 continue
 
@@ -753,13 +744,10 @@ class DASIterableDataset(IterableDataset):
 
             elif self.format == "h5" and (self.dataset is None):
 
-                if self.data_path == "gs://":
-                    file_path = self.fs.open(self.data_path + file)
-                else:
-                    file_path = os.path.join(self.data_path, file)
-                with h5py.File(file_path, "r") as fp:
-                    # data = fp["data"][:].T  # nt x nx
-                    data = fp["data"][:]  # nt x nx
+
+                with h5py.File(self.fs.open(file), "r") as fp:
+                    data = fp["data"][:].T  # nt x nx
+                    # data = fp["data"][:]  # nt x nx
                     if self.highpass_filter > 0.0:
                         b, a = scipy.signal.butter(2, self.highpass_filter, "hp", fs=100)
                         data = scipy.signal.filtfilt(b, a, data, axis=0)
@@ -798,7 +786,7 @@ class DASIterableDataset(IterableDataset):
                     data = torch.from_numpy(data.astype(np.float32))
 
             elif (self.format == "h5") and (self.dataset == "mammoth"):
-                with h5py.File(os.path.join(self.data_path, file), "r") as fp:
+                with h5py.File(self.fs.open(file), "r") as fp:
                     dataset = fp["Data"]
                     if "startTime" in dataset.attrs:
                         sample["begin_time"] = datetime.fromisoformat(dataset.attrs["startTime"].rstrip("Z"))
@@ -963,7 +951,7 @@ class AutoEncoderIterableDataset(DASIterableDataset):
 class DASDataset(Dataset):
     def __init__(
         self,
-        data_path,
+        data_path="./",
         noise_path=None,
         label_path=None,
         format="npz",
