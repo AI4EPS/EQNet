@@ -381,15 +381,45 @@ def filter_labels(label_list):
     return label_selected
 
 
-def load_segy(infile, nTrace=1250):
-    filesize = os.path.getsize(infile)
-    nSample = int(((filesize - 3600) / nTrace - 240) / 4)
-    data = np.zeros((nTrace, nSample), dtype=np.float32)
-    fid = open(infile, "rb")
+# def load_segy(infile, nTrace=1250):
+#     filesize = os.path.getsize(infile)
+#     nSample = int(((filesize - 3600) / nTrace - 240) / 4)
+#     data = np.zeros((nTrace, nSample), dtype=np.float32)
+#     fid = open(infile, "rb")
+#     fid.seek(3600)
+#     for i in range(nTrace):
+#         fid.seek(240, 1)
+#         data[i, :] = np.fromfile(fid, dtype=np.float32, count=nSample)
+#     return data
+
+def read_PASSCAL_segy(fid, nTraces=1250, nSample=900000, TraceOff=0, strain_rate=True):
+    """Function to read PASSCAL segy raw data
+    For Ridgecrest data, there are 1250 channels in total,
+    Sampling rate is 250 Hz so for one hour data: 250 * 3600 samples
+    author: Jiuxun Yin
+    source: https://github.com/SCEDC/cloud/blob/master/pds_ridgecrest_das.ipynb
+    """
+    fs = nSample/ 3600 # sampling rate
+    data = np.zeros((nTraces, nSample), dtype=np.float32)
+
     fid.seek(3600)
-    for i in range(nTrace):
+    # Skipping traces if necessary
+    fid.seek(TraceOff*(240+nSample*4),1)
+    # Looping over traces
+    for ii in range(nTraces):
         fid.seek(240, 1)
-        data[i, :] = np.fromfile(fid, dtype=np.float32, count=nSample)
+        bytes = fid.read(nSample*4)
+        data[ii, :] = np.frombuffer(bytes, dtype=np.float32)
+
+    fid.close()
+
+    # Convert the phase-shift to strain (in nanostrain)
+    Ridgecrest_conversion_factor = 1550.12 / (0.78 * 4 * np.pi * 1.46 * 8)
+    data = data * Ridgecrest_conversion_factor
+
+    if strain_rate:
+        data = np.gradient(data, axis=1) * fs
+
     return data
 
 
@@ -454,9 +484,8 @@ class DASIterableDataset(IterableDataset):
             "zerophase": True,
         },
         ## continuous data
-        dataset=None,  # "eqnet" or "mammoth" or None
+        system=None,  # "eqnet" or "optasense" or None
         cut_patch=False,
-        skip_files=None,
         rank=0,
         world_size=1,
         **kwargs,
@@ -471,7 +500,7 @@ class DASIterableDataset(IterableDataset):
 
         self.data_path = data_path
         if self.data_path.startswith("s3://"):
-            self.fs = fsspec.filesystem("s3")
+            self.fs = fsspec.filesystem("s3", anon=True)
         elif self.data_path.startswith("gs://"):
             self.fs = fsspec.filesystem("gs")
         else:
@@ -486,7 +515,7 @@ class DASIterableDataset(IterableDataset):
         self.data_list = self.data_list[rank::world_size]
 
         ## continuous data
-        self.dataset = dataset
+        self.system = system
         self.cut_patch = cut_patch
         self.dt = kwargs["dt"] if "dt" in kwargs else 0.01  # s
         self.dx = kwargs["dx"] if "dx" in kwargs else 10.0  # m
@@ -530,36 +559,34 @@ class DASIterableDataset(IterableDataset):
         else:
             print(f"{self.data_path}: {len(self.data_list)} files")
 
-    def filt_list(self, data_list, skip_files):
-        skip_data_list = [
-            os.path.splitext(x.split("/")[-1])[0] for x in sorted(list(glob(skip_files)))
-        ]  ## merged picks
-        skip_data_list += [
-            "_".join(os.path.splitext(x.split("/")[-1])[0].split("_")[:-2]) for x in sorted(list(glob(skip_files)))
-        ]  ## raw picks
-        print("Total number of files:", len(data_list))
-        data_list = [x for x in data_list if os.path.splitext(x.split("/")[-1])[0] not in skip_data_list]
-        print("Remaining number for processing:", len(data_list))
-        return data_list
+        ## pre calcuate length
+        self._data_len = self._count()
 
     def __len__(self):
-
+        return self._data_len
+    
+    def _count(self):
+        
         if self.training:
             return max(100, len(self.label_list))
 
         if not self.cut_patch:
             return len(self.data_list)
         else:
-            if self.dataset is None:
-                if self.data_path == "gs://":
-                    nt, nch = h5py.File(self.fs.open(self.data_path + self.data_list[0]), "r")["data"].shape
+            if self.format == "h5":
+                meta = h5py.File(self.fs.open(self.data_list[0]), "r")
+                if self.system == "optasense":
+                    nx, nt = meta["Data"].shape
                 else:
-                    nt, nch = h5py.File(os.path.join(self.data_path, self.data_list[0]), "r")["data"].shape
-            elif self.dataset == "mammoth":
-                nch, nt = h5py.File(os.path.join(self.data_path, self.data_list[0]), "r")["Data"].shape
+                    nt, nx = meta["data"].shape
+            elif self.format == "segy":
+                print("Start reading segy file")
+                nx, nt = read_PASSCAL_segy(self.fs.open(self.data_list[0])).shape
+                print("End reading segy file")
             else:
                 raise ValueError("Unknown dataset")
-            return len(self.data_list) * ((nt - 1) // self.nt + 1) * ((nch - 1) // self.nx + 1)
+
+            return len(self.data_list) * ((nt - 1) // self.nt + 1) * ((nx - 1) // self.nx + 1)
 
     def __iter__(self):
         worker_info = torch.utils.data.get_worker_info()
@@ -719,9 +746,6 @@ class DASIterableDataset(IterableDataset):
     def sample(self, file_list):
 
         for file in file_list:
-            if file == "0219neiszm.h5":
-                print(f"skip {file}")
-                continue
 
             if not self.fs.exists(file):
                 print(f"{file} does not exist.")
@@ -742,12 +766,11 @@ class DASIterableDataset(IterableDataset):
                 sample["dt_s"] = 0.01
                 sample["dx_m"] = 10.0
 
-            elif self.format == "h5" and (self.dataset is None):
-
+            elif self.format == "h5" and (self.system is None):
 
                 with h5py.File(self.fs.open(file), "r") as fp:
-                    data = fp["data"][:].T  # nt x nx
-                    # data = fp["data"][:]  # nt x nx
+                    # data = fp["data"][:].T  # nt x nx
+                    data = fp["data"][:]  # nt x nx
                     if self.highpass_filter > 0.0:
                         b, a = scipy.signal.butter(2, self.highpass_filter, "hp", fs=100)
                         data = scipy.signal.filtfilt(b, a, data, axis=0)
@@ -785,7 +808,7 @@ class DASIterableDataset(IterableDataset):
                     
                     data = torch.from_numpy(data.astype(np.float32))
 
-            elif (self.format == "h5") and (self.dataset == "mammoth"):
+            elif (self.format == "h5") and (self.system == "optasense"):
                 with h5py.File(self.fs.open(file), "r") as fp:
                     dataset = fp["Data"]
                     if "startTime" in dataset.attrs:
@@ -812,17 +835,15 @@ class DASIterableDataset(IterableDataset):
 
             elif self.format == "segy":
                 meta = {}
-                data = self.load_segy(os.path.join(self.data_path, file), nTrace=self.nTrace)
+                # data = self.load_segy(os.path.join(self.data_path, file), nTrace=self.nTrace)
+                data = read_PASSCAL_segy(self.fs.open(file, "rb"))
+                data = data.T
+                data = data[np.newaxis, :, :]  # nchn, nt, nx
                 data = torch.from_numpy(data)
-                with torch.no_grad():
-                    data = torch.diff(data, n=1, dim=-1)
-                    data = F.interpolate(
-                        data.unsqueeze(dim=0),
-                        scale_factor=self.raw_dt / self.dt,
-                        mode="linear",
-                        align_corners=False,
-                    )
-                    data = data.permute(0, 2, 1)
+                ## hard code for Ridgecrest DAS
+                sample["begin_time"] = datetime.strptime(file.split("/")[-1].rstrip(".segy"), "%Y%m%d%H")
+                sample["dt_s"] = 1.0/250.0
+                sample["dx_m"] = 8.0
             else:
                 raise (f"Unsupported format: {self.format}")
 

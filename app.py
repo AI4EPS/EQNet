@@ -17,7 +17,7 @@ class Config():
     min_prob = 0.5  
     amp = True
     dtype = torch.float32
-    area = None
+    location = None
 
 
 class Data(BaseModel):
@@ -40,9 +40,9 @@ def load_model(args):
     elif (args.model == "phasenet") and (args.add_polarity):
         model_url = "https://github.com/AI4EPS/models/releases/download/PhaseNet-Polarity-v3/model_99.pth"
     elif args.model == "phasenet_das":
-        if args.area is None:
+        if args.location is None:
             model_url = "https://github.com/AI4EPS/models/releases/download/PhaseNet-DAS-v5/model_29.pth"
-        elif args.area == "forge":
+        elif args.location == "forge":
             model_url = (
                 "https://github.com/AI4EPS/models/releases/download/PhaseNet-DAS-ConvertedPhase/model_99.pth"
             )

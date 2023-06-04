@@ -35,11 +35,11 @@ e.g.,
 python predict.py --model phasenet_das --amp  --data_path /net/kuafu/mnt/tank/data/EventData/Arcata_Spring2022/data --result_path Arcata_Spring2022 --plot_figure
 ```
 ```
-python predict.py --model phasenet_das --amp --data_path Forge_Utah/data --result_path ./results --area forge --phases P S PS
+python predict.py --model phasenet_das --amp --data_path Forge_Utah/data --result_path ./results --location forge --phases P S PS
 ```
 Continous data:
 ```
-torchrun --standalone --nproc_per_node=4 predict.py --data_path /kuafu/DASdata/Hawaii_desampled/ --result_path Hawaii_5Hz --dataset mammoth --cut_patch --nt=20480 --nx=3000 --workers=4 --batch_size=1 --amp --highpass_filter=5.0
+torchrun --standalone --nproc_per_node=4 predict.py --data_path /kuafu/DASdata/Hawaii_desampled/ --result_path Hawaii_5Hz --system optasense --cut_patch --nt=20480 --nx=3000 --workers=4 --batch_size=1 --amp --highpass_filter=5.0
 ```
 
 Arguments:

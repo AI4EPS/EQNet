@@ -227,7 +227,7 @@ def main(args):
             hdf5_file=args.hdf5_file,
             prefix=args.prefix,
             format=args.format,
-            dataset=args.dataset,
+            system=args.system,
             training=False,
             highpass_filter=args.highpass_filter,
             response_xml=args.response_xml,
@@ -245,10 +245,9 @@ def main(args):
             nx=args.nx,
             nt=args.nt,
             training=False,
-            dataset=args.dataset,
+            system=args.system,
             cut_patch=args.cut_patch,
             highpass_filter=args.highpass_filter,
-            skip_files=args.skip_files,
         )
         sampler = None
     else:
@@ -292,14 +291,14 @@ def main(args):
         elif (args.model == "phasenet") and (args.add_polarity):
             model_url = "https://github.com/AI4EPS/models/releases/download/PhaseNet-Polarity-v3/model_99.pth"
         elif args.model == "phasenet_das":
-            if args.area is None:
+            if args.location is None:
                 model_url = "https://github.com/AI4EPS/models/releases/download/PhaseNet-DAS-v5/model_29.pth"
-            elif args.area == "forge":
+            elif args.location == "forge":
                 model_url = (
                     "https://github.com/AI4EPS/models/releases/download/PhaseNet-DAS-ConvertedPhase/model_99.pth"
                 )
             else:
-                raise ("Missing pretrained model for this area")
+                raise ("Missing pretrained model for this location")
         else:
             raise
         state_dict = torch.hub.load_state_dict_from_url(
@@ -344,7 +343,6 @@ def get_args_parser(add_help=True):
     parser.add_argument("--data_list", type=str, default=None, help="selectecd data list")
     parser.add_argument("--hdf5-file", default=None, type=str, help="hdf5 file for training")
     parser.add_argument("--prefix", default="", type=str, help="prefix for the file name")
-    parser.add_argument("--skip_files", default=None, help="If skip the files that have been processed")
     parser.add_argument("--format", type=str, default="h5", help="data format")
     parser.add_argument("--result_path", type=str, default="results", help="path to result directory")
     parser.add_argument("--plot_figure", action="store_true", help="If plot figure for test")
@@ -357,13 +355,14 @@ def get_args_parser(add_help=True):
     parser.add_argument("--response_xml", default=None, type=str, help="response xml file")
 
     ## DAS
-    parser.add_argument(
-        "--dataset", type=str, default=None, help="The name of dataset of different area: mammoth, eqnet, or None"
-    )
+
     parser.add_argument("--cut_patch", action="store_true", help="If cut patch for continuous data")
     parser.add_argument("--nt", default=1024 * 3, type=int, help="number of time samples for each patch")
     parser.add_argument("--nx", default=1024 * 3, type=int, help="number of spatial samples for each patch")
-    parser.add_argument("--area", type=str, default=None, help="The name of area of different areas")
+    parser.add_argument(
+        "--system", type=str, default=None, help="The name of system of different system: optasense, eqnet, or None"
+    )
+    parser.add_argument("--location", type=str, default=None, help="The name of systems at location")
 
     return parser
 
