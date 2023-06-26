@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import fsspec
 import h5py
+import torch
 
 # %%
 protocol = "gs"
@@ -20,24 +21,14 @@ if not result_path.exists():
 # %%
 
 with open(result_path / "h5_list.txt", "w") as f:
-    for h5 in h5_list:
+    for i, h5 in enumerate(h5_list):
         f.write(f"{protocol}://" + h5 + "\n")
 
 # %%
-# print(h5_list[0])
-# with fsspec.open("gs://"+h5_list[0], "rb") as fs:
-#     with h5py.File(fs, "r", lib_version='latest', swmr=True) as f:
-#         print(f.keys())
-        # print(f["data"].shape)
-        # print(f["label"].shape)
-        # print(f["event"].shape)
-        # print(f["polarity"].shape)
-        # print(f["event"][...])
-        # print(f["polarity"][...])
-        # print(f["label"][...])
-
-# %%
-cmd = f"python ../predict.py --model phasenet --add_polarity --add_event --format h5 --data_list {result_path/'h5_list.txt'} --batch_size 1 --result_path {result_path}/phasenet"
+num_gpu = torch.cuda.device_count()
+if num_gpu == 0:
+    cmd = f"python ../predict.py --model phasenet --add_polarity --add_event --format h5 --data_list {result_path/'h5_list.txt'} --batch_size 1 --result_path {result_path}/phasenet --dataset=das  --cut_patch --nx=1024"
+else:
+    cmd = f"torchrun --standalone --nproc_per_node 4   ../predict.py --model phasenet --add_polarity --add_event --format h5 --data_list {result_path/'h5_list.txt'} --batch_size 1 --result_path {result_path}/phasenet --dataset=das  --cut_patch --nx=1024"
 print(cmd)
-# os.system(cmd)
-# %%
+os.system(cmd)
