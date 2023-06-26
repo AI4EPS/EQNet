@@ -284,7 +284,7 @@ class SeismicTraceIterableDataset(IterableDataset):
         rank=0,
         world_size=1,
         cut_patch=False,
-        nt=10240,
+        nt=1024*4,
         nx=1024,
     ):
         super().__init__()
@@ -346,6 +346,8 @@ class SeismicTraceIterableDataset(IterableDataset):
                 f": {len(self.data_list)} files",
             )
 
+        self._data_len = self._count()
+
     def __iter__(self):
         worker_info = torch.utils.data.get_worker_info()
         if worker_info is None:
@@ -360,8 +362,17 @@ class SeismicTraceIterableDataset(IterableDataset):
         else:
             return iter(self.sample(data_list))
 
+    def _count(self):
+        if not self.cut_patch:
+            return len(len(self.data_list))
+        else:
+            with fsspec.open(self.data_list[0], "rb") as fs:
+                with h5py.File(fs, "r") as fp:
+                    nx, nt = fp["data"].shape
+            return len(self.data_list) *  ((nt - 1) // self.nt + 1) * ((nx - 1) // self.nx + 1)
+
     def __len__(self):
-        return len(self.data_list)
+        return self._data_len
 
     def calc_snr(self, waveform, picks, noise_window=300, signal_window=300, gap_window=50):
 

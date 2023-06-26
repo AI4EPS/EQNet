@@ -21,8 +21,7 @@ from eqnet.models.unet import normalize_local
 from eqnet.utils import (
     detect_peaks,
     extract_picks,
-    merge_das_picks,
-    merge_seismic_picks,
+    merge_patch,
     plot_das,
     plot_phasenet,
 )
@@ -57,6 +56,7 @@ def pred_phasenet(args, model, data_loader, pick_path, figure_path, event_path=N
                     file_name=meta["file_name"],
                     station_id=meta["station_id"],
                     begin_time=meta["begin_time"] if "begin_time" in meta else None,
+                    begin_time_index=meta["begin_time_index"] if "begin_time_index" in meta else None,
                     dt=meta["dt_s"] if "dt_s" in meta else 0.01,
                     vmin=args.min_prob,
                     phases=args.phases,
@@ -83,24 +83,26 @@ def pred_phasenet(args, model, data_loader, pick_path, figure_path, event_path=N
 
             for i in range(len(meta["file_name"])):
 
+                filename = meta["file_name"][i].split("//")[-1].replace("/", "_")
+
                 if len(phase_picks_[i]) == 0:
                     ## keep an empty file for the file with no picks to make it easier to track processed files
-                    with open(os.path.join(pick_path, meta["file_name"][i].replace("/", "_") + ".csv"), "a"):
+                    with open(os.path.join(pick_path, filename + ".csv"), "a"):
                         pass
                     continue
                 picks_df = pd.DataFrame(phase_picks_[i])
                 picks_df.sort_values(by=["phase_time"], inplace=True)
-                picks_df.to_csv(os.path.join(pick_path, meta["file_name"][i].replace("/", "_") + ".csv"), index=False)
+                picks_df.to_csv(os.path.join(pick_path, filename + ".csv"), index=False)
 
                 if "event" in output:
                     if len(event_picks_[i]) == 0:
-                        with open(os.path.join(event_path, meta["file_name"][i].replace("/", "_") + ".csv"), "a"):
+                        with open(os.path.join(event_path, filename + ".csv"), "a"):
                             pass
                         continue
                     picks_df = pd.DataFrame(event_picks_[i])
                     picks_df.sort_values(by=["phase_time"], inplace=True)
                     picks_df.to_csv(
-                        os.path.join(event_path, meta["file_name"][i].replace("/", "_") + ".csv"), index=False
+                        os.path.join(event_path, filename + ".csv"), index=False
                     )
 
             if args.plot_figure:
@@ -123,9 +125,11 @@ def pred_phasenet(args, model, data_loader, pick_path, figure_path, event_path=N
     if args.distributed:
         torch.distributed.barrier()
         if utils.is_main_process():
-            merge_seismic_picks(pick_path)
+            merge_patch(pick_path, pick_path.replace("_patch", ""))
+            merge_patch(event_path, event_path.replace("_patch", ""))
     else:
-        merge_seismic_picks(pick_path)
+        merge_patch(pick_path, pick_path.replace("_patch", ""))
+        merge_patch(event_path, event_path.replace("_patch", ""))
     return 0
 
 
@@ -188,10 +192,10 @@ def pred_phasenet_das(args, model, data_loader, pick_path, figure_path):
     if args.distributed:
         torch.distributed.barrier()
         if args.cut_patch and utils.is_main_process():
-            merge_das_picks(pick_path)
+            merge_patch(pick_path, return_single_file=False)
     else:
         if args.cut_patch:
-            merge_das_picks(pick_path)
+            merge_patch(pick_path, return_single_file=False)
 
     return 0
 
@@ -199,9 +203,14 @@ def pred_phasenet_das(args, model, data_loader, pick_path, figure_path):
 def main(args):
 
     result_path = args.result_path
-    pick_path = os.path.join(result_path, f"picks_{args.model}_raw")
-    event_path = os.path.join(result_path, f"events_{args.model}_raw")
-    figure_path = os.path.join(result_path, f"figures_{args.model}_raw")
+    if args.cut_patch:
+        pick_path = os.path.join(result_path, f"picks_{args.model}_patch")
+        event_path = os.path.join(result_path, f"events_{args.model}_patch")
+        figure_path = os.path.join(result_path, f"figures_{args.model}_patch")
+    else:
+        pick_path = os.path.join(result_path, f"picks_{args.model}")
+        event_path = os.path.join(result_path, f"events_{args.model}")
+        figure_path = os.path.join(result_path, f"figures_{args.model}")
     if not os.path.exists(result_path):
         utils.mkdir(result_path)
     if not os.path.exists(pick_path):
@@ -362,7 +371,7 @@ def get_args_parser(add_help=True):
     ## DAS
 
     parser.add_argument("--cut_patch", action="store_true", help="If cut patch for continuous data")
-    parser.add_argument("--nt", default=1024 * 3, type=int, help="number of time samples for each patch")
+    parser.add_argument("--nt", default=1024 * 30, type=int, help="number of time samples for each patch")
     parser.add_argument("--nx", default=1024 * 3, type=int, help="number of spatial samples for each patch")
     parser.add_argument(
         "--system", type=str, default=None, help="The name of system of different system: optasense, eqnet, or None"
