@@ -11,6 +11,7 @@ import torch
 from torch.utils.data import Dataset, IterableDataset
 import logging
 from collections import defaultdict
+from datetime import timedelta, datetime
 from scipy import signal
 import fsspec
 
@@ -282,6 +283,9 @@ class SeismicTraceIterableDataset(IterableDataset):
         highpass_filter=False,
         rank=0,
         world_size=1,
+        cut_patch=False,
+        nt=10240,
+        nx=1024,
     ):
         super().__init__()
         self.rank = rank
@@ -328,6 +332,11 @@ class SeismicTraceIterableDataset(IterableDataset):
         self.flip_polarity = flip_polarity
         self.drop_channel = drop_channel
         self.min_snr = min_snr
+
+        ## prediction
+        self.cut_patch = cut_patch
+        self.nt = nt
+        self.nx = nx
 
         if self.training:
             print(f"{self.data_path}: {len(self.data_list)} files")
@@ -736,8 +745,7 @@ class SeismicTraceIterableDataset(IterableDataset):
         with fsspec.open(fname, "rb") as fs:
             with h5py.File(fs, "r") as fp:
                 # raw_data = fp["data"][()]  # [nt, nx]
-                raw_data = fp["data"][::2, :].T # (nx, nt) -> (nt, nx)
-                print(raw_data.shape)
+                raw_data = fp["data"][:, :].T # (nx, nt) -> (nt, nx)
                 raw_data = raw_data - np.mean(raw_data, axis=0, keepdims=True)
                 raw_data = raw_data - np.median(raw_data, axis=1, keepdims=True)
                 std = np.std(raw_data, axis=0, keepdims=True)
@@ -778,7 +786,21 @@ class SeismicTraceIterableDataset(IterableDataset):
             if meta is None:
                 continue
             meta["file_name"] = fname
-            yield meta
+
+            if not self.cut_patch:
+                yield meta
+            else:
+                _, nt, nx = meta["waveform"].shape
+                for i in list(range(0, nt, self.nt)):
+                    for j in list(range(0, nx, self.nx)):
+                        yield {
+                            "waveform": meta["waveform"][:, i : i + self.nt, j : j + self.nx],
+                            "station_id": meta["station_id"][j : j + self.nx],
+                            "begin_time": (datetime.fromisoformat(meta["begin_time"]) + timedelta(seconds=i * meta["dt_s"])).isoformat(timespec="milliseconds"),
+                            "begin_time_index": i,
+                            "dt_s": meta["dt_s"],
+                            "file_name": meta["file_name"] + f"_{i:04d}_{j:04d}",
+                        }
 
 
 if __name__ == "__main__":
