@@ -74,6 +74,7 @@ def pred_phasenet(args, model, data_loader, pick_path, figure_path, event_path=N
                     file_name=meta["file_name"],
                     station_id=meta["station_id"],
                     begin_time=meta["begin_time"] if "begin_time" in meta else None,
+                    begin_time_index=meta["begin_time_index"] if "begin_time_index" in meta else None,
                     ## event are picked on downsampled time resolution
                     dt=meta["dt_s"] * 16 if "dt_s" in meta else 0.01 * 16,
                     vmin=args.min_prob,
@@ -231,6 +232,9 @@ def main(args):
             training=False,
             highpass_filter=args.highpass_filter,
             response_xml=args.response_xml,
+            cut_patch=args.cut_patch,
+            nx=args.nx,
+            nt=args.nt,
             rank=rank,
             world_size=world_size,
         )
@@ -240,14 +244,14 @@ def main(args):
             data_path=args.data_path,
             data_list=args.data_list,
             format=args.format,
-            rank=rank,
-            world_size=world_size,
             nx=args.nx,
             nt=args.nt,
             training=False,
             system=args.system,
             cut_patch=args.cut_patch,
             highpass_filter=args.highpass_filter,
+            rank=rank,
+            world_size=world_size,
         )
         sampler = None
     else:
