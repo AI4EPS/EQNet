@@ -227,7 +227,7 @@ def main(args):
             hdf5_file=args.hdf5_file,
             prefix=args.prefix,
             format=args.format,
-            system=args.system,
+            dataset=args.dataset,
             training=False,
             highpass_filter=args.highpass_filter,
             response_xml=args.response_xml,
@@ -344,6 +344,7 @@ def get_args_parser(add_help=True):
     parser.add_argument("--hdf5-file", default=None, type=str, help="hdf5 file for training")
     parser.add_argument("--prefix", default="", type=str, help="prefix for the file name")
     parser.add_argument("--format", type=str, default="h5", help="data format")
+    parser.add_argument("--dataset", type=str, default="das", help="dataset type; seismic_trace, seismic_network, das")
     parser.add_argument("--result_path", type=str, default="results", help="path to result directory")
     parser.add_argument("--plot_figure", action="store_true", help="If plot figure for test")
     parser.add_argument("--min_prob", default=0.3, type=float, help="minimum probability for picking")
