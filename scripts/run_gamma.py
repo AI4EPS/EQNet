@@ -229,9 +229,7 @@ if __name__ == "__main__":
     manager = Manager()
     event_list = manager.list()
     files = sorted(list(picks_path.rglob("*.csv")))
-
-    files = files[:10]
-
+    
     jobs = []
     num_cores = multiprocessing.cpu_count()
     # num_cores = 1
