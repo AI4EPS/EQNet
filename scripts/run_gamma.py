@@ -24,7 +24,7 @@ def get_args_parser():
     parser.add_argument("--bucket", type=str, default="gs://quakeflow_das")
     parser.add_argument("--folder", type=str, default="mammoth_north")
     parser.add_argument("--station_csv", type=str, default="das_info.csv")
-    parser.add_argument("--catalog_csv", type=str, default="catalog.csv")
+    parser.add_argument("--catalog_csv", type=str, default="catalog_data.csv")
     parser.add_argument("--plot_figure", type=bool, default=True)
     parser.add_argument("--protocol", type=str, default="gs")
 
