@@ -2,4 +2,5 @@ log.txt
 log_phasenet.txt
 log_gamma.txt
 results/
+debug_figures/
 *.csv

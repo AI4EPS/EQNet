@@ -16,6 +16,7 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset, IterableDataset
 from scipy.interpolate import interp1d
 
+
 def normalize(data: torch.Tensor):
     """channel-wise normalization
 
@@ -37,7 +38,7 @@ def normalize(data: torch.Tensor):
 def generate_label(
     data: torch.Tensor,
     phase_list: list,
-    label_width: list = [150,],
+    label_width: list = [150],
     label_shape: str = "gaussian",
     space_mask: bool = None,
     return_time_mask: bool = True,
@@ -64,7 +65,7 @@ def generate_label(
         label_width = label_width * len(phase_list)
 
     if space_mask is None:
-        space_mask = np.zeros((len(phase_list), nx), dtype=np.bool)
+        space_mask = np.zeros((len(phase_list), nx), dtype=bool)
 
     for i, (picks, w) in enumerate(zip(phase_list, label_width)):
         for trace, phase_time in picks:
@@ -119,7 +120,6 @@ def stack_event(
     min_shift=0,
     max_shift=1024 * 2,
 ):
-
     tries = 0
     max_tries = 100
     nch, nt, nx = data2.shape
@@ -200,8 +200,6 @@ def cut_data(
         tmp_sum = 0
         tries = 0
         while tmp_sum < label_width / 2 * nx * 0.1:  ## assuming 10% of traces have picks
-        # while tmp_sum < 50:
-        # for i in [0]:
             w0 = np.random.randint(0, max(1, w - nt))
             h0 = np.random.randint(0, max(1, h - nx))
             tmp_sum = torch.sum(targets[1:, w0 : w0 + nt, h0 : h0 + nx])  # nch, nt, nx
@@ -215,8 +213,9 @@ def cut_data(
                 h0 = max_h0
                 break
         if tries >= max_tries:
-            print(f"cut data failed, tries={tries}")
+            # print(f"cut data failed, tries={tries}")
             # return None, None
+            pass
 
     data_ = torch.zeros((nch, nt, nx), dtype=data.dtype, device=data.device)
     tmp = data[:, w0 : w0 + nt, h0 : h0 + nx]
@@ -272,7 +271,6 @@ def flip_lr(data, targets=None):
 
 
 def calc_snr(data: torch.Tensor, picks: list, noise_window: int = 200, signal_window: int = 200):
-
     SNR = []
     S = []
     N = []
@@ -284,7 +282,7 @@ def calc_snr(data: torch.Tensor, picks: list, noise_window: int = 200, signal_wi
         S.append(signal)
         N.append(noise)
         SNR.append(signal / noise)
-        
+
     return np.median(SNR), np.median(S), np.median(N)
 
 
@@ -293,24 +291,23 @@ def stack_noise(data, noise, snr):
     return data + noise * max(0, snr - 2) * torch.rand(1)
 
 
-
 def masking(data, target, nt=256, nx=256):
     """masking edges to prevent edge effects"""
 
     nch0, nt0, nx0 = data.shape
     nt_ = random.randint(32, nt)
-    # nx_ = random.randint(32, nx)
-    nt0_ = random.randint(0, nt0-nt_)
-    # nx0_ = random.randint(0, nx0-nx_)
+    nx_ = random.randint(32, nx)
+    nt0_ = random.randint(0, nt0 - nt_)
+    nx0_ = random.randint(0, nx0 - nx_)
     data_ = torch.clone(data)
     target_ = torch.clone(target)
 
-    data_[:, nt0_:nt0_+nt_, :] = 0.0
-    target_[0, nt0_:nt0_+nt_, :] = 1.0
-    target_[1:, nt0_:nt0_+nt_, :] = 0.0
-    # data_[:, :, nx0_:nx0_+nx_] = 0.0
-    # target_[0, :, nx0_:nx0_+nx_] = 1.0
-    # target_[1:, :, nx0_:nx0_+nx_] = 0.0
+    data_[:, nt0_ : nt0_ + nt_, :] = 0.0
+    target_[0, nt0_ : nt0_ + nt_, :] = 1.0
+    target_[1:, nt0_ : nt0_ + nt_, :] = 0.0
+    data_[:, :, nx0_ : nx0_ + nx_] = 0.0
+    target_[0, :, nx0_ : nx0_ + nx_] = 1.0
+    target_[1:, :, nx0_ : nx0_ + nx_] = 0.0
 
     return data_, target_
 
@@ -392,6 +389,7 @@ def filter_labels(label_list):
 #         data[i, :] = np.fromfile(fid, dtype=np.float32, count=nSample)
 #     return data
 
+
 def read_PASSCAL_segy(fid, nTraces=1250, nSample=900000, TraceOff=0, strain_rate=True):
     """Function to read PASSCAL segy raw data
     For Ridgecrest data, there are 1250 channels in total,
@@ -399,16 +397,16 @@ def read_PASSCAL_segy(fid, nTraces=1250, nSample=900000, TraceOff=0, strain_rate
     author: Jiuxun Yin
     source: https://github.com/SCEDC/cloud/blob/master/pds_ridgecrest_das.ipynb
     """
-    fs = nSample/ 3600 # sampling rate
+    fs = nSample / 3600  # sampling rate
     data = np.zeros((nTraces, nSample), dtype=np.float32)
 
     fid.seek(3600)
     # Skipping traces if necessary
-    fid.seek(TraceOff*(240+nSample*4),1)
+    fid.seek(TraceOff * (240 + nSample * 4), 1)
     # Looping over traces
     for ii in range(nTraces):
         fid.seek(240, 1)
-        bytes = fid.read(nSample*4)
+        bytes = fid.read(nSample * 4)
         data[ii, :] = np.frombuffer(bytes, dtype=np.float32)
 
     fid.close()
@@ -424,7 +422,6 @@ def read_PASSCAL_segy(fid, nTraces=1250, nSample=900000, TraceOff=0, strain_rate
 
 
 def roll_by_gather(data, dim, shifts: torch.LongTensor):
-
     nch, h, w = data.shape
 
     if dim == 0:
@@ -440,7 +437,6 @@ def roll_by_gather(data, dim, shifts: torch.LongTensor):
 
 
 def add_moveout(data, targets=None, vmin=2.0, vmax=6.0, dt=0.01, dx=0.01, shift_range=1000):
-
     nch, h, w = data.shape
     iw = torch.randint(low=0, high=w, size=(1,))
     shift = ((torch.arange(w) - iw).abs() * dx / (vmin + torch.rand(1) * (vmax - vmin)) / dt).int()
@@ -469,12 +465,14 @@ class DASIterableDataset(IterableDataset):
         ## training
         training=False,
         phases=["P", "S"],
-        noise_path=None,
         label_path=None,
+        label_list=None,
+        noise_list=None,
         stack_noise=False,
         stack_event=False,
         resample_time=False,
         resample_space=False,
+        num_patch=2,
         masking=False,
         highpass_filter=0.0,
         filter_params={
@@ -499,76 +497,83 @@ class DASIterableDataset(IterableDataset):
         self.suffix = suffix
 
         self.data_path = data_path
-        if self.data_path.startswith("s3://"):
-            self.fs = fsspec.filesystem("s3", anon=True)
-        elif self.data_path.startswith("gs://"):
-            self.fs = fsspec.filesystem("gs")
-        else:
-            self.fs = fsspec.filesystem("file")
-        
         if data_list is not None:
-            with open(data_list, "r") as f:
-                self.data_list = [os.path.join(self.data_path, x) for x in f.read().splitlines()]
+            if type(data_list) == list:
+                self.data_list = []
+                for data_list_ in data_list:
+                    with open(data_list_, "r") as f:
+                        # read lines without \n
+                        self.data_list += f.read().split("\n")
+            else:
+                with open(data_list, "r") as f:
+                    self.data_list = f.read().split("\n")
         else:
-            self.data_list = self.fs.glob(os.path.join(self.data_path, f"{prefix}*{suffix}.{format}"))
-            
-        self.data_list = self.data_list[rank::world_size]
+            self.data_list = glob(os.path.join(self.data_path, f"{prefix}*{suffix}.{format}"))
+
+        if not training:
+            self.data_list = self.data_list[rank::world_size]
 
         ## continuous data
         self.system = system
         self.cut_patch = cut_patch
         self.dt = kwargs["dt"] if "dt" in kwargs else 0.01  # s
         self.dx = kwargs["dx"] if "dx" in kwargs else 10.0  # m
-        # self.nt = kwargs["nt"] if "nt" in kwargs else 1024 * 3
-        # self.nx = kwargs["nx"] if "nx" in kwargs else 1024 * 5
         self.nt = nt
         self.nx = nx
 
         ## training and data augmentation
         self.training = training
         self.phases = phases
-        self.noise_path = noise_path
         self.label_path = label_path
-        if label_path is not None:
-            if type(label_path) is list:
+        if label_list is not None:
+            if type(label_list) is list:
                 self.label_list = []
-                for i in range(len(label_path)):
-                    self.label_list += list(sorted(glob(os.path.join(label_path[i], f"{prefix}*{suffix}.csv"))))
+                for label_list_ in label_list:
+                    with open(label_list_, "r") as f:
+                        self.label_list += f.read().split("\n")
             else:
-                self.label_list = sorted(glob(os.path.join(label_path, f"{prefix}*{suffix}.csv")))
+                with open(label_list, "r") as f:
+                    self.label_list = f.read().split("\n")
             self.label_list = self.label_list[rank::world_size]
-            if self.data_list is None:
-                self.data_list = [x.replace("picks_phasenet_filtered", "data").replace(".csv", ".h5") for x in self.label_list]
         else:
-            self.label_list = None
+            # if type(label_path) is list:
+            #     self.label_list = []
+            #     for label_path_ in label_path:
+            #         self.label_list += glob(label_path_ + f"/*.csv")
+            # else:
+            self.label_list = glob(self.label_path + f"/*.csv")
         self.min_picks = kwargs["min_picks"] if "min_picks" in kwargs else 500
-        if self.noise_path is not None:
-            noise_list = []
-            for i in range(len(noise_path)):
-                noise_list += list(sorted(glob(os.path.join(noise_path[i], f"{prefix}*{suffix}.{format}"))))
-            self.noise_list = [x for x in noise_list if x not in self.data_list]
+        if noise_list is not None:
+            if type(noise_list) is list:
+                self.noise_list = []
+                for noise_list_ in noise_list:
+                    with open(noise_list_, "r") as f:
+                        self.noise_list += f.read().split("\n")
+            else:
+                with open(noise_list, "r") as f:
+                    self.noise_list = f.read().split("\n")
         self.stack_noise = stack_noise
         self.stack_event = stack_event
         self.resample_space = resample_space
         self.resample_time = resample_time
+        self.num_patch = num_patch
         self.masking = masking
         self.highpass_filter = highpass_filter
 
         if self.training:
-            print(f"{label_path}: {len(self.label_list)} files")
+            print(f"Total samples: {len(self.label_list)} files")
         else:
-            print(f"{self.data_path}: {len(self.data_list)} files")
+            print(f"Total samples: {len(self.data_list)} files")
 
-        ## pre calcuate length
+        ## pre-calcuate length
         self._data_len = self._count()
 
     def __len__(self):
         return self._data_len
-    
+
     def _count(self):
-        
         if self.training:
-            return max(100, len(self.label_list))
+            return len(self.label_list) * self.num_patch
 
         if not self.cut_patch:
             return len(self.data_list)
@@ -603,150 +608,126 @@ class DASIterableDataset(IterableDataset):
             return iter(self.sample(self.data_list[worker_id::num_workers]))
 
     def sample_training(self, file_list):
-
         while True:
-
             ## load picks
-            file = file_list[np.random.randint(0, len(file_list))]
-            picks = pd.read_csv(file)
-            ## filter channels with all phase types
-            if "event_index" in picks.columns:
-                picks = filt_channels(picks)
+            # label_file = file_list[np.random.randint(0, len(file_list))]
+            file_list = np.random.permutation(file_list)
+            for label_file in file_list:
+                picks = pd.read_csv(label_file)
+                if "channel_index" not in picks.columns:
+                    picks = picks.rename(columns={"station_id": "channel_index"})
 
-            meta = {}
-            for pick_type in self.phases:
-                meta[pick_type] = picks[picks["phase_type"] == pick_type][["channel_index", "phase_index"]].to_numpy()
-            
-            if (len(meta["P"]) < 500) or (len(meta["S"]) < 500):
-                continue
-            
-            # if len(meta["SP"]) < 10:
-            #     continue
+                meta = {}
+                for pick_type in self.phases:
+                    meta[pick_type] = picks[picks["phase_type"] == pick_type][
+                        ["channel_index", "phase_index"]
+                    ].to_numpy()
 
-            ## load event data
-            if self.data_path is not None:
-                tmp = os.path.join(self.data_path, file.split("/")[-1][:-4] + ".h5")
-            else:
-                tmp = file.replace("picks_phasenet_filtered", "data").replace(".csv", ".h5")
-            try:
-                with h5py.File(tmp, "r") as f:
-                    data = f["data"][()]
-                data = data[np.newaxis, :, :]  # nchn, nt, nx
-                data = data / np.std(data)
-                data = torch.from_numpy(data.astype(np.float32))
-            except:
-                print(f"Failed to load signal: {file}")
-                continue
+                ## load waveform data
+                data_file = "/".join(
+                    label_file.replace("labels", "data").replace(".csv", ".h5").split("/")[-3:]
+                )  # folder/data/event_id
 
-            ## basic normalize
-            data = data - torch.mean(data, dim=1, keepdim=True)
-            # data = data - torch.median(data, dim=2, keepdims=True)[0]
-            # data = normalize(data)
-            # data = data / torch.std(data)
+                with fsspec.open(self.data_path + "/" + data_file, "rb") as f:
+                    with h5py.File(f, "r") as fp:
+                        data = fp["data"][:, :].T
+                    data = data[np.newaxis, :, :]  # nchn, nt, nx
+                    data = data / np.std(data)
+                    data = torch.from_numpy(data.astype(np.float32))
 
-            # load noise
-            noise = None
-            if self.stack_noise and (self.noise_path is not None):
-                tmp = self.noise_list[np.random.randint(0,  len(self.noise_list))]
-                try:
-                    with h5py.File(tmp, "r") as f:
-                        noise = f["data"][()]
-                    ## The first 30s are noise in the training data
-                    noise = np.roll(noise, max(0, self.nt-3000), axis=0) # nt, nx
-                    noise = noise[np.newaxis, :self.nt, :]  # nchn, nt, nx
-                    noise = noise / np.std(noise)
-                    noise = torch.from_numpy(noise.astype(np.float32))
-                except:
-                    print(f"Failed to load noise: {file}")
-                    noise = torch.zeros_like(data)
-                noise = noise - torch.mean(noise, dim=1, keepdim=True)
-                # noise = noise - torch.median(noise, dim=2, keepdims=True)[0]
-                # noise = normalize(noise)
-                # noise = noise / torch.std(noise)
-                # noise = pad_noise(noise, self.nt, self.nx)
+                ## basic normalize
+                data = data - torch.mean(data, dim=1, keepdim=True)
 
+                # load noise
+                noise = None
+                if self.stack_noise and (self.noise_list is not None):
+                    tmp = self.noise_list[np.random.randint(0, len(self.noise_list))]
+                    with fsspec.open(tmp, "rb") as f:
+                        with h5py.File(f, "r") as fp:
+                            noise = fp["data"][:, :].T
+                        ## The first 30s are noise in the training data
+                        noise = np.roll(noise, max(0, self.nt - 3000), axis=0)  # nt, nx
+                        noise = noise[np.newaxis, : self.nt, :]  # nchn, nt, nx
+                        noise = noise / np.std(noise)
+                        noise = torch.from_numpy(noise.astype(np.float32))
 
-            ## snr
-            if "P" in meta:
-                snr, S, N = calc_snr(data, meta["P"])
+                    noise = noise - torch.mean(noise, dim=1, keepdim=True)
 
-            ## generate training labels
-            picks = [meta[x] for x in self.phases]
+                ## snr
+                if "P" in meta:
+                    snr, S, N = calc_snr(data, meta["P"])
+                else:
+                    snr, S, N = 0, 0, 0
 
-            ## augmentation
-            rand_i = np.random.rand()
-            if self.resample_time:
-                if rand_i < 0.2:
-                    data, picks, noise = resample_time(data, picks, noise, 3)
-                elif rand_i < 0.4:
-                    data, picks, noise = resample_time(data, picks, noise, 0.5)
-
-            ## generate training labels
-            targets, phase_time_mask = generate_label(data, picks, return_time_mask=True)
-            targets = torch.from_numpy(targets)
-            phase_time_mask = torch.from_numpy(phase_time_mask)
-
-            ## augmentation
-            status_stack_event = False
-            if self.stack_event and (snr > 10) and (np.random.rand() < 0.3):
-                data, targets, status_stack_event = stack_event(
-                    data, targets, data, targets, snr, snr, phase_time_mask, phase_time_mask
-                )
-            
-            ## augmentation
-            if self.resample_space:
-                # tmp = np.random.rand()
-                if rand_i < 0.2:
-                    data, targets, noise = resample_space(data, targets, noise, 5)
-                elif (rand_i < 0.4) and (data.shape[-1] > 2000):
-                    data, targets, noise = resample_space(data, targets, noise, 0.5)
-
-            ## pad data
-            data, targets = pad_data(data, targets, nx=self.nx+self.nx//2)
-            if self.stack_noise:
-                noise = pad_noise(noise, self.nt, self.nx+self.nx//2)
-
-            # for ii in range(sum([len(x) for x in picks]) // self.min_picks):
-            for ii in range(3):
-                data_, targets_ = cut_data(data, targets, self.nt, self.nx)
-                # if data_ is None:
-                #     continue
+                ## generate training labels
+                picks = [meta[x] for x in self.phases]
 
                 ## augmentation
-                # if (np.random.rand() < 0.5) and self.add_moveout:
-                #     data_, targets_ = add_moveout(data_, targets_)
+                rand_i = np.random.rand()
+                if self.resample_time:
+                    if rand_i < 0.2:
+                        data, picks, noise = resample_time(data, picks, noise, 3)
+                    elif rand_i < 0.4:
+                        data, picks, noise = resample_time(data, picks, noise, 0.5)
+
+                ## generate training labels
+                targets, phase_time_mask = generate_label(data, picks, return_time_mask=True)
+                targets = torch.from_numpy(targets)
+                phase_time_mask = torch.from_numpy(phase_time_mask)
 
                 ## augmentation
-                # if self.stack_noise and (not status_stack_event) and (np.random.rand() < 0.6):
-                if self.stack_noise and (not status_stack_event) and (np.random.rand() < 0.8):
-                    noise_ = cut_noise(noise, self.nt, self.nx)
-                    data_ = stack_noise(data_, noise_, snr)
+                status_stack_event = False
+                if self.stack_event and (snr > 10) and (np.random.rand() < 0.3):
+                    data, targets, status_stack_event = stack_event(
+                        data, targets, data, targets, snr, snr, phase_time_mask, phase_time_mask
+                    )
 
                 ## augmentation
-                if np.random.rand() < 0.5:
-                    data_, targets_ = flip_lr(data_, targets_)
+                if self.resample_space:
+                    # tmp = np.random.rand()
+                    if rand_i < 0.2:
+                        data, targets, noise = resample_space(data, targets, noise, 5)
+                    elif (rand_i < 0.4) and (data.shape[-1] > 2000):
+                        data, targets, noise = resample_space(data, targets, noise, 0.5)
 
-                ## augmentation
-                # if self.mask_edge and (np.random.rand() < 0.2):
-                #     data_, targets_ = mask_edge(data_, targets_)
-                if self.masking and (np.random.rand() < 0.3):
-                    data_, targets_ = masking(data_, targets_)
+                ## pad data
+                data, targets = pad_data(data, targets, nx=self.nx + self.nx // 2)
+                if self.stack_noise:
+                    noise = pad_noise(noise, self.nt, self.nx + self.nx // 2)
 
-                # data_ = normalize(data_)
-                # data_ = data_ - torch.median(data_, dim=2, keepdims=True)[0]
+                for ii in range(self.num_patch):
+                    data_, targets_ = cut_data(data, targets, self.nt, self.nx)
 
-                yield {
-                    "data": torch.nan_to_num(data_),
-                    "targets": targets_,
-                    "file_name": os.path.splitext(file.split("/")[-1])[0] + f"_{ii:02d}",
-                    "height": data_.shape[-2],
-                    "width": data_.shape[-1],
-                }
+                    ## augmentation
+                    # if (np.random.rand() < 0.5) and self.add_moveout:
+                    #     data_, targets_ = add_moveout(data_, targets_)
+
+                    ## augmentation
+                    if self.stack_noise and (not status_stack_event) and (np.random.rand() < 0.8):
+                        noise_ = cut_noise(noise, self.nt, self.nx)
+                        data_ = stack_noise(data_, noise_, snr)
+
+                    ## augmentation
+                    if np.random.rand() < 0.5:
+                        data_, targets_ = flip_lr(data_, targets_)
+
+                    ## augmentation
+                    if self.masking and (np.random.rand() < 0.3):
+                        data_, targets_ = masking(data_, targets_)
+
+                    # data_ = normalize(data_)
+                    # data_ = data_ - torch.median(data_, dim=2, keepdims=True)[0]
+
+                    yield {
+                        "data": torch.nan_to_num(data_),
+                        "targets": targets_,
+                        "file_name": os.path.splitext(label_file.split("/")[-1])[0] + f"_{ii:02d}",
+                        "height": data_.shape[-2],
+                        "width": data_.shape[-1],
+                    }
 
     def sample(self, file_list):
-
         for file in file_list:
-
             if not self.fs.exists(file):
                 print(f"{file} does not exist.")
                 continue
@@ -767,7 +748,6 @@ class DASIterableDataset(IterableDataset):
                 sample["dx_m"] = 10.0
 
             elif self.format == "h5" and (self.system is None):
-
                 with h5py.File(self.fs.open(file), "r") as fp:
                     # data = fp["data"][:].T  # nt x nx
                     data = fp["data"][:]  # nt x nx
@@ -796,8 +776,8 @@ class DASIterableDataset(IterableDataset):
                     data = data[np.newaxis, :, :]
 
                     ## debug converted phase
-                    # N = data[:, 0:3000, :] 
-                    # S = data[:, 3000:6000, :] 
+                    # N = data[:, 0:3000, :]
+                    # S = data[:, 3000:6000, :]
                     # data = S / np.std(S) + N / np.std(N) * 0
 
                     ## debug resampling
@@ -805,7 +785,7 @@ class DASIterableDataset(IterableDataset):
                     # f = interp1d(t, data, axis=1)
                     # t_interp = np.linspace(0, 1, data.shape[1]*3)
                     # data = f(t_interp)
-                    
+
                     data = torch.from_numpy(data.astype(np.float32))
 
             elif (self.format == "h5") and (self.system == "optasense"):
@@ -830,7 +810,7 @@ class DASIterableDataset(IterableDataset):
                 data = data[np.newaxis, :, :]  # nchn, nt, nx
                 # data = torch.from_numpy(data.astype(np.float32))
                 # data = torch.diff(data, n=1, dim=1)
-                
+
                 data = torch.from_numpy(data.astype(np.float32))
 
             elif self.format == "segy":
@@ -842,7 +822,7 @@ class DASIterableDataset(IterableDataset):
                 data = torch.from_numpy(data)
                 ## hard code for Ridgecrest DAS
                 sample["begin_time"] = datetime.strptime(file.split("/")[-1].rstrip(".segy"), "%Y%m%d%H")
-                sample["dt_s"] = 1.0/250.0
+                sample["dt_s"] = 1.0 / 250.0
                 sample["dx_m"] = 8.0
             else:
                 raise (f"Unsupported format: {self.format}")
@@ -1014,7 +994,6 @@ class DASDataset(Dataset):
         return len(self.data_list)
 
     def __getitem__(self, idx):
-
         sample = {}
         if self.training and (self.format == "npz"):
             meta = np.load(self.data_list[idx])
@@ -1023,7 +1002,6 @@ class DASDataset(Dataset):
             data = torch.from_numpy(data.astype(np.float32))
 
         elif self.training and (self.format == "h5"):
-
             file = self.label_list[idx]
             picks = pd.read_csv(file)
             meta = {}

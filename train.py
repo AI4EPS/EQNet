@@ -3,14 +3,14 @@ import logging
 import os
 import random
 import time
+from contextlib import nullcontext
 
 import matplotlib
-import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.utils.data
-import torchvision
+from torch import nn
 
 import eqnet
 import utils
@@ -23,49 +23,47 @@ from eqnet.data import (
 )
 from eqnet.models.unet import normalize_local
 
-torch.manual_seed(0)
-random.seed(0)
-np.random.seed(0)
 matplotlib.use("agg")
 logger = logging.getLogger("EQNet")
 
 
-def evaluate(model, data_loader, device, epoch=0, print_freq=100, scaler=None, args=None):
+def evaluate(model, data_loader, scaler, args, device, epoch=0, total_sample=1):
     model.eval()
-    # confmat = utils.ConfusionMatrix(num_classes)
     metric_logger = utils.MetricLogger(delimiter="  ")
-    header = "Test:"
+    header = f"Test: "
+
+    num_processed_samples = 0
     with torch.inference_mode():
-        for meta in metric_logger.log_every(data_loader, print_freq, header):
+        for meta in metric_logger.log_every(data_loader, args.print_freq, header):
+            output = model(meta)
+            preds = output["phase"]
+            batch_size = meta["data"].shape[0]
+            targets = meta["targets"].to(preds.device)
+            loss = torch.sum(-targets * F.log_softmax(preds, dim=1), dim=1).mean()
+            metric_logger.meters["loss"].update(loss.item(), n=batch_size)
+            num_processed_samples += batch_size
+            if num_processed_samples > total_sample:
+                break
 
-            if args.random_crop:
-                crop_nt = random.randint(1,args.crop_nt)
-                crop_nx = random.randint(1,args.crop_nx)
-                meta["data"] = meta["data"][:, :, :-crop_nt, :-crop_nx]
-                meta["targets"] = meta["targets"][:, :, :-crop_nt, :-crop_nx]
-                
-            with torch.cuda.amp.autocast(enabled=scaler is not None):
-                preds = model(meta)
-                targets = meta["targets"].to(preds.device)
-                loss = torch.sum(-targets * F.log_softmax(preds, dim=1), dim=1).mean()
-                metric_logger.update(**{"loss": loss})
-
+    plot_results(meta, model, args, epoch, "test_")
+    metric_logger.synchronize_between_processes()
+    print(f"Test loss = {metric_logger.loss.global_avg:.3f}")
     return metric_logger
 
 
 def train_one_epoch(
     model,
     optimizer,
-    data_loader,
     lr_scheduler,
+    data_loader,
+    model_ema,
+    scaler,
+    args,
     device,
+    ptdtype,
     epoch,
-    iters_per_epoch,
-    print_freq,
-    scaler=None,
-    args=None,
+    total_sample,
 ):
-
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter("lr", utils.SmoothedValue(window_size=1, fmt="{value}"))
     if args.model == "phasenet":
@@ -74,44 +72,61 @@ def train_one_epoch(
         metric_logger.add_meter("loss_polarity", utils.SmoothedValue(window_size=1, fmt="{value}"))
     header = f"Epoch: [{epoch}]"
 
+    ctx = nullcontext if scaler is None else torch.amp.autocast(device_type=args.device, dtype=ptdtype)
     model.train()
-    i = 0
-    for meta in metric_logger.log_every(data_loader, print_freq, header):
-        
+    num_processed_samples = 0
+    for i, meta in enumerate(metric_logger.log_every(data_loader, args.print_freq, header)):
+        start_time = time.time()
         if args.random_crop:
-            crop_nt = random.randint(1,args.crop_nt)
-            crop_nx = random.randint(1,args.crop_nx)
-            meta["data"] = meta["data"][:, :, :-crop_nt, :-crop_nx]
-            meta["targets"] = meta["targets"][:, :, :-crop_nt, :-crop_nx]
+            crop_nt = random.randint(1, args.crop_nt)
+            crop_nx = random.randint(1, args.crop_nx)
+            data = meta["data"]
+            target = meta["targets"]
+            meta["data"] = data[:, :, :-crop_nt, :-crop_nx]
+            meta["targets"] = target[:, :, :-crop_nt, :-crop_nx]
+            del data, target
 
-        with torch.cuda.amp.autocast(enabled=scaler is not None):
-            loss_dict = model(meta)
+        # with torch.cuda.amp.autocast(enabled=scaler is not None):
+        with ctx:
+            output = model(meta)
 
-        loss = loss_dict["loss"]
+        loss = output["loss"]
         optimizer.zero_grad()
         if scaler is not None:
             scaler.scale(loss).backward()
+            if args.clip_grad_norm is not None:
+                # we should unscale the gradients of optimizer's assigned params if do gradient clipping
+                scaler.unscale_(optimizer)
+                nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad_norm)
             scaler.step(optimizer)
             scaler.update()
         else:
             loss.backward()
+            if args.clip_grad_norm is not None:
+                nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad_norm)
             optimizer.step()
-
         lr_scheduler.step()
 
-        metric_logger.update(lr=optimizer.param_groups[0]["lr"], **loss_dict)
+        if model_ema and i % args.model_ema_steps == 0:
+            model_ema.update_parameters(model)
+            if epoch < args.lr_warmup_epochs:
+                # Reset ema buffer to keep copying weights during warmup period
+                model_ema.n_averaged.fill_(0)
 
-        i += 1
-        if i > iters_per_epoch:
+        batch_size = meta["data"].shape[0]
+        num_processed_samples += batch_size
+        if num_processed_samples >= total_sample:
             break
         # break
 
+        metric_logger.update(lr=optimizer.param_groups[0]["lr"], **output)
+        # metric_logger.meters["img/s"].update(batch_size / (time.time() - start_time))
+
     model.eval()
-    plot_results(model, epoch, args, meta)
+    plot_results(meta, model, args, epoch, "train_")
 
 
-def plot_results(model, epoch, args, meta):
-
+def plot_results(meta, model, args, epoch, prefix=""):
     with torch.inference_mode():
         if args.model == "phasenet":
             out = model(meta)
@@ -121,24 +136,24 @@ def plot_results(model, epoch, args, meta):
             meta["waveform_raw"] = meta["waveform"].clone()
             meta["waveform"] = normalize_local(meta["waveform"])
             print("Plotting...")
-            eqnet.utils.visualize_phasenet_train(meta, phase, event, polarity, epoch=epoch, figure_dir=args.output_dir)
+            eqnet.utils.visualize_phasenet_train(meta, phase, event, polarity, epoch=epoch, figure_dir=args.figure_dir)
             del phase, event, polarity
 
         if args.model == "deepdenoiser":
             pass
 
         elif args.model == "phasenet_das":
-            preds = model(meta)
-            preds = torch.softmax(preds, dim=1).cpu()
+            output = model(meta)
+            phase = torch.softmax(output["phase"], dim=1).cpu()
             meta["data"] = normalize_local(meta["data"], filter=2048, stride=256)
             print("Plotting...")
-            eqnet.utils.visualize_das_train(meta, preds, epoch=epoch, figure_dir=args.output_dir)
-            del preds
+            eqnet.utils.visualize_das_train(meta, phase, epoch=epoch, figure_dir=args.figure_dir, prefix=prefix)
+            del phase
 
         elif args.model == "autoencoder":
             preds = model(meta).cpu()
             print("Plotting...")
-            eqnet.utils.visualize_autoencoder_das_train(meta, preds, epoch=epoch, figure_dir=args.output_dir)
+            eqnet.utils.visualize_autoencoder_das_train(meta, preds, epoch=epoch, figure_dir=args.figure_dir)
             del preds
 
         elif args.model == "eqnet":
@@ -146,14 +161,16 @@ def plot_results(model, epoch, args, meta):
             phase = F.softmax(out["phase"], dim=1).cpu()
             event = torch.sigmoid(out["event"]).cpu()
             print("Plotting...")
-            eqnet.utils.visualize_eqnet_train(meta, phase, event, epoch=epoch, figure_dir=args.output_dir)
+            eqnet.utils.visualize_eqnet_train(meta, phase, event, epoch=epoch, figure_dir=args.figure_dir)
             del phase, event
 
 
 def main(args):
-
     if args.output_dir:
         utils.mkdir(args.output_dir)
+        figure_dir = os.path.join(args.output_dir, "figures")
+        args.figure_dir = figure_dir
+        utils.mkdir(figure_dir)
 
     utils.init_distributed_mode(args)
     print(args)
@@ -164,7 +181,20 @@ def main(args):
     else:
         rank, world_size = 0, 1
 
+    torch.manual_seed(1337 + rank)
+    random.seed(1337 + rank)
+    np.random.seed(1337 + rank)
+    torch.backends.cuda.matmul.allow_tf32 = True  # allow tf32 on matmul
+    torch.backends.cudnn.allow_tf32 = True  # allow tf32 on cudnn
     device = torch.device(args.device)
+    dtype = "bfloat16" if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else "float16"
+    ptdtype = {"float32": torch.float32, "bfloat16": torch.bfloat16, "float16": torch.float16}[dtype]
+
+    if args.use_deterministic_algorithms:
+        torch.backends.cudnn.benchmark = False
+        torch.use_deterministic_algorithms(True)
+    else:
+        torch.backends.cudnn.benchmark = True
 
     # if args.distributed:
     #     train_sampler = torch.utils.data.distributed.DistributedSampler(dataset)
@@ -191,30 +221,11 @@ def main(args):
         test_sampler = None
     elif args.model == "phasenet_das":
         dataset = DASIterableDataset(
-            # data_path="/net/kuafu/mnt/tank/data/EventData/Mammoth_north/data",
-            # noise_path="/net/kuafu/mnt/tank/data/EventData/Mammoth_north/data",
-
-            label_path=[
-                "/net/kuafu/mnt/tank/data/EventData/Mammoth_north/picks_phasenet_filtered/",
-                "/net/kuafu/mnt/tank/data/EventData/Mammoth_south/picks_phasenet_filtered/",
-                "/net/kuafu/mnt/tank/data/EventData/Ridgecrest/picks_phasenet_filtered/",
-                "/net/kuafu/mnt/tank/data/EventData/Ridgecrest_South/picks_phasenet_filtered/",
-            ],
-            noise_path=[
-                "/net/kuafu/mnt/tank/data/EventData/Mammoth_north/data",
-                "/net/kuafu/mnt/tank/data/EventData/Mammoth_south/data",
-                "/net/kuafu/mnt/tank/data/EventData/Ridgecrest/data",
-                "/net/kuafu/mnt/tank/data/EventData/Ridgecrest_South/data",
-            ],
-            
-            # data_path="/net/kuafu/mnt/tank/data/EventData/Mammoth_south/data",
-            # label_path=["./converted_phase/manualpicks/"],
-
-            # data_path = "./Forge_Utah/data/",
-            # label_path = "./Forge_Utah/picks/",
-
-            # data_path=args.data_path,
-            # label_path=args.label_path,
+            data_path=args.data_path,
+            data_list=args.data_list,
+            label_path=args.label_path,
+            label_list=args.label_list,
+            noise_list=args.noise_list,
             phases=args.phases,
             nt=args.nt,
             nx=args.nx,
@@ -230,16 +241,11 @@ def main(args):
         )
         train_sampler = None
         dataset_test = DASIterableDataset(
-
-            data_path="/net/kuafu/mnt/tank/data/EventData/Ridgecrest/data/",
-            label_path=["/net/kuafu/mnt/tank/data/EventData/Ridgecrest/picks_phasenet_filtered/"],
-
-            # data_path=args.test_data_path,
-            # label_path=args.test_label_path,
-
-            # data_path = "./Forge_Utah/data/",
-            # label_path = "./Forge_Utah/picks/",
-
+            data_path=args.test_data_path,
+            data_list=args.test_data_list,
+            label_path=args.test_label_path,
+            label_list=args.test_label_list,
+            noise_list=args.test_noise_list,
             phases=args.phases,
             nt=args.nt,
             nx=args.nx,
@@ -256,7 +262,6 @@ def main(args):
         test_sampler = None
     elif args.model == "autoencoder":
         dataset = AutoEncoderIterableDataset(
-            # data_path = "/net/kuafu/mnt/tank/data/EventData/Ridgecrest/data",
             data_path=args.data_path,
             format="h5",
             training=True,
@@ -302,40 +307,75 @@ def main(args):
         polarity_loss_weight=args.polarity_loss_weight,
     )
     logger.info("Model:\n{}".format(model))
+
     print("Model:\n{}".format(model))
 
     model.to(device)
-    if args.distributed:
+
+    if args.distributed and args.sync_bn:
         model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
 
-    model_without_ddp = model
-    if args.distributed:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
-        model_without_ddp = model.module
+    custom_keys_weight_decay = []
+    if args.bias_weight_decay is not None:
+        custom_keys_weight_decay.append(("bias", args.bias_weight_decay))
+    if args.transformer_embedding_decay is not None:
+        for key in ["class_token", "position_embedding", "relative_position_bias_table"]:
+            custom_keys_weight_decay.append((key, args.transformer_embedding_decay))
+    parameters = utils.set_weight_decay(
+        model,
+        args.weight_decay,
+        norm_weight_decay=args.norm_weight_decay,
+        custom_keys_weight_decay=custom_keys_weight_decay if len(custom_keys_weight_decay) > 0 else None,
+    )
 
-    params_to_optimize = [p for p in model_without_ddp.parameters() if p.requires_grad]
-    # optimizer = torch.optim.SGD(params_to_optimize, lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
-    optimizer = torch.optim.AdamW(params_to_optimize, lr=args.lr, weight_decay=args.weight_decay)
+    opt_name = args.opt.lower()
+    if opt_name.startswith("sgd"):
+        optimizer = torch.optim.SGD(
+            parameters,
+            lr=args.lr,
+            momentum=args.momentum,
+            weight_decay=args.weight_decay,
+            nesterov="nesterov" in opt_name,
+        )
+    elif opt_name == "rmsprop":
+        optimizer = torch.optim.RMSprop(
+            parameters, lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay, eps=0.0316, alpha=0.9
+        )
+    elif opt_name == "adamw":
+        optimizer = torch.optim.AdamW(parameters, lr=args.lr, weight_decay=args.weight_decay)
+    else:
+        raise RuntimeError(f"Invalid optimizer {args.opt}. Only SGD, RMSprop and AdamW are supported.")
 
     scaler = torch.cuda.amp.GradScaler() if args.amp else None
 
-    iters_per_epoch = len(data_loader) // 100 * 100
-    iters_per_epoch = min(100, len(data_loader))
-
-    main_lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=iters_per_epoch * (args.epochs - args.lr_warmup_epochs)
-    )
+    iters_per_epoch = len(data_loader)
+    args.lr_scheduler = args.lr_scheduler.lower()
+    if args.lr_scheduler == "steplr":
+        main_lr_scheduler = torch.optim.lr_scheduler.StepLR(
+            optimizer, step_size=args.lr_step_size * iters_per_epoch, gamma=args.lr_gamma
+        )
+    elif args.lr_scheduler == "cosineannealinglr":
+        main_lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=(args.epochs - args.lr_warmup_epochs) * iters_per_epoch, eta_min=args.lr_min
+        )
+    elif args.lr_scheduler == "polynomiallr":
+        main_lr_scheduler = torch.optim.lr_scheduler.PolynomialLR(
+            optimizer, total_iters=iters_per_epoch * (args.epochs - args.lr_warmup_epochs), power=0.9
+        )
+    else:
+        raise RuntimeError(
+            f"Invalid lr scheduler '{args.lr_scheduler}'. Only StepLR, CosineAnnealingLR and PolynomialLR "
+            "are supported."
+        )
 
     if args.lr_warmup_epochs > 0:
-        warmup_iters = iters_per_epoch * args.lr_warmup_epochs
-        args.lr_warmup_method = args.lr_warmup_method.lower()
         if args.lr_warmup_method == "linear":
             warmup_lr_scheduler = torch.optim.lr_scheduler.LinearLR(
-                optimizer, start_factor=args.lr_warmup_decay, total_iters=warmup_iters
+                optimizer, start_factor=args.lr_warmup_decay, total_iters=args.lr_warmup_epochs * iters_per_epoch
             )
         elif args.lr_warmup_method == "constant":
             warmup_lr_scheduler = torch.optim.lr_scheduler.ConstantLR(
-                optimizer, factor=args.lr_warmup_decay, total_iters=warmup_iters
+                optimizer, factor=args.lr_warmup_decay, total_iters=args.lr_warmup_epochs * iters_per_epoch
             )
         else:
             raise RuntimeError(
@@ -344,46 +384,68 @@ def main(args):
         lr_scheduler = torch.optim.lr_scheduler.SequentialLR(
             optimizer,
             schedulers=[warmup_lr_scheduler, main_lr_scheduler],
-            milestones=[warmup_iters],
+            milestones=[args.lr_warmup_epochs * iters_per_epoch],
         )
     else:
         lr_scheduler = main_lr_scheduler
 
+    if args.compile:
+        print("compiling the model... (takes a ~minute)")
+        model = torch.compile(model)  # requires PyTorch 2.0
+
+    model_without_ddp = model
+    if args.distributed:
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
+        model_without_ddp = model.module
+
+    model_ema = None
+    if args.model_ema:
+        # Decay adjustment that aims to keep the decay independent of other hyper-parameters originally proposed at:
+        # https://github.com/facebookresearch/pycls/blob/f8cd9627/pycls/core/net.py#L123
+        #
+        # total_ema_updates = (Dataset_size / n_GPUs) * epochs / (batch_size_per_gpu * EMA_steps)
+        # We consider constant = Dataset_size for a given dataset/setup and omit it. Thus:
+        # adjust = 1 / total_ema_updates ~= n_GPUs * batch_size_per_gpu * EMA_steps / epochs
+        adjust = args.world_size * args.batch_size * args.model_ema_steps / args.epochs
+        alpha = 1.0 - args.model_ema_decay
+        alpha = min(1.0, alpha * adjust)
+        model_ema = utils.ExponentialMovingAverage(model_without_ddp, device=device, decay=1.0 - alpha)
+
     if args.resume:
         checkpoint = torch.load(args.resume, map_location="cpu")
-        model_without_ddp.load_state_dict(checkpoint["model"], strict=not args.test_only)
+        model_without_ddp.load_state_dict(checkpoint["model"])
         if not args.test_only:
             optimizer.load_state_dict(checkpoint["optimizer"])
             lr_scheduler.load_state_dict(checkpoint["lr_scheduler"])
-            args.start_epoch = checkpoint["epoch"] + 1
-            if args.amp:
-                scaler.load_state_dict(checkpoint["scaler"])
-
-    # if args.test_only:
-    #     confmat = evaluate(model, data_loader_test, device=device, epoch=0, print_freq=args.print_freq, scaler=scaler, args=args)
-    #     print(confmat)
-    #     return
+        args.start_epoch = checkpoint["epoch"] + 1
+        if model_ema:
+            model_ema.load_state_dict(checkpoint["model_ema"])
+        if scaler:
+            scaler.load_state_dict(checkpoint["scaler"])
 
     start_time = time.time()
     for epoch in range(args.start_epoch, args.epochs):
-
         if args.distributed and (train_sampler is not None):
             train_sampler.set_epoch(epoch)
 
         train_one_epoch(
             model,
             optimizer,
-            data_loader,
             lr_scheduler,
-            device,
-            epoch,
-            iters_per_epoch,
-            args.print_freq,
+            data_loader,
+            model_ema,
             scaler,
             args,
+            device,
+            ptdtype,
+            epoch,
+            len(dataset),
         )
 
-        # confmat = evaluate(model, data_loader_test, device=device, epoch=epoch, print_freq=args.print_freq, scaler=scaler, args=args)
+        # lr_scheduler.step()
+        confmat = evaluate(model, data_loader_test, scaler, args, device, epoch, len(dataset_test))
+        if model_ema:
+            evaluate(model_ema, data_loader_test, scaler, args, device, epoch, len(dataset_test))
 
         checkpoint = {
             "model": model_without_ddp.state_dict(),
@@ -392,7 +454,9 @@ def main(args):
             "epoch": epoch,
             "args": args,
         }
-        if args.amp:
+        if model_ema:
+            checkpoint["model_ema"] = model_ema.state_dict()
+        if scaler:
             checkpoint["scaler"] = scaler.state_dict()
         utils.save_on_master(checkpoint, os.path.join(args.output_dir, f"model_{epoch}.pth"))
         utils.save_on_master(checkpoint, os.path.join(args.output_dir, "checkpoint.pth"))
@@ -407,21 +471,30 @@ def get_args_parser(add_help=True):
 
     parser = argparse.ArgumentParser(description="PyTorch Segmentation Training", add_help=add_help)
 
-    parser.add_argument("--data-path", default=None, type=str, help="dataset path")
-    parser.add_argument("--data-list", default=None, type=str, help="dataset list")
-    parser.add_argument("--label-path", default=None, type=str, help="label path")
+    parser.add_argument("--data-path", default="./", type=str, help="dataset path")
+    parser.add_argument("--data-list", nargs="+", default=None, type=str, help="dataset list")
+    parser.add_argument("--label-path", nargs="+", default=None, type=str, help="label path")
+    parser.add_argument("--label-list", nargs="+", default=None, type=str, help="label path")
+    parser.add_argument("--noise-list", nargs="+", default=None, type=str, help="noise list")
     parser.add_argument("--hdf5-file", default=None, type=str, help="hdf5 file for training")
-    parser.add_argument("--test-data-path", default=None, type=str, help="test dataset path")
-    parser.add_argument("--test-label-path", default=None, type=str, help="test label path")
+    parser.add_argument("--test-data-path", default="./", type=str, help="test dataset path")
+    parser.add_argument("--test-data-list", default="+", type=None, help="test dataset list")
+    parser.add_argument("--test-label-path", default="+", type=None, help="test label path")
+    parser.add_argument("--test-label-list", default="+", type=None, help="test label path")
+    parser.add_argument("--test-noise-list", default="+", type=None, help="test noise list")
     parser.add_argument("--dataset", default="", type=str, help="dataset name")
     parser.add_argument("--model", default="phasenet_das", type=str, help="model name")
     parser.add_argument("--backbone", default="unet", type=str, help="model backbone")
-    parser.add_argument("--aux-loss", action="store_true", help="auxiliar loss")
     parser.add_argument(
         "--device",
         default="cuda",
         type=str,
         help="device (Use cuda or cpu Default: cuda)",
+    )
+    parser.add_argument(
+        "--compile",
+        action="store_true",
+        help="compile model to torchscript",
     )
     parser.add_argument(
         "-b",
@@ -437,7 +510,6 @@ def get_args_parser(add_help=True):
         metavar="N",
         help="number of total epochs to run",
     )
-
     parser.add_argument(
         "-j",
         "--workers",
@@ -446,6 +518,9 @@ def get_args_parser(add_help=True):
         metavar="N",
         help="number of data loading workers (default: 16)",
     )
+
+    ## training hyper params
+    parser.add_argument("--opt", default="adamw", type=str, help="optimizer")
     parser.add_argument("--lr", default=0.001, type=float, help="initial learning rate")
     parser.add_argument("--momentum", default=0.9, type=float, metavar="M", help="momentum")
     parser.add_argument(
@@ -458,10 +533,34 @@ def get_args_parser(add_help=True):
         dest="weight_decay",
     )
     parser.add_argument(
+        "--norm-weight-decay",
+        default=None,
+        type=float,
+        help="weight decay for Normalization layers (default: None, same value as --wd)",
+    )
+    parser.add_argument(
+        "--bias-weight-decay",
+        default=None,
+        type=float,
+        help="weight decay for bias parameters of all layers (default: None, same value as --wd)",
+    )
+    parser.add_argument(
+        "--transformer-embedding-decay",
+        default=None,
+        type=float,
+        help="weight decay for embedding parameters for vision transformer models (default: None, same value as --wd)",
+    )
+    parser.add_argument(
+        "--clip-grad-norm",
+        default=None,
+        type=float,
+        help="clip gradient norm (default: None, no clipping)",
+    )
+    parser.add_argument(
         "--lr-warmup-epochs",
         default=1,
         type=int,
-        help="the number of epochs to warmup (default: 0)",
+        help="the number of epochs to warmup (default: 1)",
     )
     parser.add_argument(
         "--lr-warmup-method",
@@ -470,21 +569,52 @@ def get_args_parser(add_help=True):
         help="the warmup method (default: linear)",
     )
     parser.add_argument("--lr-warmup-decay", default=0.01, type=float, help="the decay for lr")
+    parser.add_argument(
+        "--lr-scheduler", default="cosineannealinglr", type=str, help="name of lr scheduler (default: multisteplr)"
+    )
+    parser.add_argument(
+        "--lr-step-size", default=8, type=int, help="decrease lr every step-size epochs (multisteplr scheduler only)"
+    )
+    parser.add_argument(
+        "--lr-gamma", default=0.1, type=float, help="decrease lr by a factor of lr-gamma (multisteplr scheduler only)"
+    )
+    parser.add_argument("--lr-min", default=0.0, type=float, help="minimum lr of lr schedule (default: 0.0)")
     parser.add_argument("--print-freq", default=10, type=int, help="print frequency")
     parser.add_argument("--output-dir", default="./output", type=str, help="path to save outputs")
     parser.add_argument("--resume", default="", type=str, help="path of checkpoint")
     parser.add_argument("--start-epoch", default=0, type=int, metavar="N", help="start epoch")
+    parser.add_argument(
+        "--sync-bn",
+        help="Use sync batch norm",
+        action="store_true",
+    )
     parser.add_argument(
         "--test-only",
         dest="test_only",
         help="Only test the model",
         action="store_true",
     )
+
+    # model moving average
     parser.add_argument(
-        "--use-deterministic-algorithms",
-        action="store_true",
-        help="Forces the use of deterministic algorithms only.",
+        "--model-ema", action="store_true", help="enable tracking Exponential Moving Average of model parameters"
     )
+    parser.add_argument(
+        "--model-ema-steps",
+        type=int,
+        default=32,
+        help="the number of iterations that controls how often to update the EMA model (default: 32)",
+    )
+    parser.add_argument(
+        "--model-ema-decay",
+        type=float,
+        default=0.99998,
+        help="decay factor for Exponential Moving Average of model parameters (default: 0.99998)",
+    )
+    parser.add_argument(
+        "--use-deterministic-algorithms", action="store_true", help="Forces the use of deterministic algorithms only."
+    )
+
     # distributed training parameters
     parser.add_argument("--world-size", default=1, type=int, help="number of distributed processes")
     parser.add_argument(
@@ -492,14 +622,6 @@ def get_args_parser(add_help=True):
         default="env://",
         type=str,
         help="url used to set up distributed training",
-    )
-
-    parser.add_argument("--weights", default=None, type=str, help="the weights enum name to load")
-    parser.add_argument(
-        "--weights-backbone",
-        default=None,
-        type=str,
-        help="the backbone weights enum name to load",
     )
 
     # Mixed precision training parameters
@@ -525,6 +647,7 @@ def get_args_parser(add_help=True):
     parser.add_argument("--random-crop", action="store_true", help="Random size")
     parser.add_argument("--crop-nt", default=1024, type=int, help="Crop time samples")
     parser.add_argument("--crop-nx", default=1024, type=int, help="Crop space samples")
+
     return parser
 
 

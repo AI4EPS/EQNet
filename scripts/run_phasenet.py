@@ -5,13 +5,12 @@ import fsspec
 import torch
 
 # %%
-protocol = "gs"
-bucket = "gs://quakeflow_das"
+protocol = "gs://"
+bucket = "quakeflow_das"
 
 # %%
-fs = fsspec.filesystem(protocol)
-# folder = "mammoth_north"
-folders = ["mammoth_south", "ridgecrest_south", "ridgecrest"]
+fs = fsspec.filesystem(protocol.replace("://", ""))
+folders = ["mammoth_north", "mammoth_south", "ridgecrest_north", "ridgecrest_south"]
 for folder in folders:
     h5_list = fs.glob(f"{bucket}/{folder}/data/*h5")
 
@@ -23,7 +22,7 @@ for folder in folders:
     # %%
     with open(result_path / f"h5_list.txt", "w") as f:
         for i, h5 in enumerate(h5_list):
-            f.write(f"{protocol}://" + h5 + "\n")
+            f.write(f"{protocol}" + h5 + "\n")
 
     # %%
     num_gpu = torch.cuda.device_count()
@@ -35,7 +34,6 @@ for folder in folders:
     os.system(cmd)
 
     # %%
-    cmd = f"gsutil -m cp -r {result_path}/picks_phasenet {bucket}/{folder}/phasenet/picks"
+    cmd = f"gsutil -m cp -r {result_path}/picks_phasenet {protocol}{bucket}/{folder}/phasenet/picks"
     print(cmd)
     os.system(cmd)
-

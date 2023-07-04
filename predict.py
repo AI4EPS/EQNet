@@ -9,6 +9,7 @@ from contextlib import nullcontext
 import torch
 import torch.utils.data
 import torch.multiprocessing as mp
+
 mp.set_start_method("spawn", force=True)
 
 matplotlib.use("agg")
@@ -32,14 +33,12 @@ logger = logging.getLogger()
 
 
 def pred_phasenet(args, model, data_loader, pick_path, figure_path, event_path=None):
-
     model.eval()
     metric_logger = utils.MetricLogger(delimiter="  ")
     header = "Predicting:"
     ctx = nullcontext() if args.device == "cpu" else torch.cuda.amp.autocast(enabled=args.amp)
     with torch.inference_mode():
         for meta in metric_logger.log_every(data_loader, 1, header):
-
             with ctx:
                 output = model(meta)
 
@@ -82,7 +81,6 @@ def pred_phasenet(args, model, data_loader, pick_path, figure_path, event_path=N
                 )
 
             for i in range(len(meta["file_name"])):
-
                 filename = meta["file_name"][i].split("//")[-1].replace("/", "_")
 
                 if len(phase_picks_[i]) == 0:
@@ -101,9 +99,7 @@ def pred_phasenet(args, model, data_loader, pick_path, figure_path, event_path=N
                         continue
                     picks_df = pd.DataFrame(event_picks_[i])
                     picks_df.sort_values(by=["phase_time"], inplace=True)
-                    picks_df.to_csv(
-                        os.path.join(event_path, filename + ".csv"), index=False
-                    )
+                    picks_df.to_csv(os.path.join(event_path, filename + ".csv"), index=False)
 
             if args.plot_figure:
                 # meta["waveform_raw"] = meta["waveform"].clone()
@@ -134,7 +130,6 @@ def pred_phasenet(args, model, data_loader, pick_path, figure_path, event_path=N
 
 
 def pred_phasenet_das(args, model, data_loader, pick_path, figure_path):
-
     model.eval()
     metric_logger = utils.MetricLogger(delimiter="  ")
     header = "Predicting:"
@@ -142,20 +137,22 @@ def pred_phasenet_das(args, model, data_loader, pick_path, figure_path):
     with torch.inference_mode():
         for meta in metric_logger.log_every(data_loader, 1, header):
             with ctx:
-                scores = torch.softmax(model(meta), dim=1)  # [batch, nch, nt, nsta]
-                topk_scores, topk_inds = detect_peaks(scores, vmin=args.min_prob, kernel=21)
+                output = model(meta)
 
-                picks_ = extract_picks(
-                    topk_inds,
-                    topk_scores,
-                    file_name=meta["file_name"],
-                    begin_time=meta["begin_time"] if "begin_time" in meta else None,
-                    begin_time_index=meta["begin_time_index"] if "begin_time_index" in meta else None,
-                    begin_channel_index=meta["begin_channel_index"] if "begin_channel_index" in meta else None,
-                    dt=meta["dt_s"] if "dt_s" in meta else 0.01,
-                    vmin=args.min_prob,
-                    phases=args.phases,
-                )
+            scores = torch.softmax(output["phase"], dim=1)  # [batch, nch, nt, nsta]
+            topk_scores, topk_inds = detect_peaks(scores, vmin=args.min_prob, kernel=21)
+
+            picks_ = extract_picks(
+                topk_inds,
+                topk_scores,
+                file_name=meta["file_name"],
+                begin_time=meta["begin_time"] if "begin_time" in meta else None,
+                begin_time_index=meta["begin_time_index"] if "begin_time_index" in meta else None,
+                begin_channel_index=meta["begin_channel_index"] if "begin_channel_index" in meta else None,
+                dt=meta["dt_s"] if "dt_s" in meta else 0.01,
+                vmin=args.min_prob,
+                phases=args.phases,
+            )
 
             for i in range(len(meta["file_name"])):
                 if len(picks_[i]) == 0:
@@ -201,7 +198,6 @@ def pred_phasenet_das(args, model, data_loader, pick_path, figure_path):
 
 
 def main(args):
-
     result_path = args.result_path
     if args.cut_patch:
         pick_path = os.path.join(result_path, f"picks_{args.model}_patch")

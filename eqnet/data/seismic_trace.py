@@ -754,26 +754,30 @@ class SeismicTraceIterableDataset(IterableDataset):
     def read_das_hdf5(self, fname):
         meta = {}
         with fsspec.open(fname, "rb") as fs:
-            with h5py.File(fs, "r") as fp:
-                # raw_data = fp["data"][()]  # [nt, nx]
-                raw_data = fp["data"][:, :].T # (nx, nt) -> (nt, nx)
-                raw_data = raw_data - np.mean(raw_data, axis=0, keepdims=True)
-                raw_data = raw_data - np.median(raw_data, axis=1, keepdims=True)
-                std = np.std(raw_data, axis=0, keepdims=True)
-                std[std == 0] = 1.0
-                raw_data = raw_data / std
-                attrs = fp["data"].attrs
-                nt, nx = raw_data.shape
-                data = np.zeros([3, nt, nx], dtype=np.float32)
-                data[-1, :, :] = raw_data[:, :]
-                meta["waveform"] = torch.from_numpy(data)
-                if "station_id" in attrs:
-                    station_id = attrs["station_name"]
-                else:
-                    station_id = [f"{i}" for i in range(nx)]
-                meta["station_id"] = station_id
-                meta["begin_time"] = attrs["begin_time"]
-                meta["dt_s"] = attrs["dt_s"]
+            try:
+                with h5py.File(fs, "r") as fp:
+                    # raw_data = fp["data"][()]  # [nt, nx]
+                    raw_data = fp["data"][:, :].T # (nx, nt) -> (nt, nx)
+                    raw_data = raw_data - np.mean(raw_data, axis=0, keepdims=True)
+                    raw_data = raw_data - np.median(raw_data, axis=1, keepdims=True)
+                    std = np.std(raw_data, axis=0, keepdims=True)
+                    std[std == 0] = 1.0
+                    raw_data = raw_data / std
+                    attrs = fp["data"].attrs
+                    nt, nx = raw_data.shape
+                    data = np.zeros([3, nt, nx], dtype=np.float32)
+                    data[-1, :, :] = raw_data[:, :]
+                    meta["waveform"] = torch.from_numpy(data)
+                    if "station_id" in attrs:
+                        station_id = attrs["station_name"]
+                    else:
+                        station_id = [f"{i}" for i in range(nx)]
+                    meta["station_id"] = station_id
+                    meta["begin_time"] = attrs["begin_time"]
+                    meta["dt_s"] = attrs["dt_s"]
+            except Exception as e:
+                print(f"Error reading {fname}:\n{e}")
+                return None
         return meta
 
     def sample(self, data_list):

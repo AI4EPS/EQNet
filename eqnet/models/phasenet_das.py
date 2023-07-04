@@ -1,12 +1,14 @@
 from collections import OrderedDict
 from functools import partial
+from typing import Dict, Optional
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch import Tensor
 from torch.nn.modules.loss import _WeightedLoss
+
 from .unet import UNet
-from ._utils import _SimpleSegmentationModel
 
 default_cfgs = {
     "backbone": "unet",
@@ -33,7 +35,6 @@ class WeightedLoss(_WeightedLoss):
         self.weight = weight
 
     def forward(self, input, target):
-
         log_pred = nn.functional.log_softmax(input, 1)
 
         if self.weight is not None:
@@ -83,7 +84,6 @@ class UNetHead(nn.Module):
         return x, None
 
     def losses(self, inputs, targets):
-
         inputs = inputs.float()  # https://github.com/pytorch/pytorch/issues/48163
         # loss = F.cross_entropy(
         #     inputs, targets, reduction="mean", ignore_index=self.ignore_value
@@ -99,12 +99,33 @@ class UNetHead(nn.Module):
         return loss
 
 
-class PhaseNetDAS(_SimpleSegmentationModel):
-    pass
+class PhaseNetDAS(nn.Module):
+    def __init__(self, backbone: nn.Module, classifier: nn.Module) -> None:
+        super().__init__()
+        self.backbone = backbone
+        self.classifier = classifier
+
+    @property
+    def device(self):
+        return next(self.parameters()).device
+
+    def forward(self, batched_inputs: Tensor) -> Dict[str, Tensor]:
+        waveform = batched_inputs["data"].to(self.device)
+        if self.training:
+            targets = batched_inputs["targets"].to(self.device)
+        else:
+            targets = None
+
+        features = self.backbone(waveform)
+        phase, loss = self.classifier(features, targets)
+
+        if self.training:
+            return {"loss": loss}
+        else:
+            return {"phase": phase}
 
 
 def phasenet_das(in_channels=1, out_channels=3, reg=0.0, *args, **kwargs) -> PhaseNetDAS:
-
     backbone = UNet(
         in_channels=in_channels,
         out_channels=out_channels,
