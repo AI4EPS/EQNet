@@ -86,7 +86,6 @@ def train_one_epoch(
             meta["targets"] = target[:, :, :-crop_nt, :-crop_nx]
             del data, target
 
-        # with torch.cuda.amp.autocast(enabled=scaler is not None):
         with ctx:
             output = model(meta)
 
@@ -95,7 +94,6 @@ def train_one_epoch(
         if scaler is not None:
             scaler.scale(loss).backward()
             if args.clip_grad_norm is not None:
-                # we should unscale the gradients of optimizer's assigned params if do gradient clipping
                 scaler.unscale_(optimizer)
                 nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad_norm)
             scaler.step(optimizer)
@@ -110,7 +108,6 @@ def train_one_epoch(
         if model_ema and i % args.model_ema_steps == 0:
             model_ema.update_parameters(model)
             if epoch < args.lr_warmup_epochs:
-                # Reset ema buffer to keep copying weights during warmup period
                 model_ema.n_averaged.fill_(0)
 
         batch_size = meta["data"].shape[0]
@@ -120,7 +117,6 @@ def train_one_epoch(
         # break
 
         metric_logger.update(lr=optimizer.param_groups[0]["lr"], **output)
-        # metric_logger.meters["img/s"].update(batch_size / (time.time() - start_time))
 
     model.eval()
     plot_results(meta, model, args, epoch, "train_")
@@ -184,12 +180,12 @@ def main(args):
     torch.manual_seed(1337 + rank)
     random.seed(1337 + rank)
     np.random.seed(1337 + rank)
-    torch.backends.cuda.matmul.allow_tf32 = True  # allow tf32 on matmul
-    torch.backends.cudnn.allow_tf32 = True  # allow tf32 on cudnn
+
     device = torch.device(args.device)
     dtype = "bfloat16" if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else "float16"
     ptdtype = {"float32": torch.float32, "bfloat16": torch.bfloat16, "float16": torch.float16}[dtype]
-
+    torch.backends.cuda.matmul.allow_tf32 = True  # allow tf32 on matmul
+    torch.backends.cudnn.allow_tf32 = True  # allow tf32 on cudnn
     if args.use_deterministic_algorithms:
         torch.backends.cudnn.benchmark = False
         torch.use_deterministic_algorithms(True)
@@ -390,7 +386,7 @@ def main(args):
         lr_scheduler = main_lr_scheduler
 
     if args.compile:
-        print("compiling the model... (takes a ~minute)")
+        print("compiling the model...")
         model = torch.compile(model)  # requires PyTorch 2.0
 
     model_without_ddp = model
@@ -400,12 +396,6 @@ def main(args):
 
     model_ema = None
     if args.model_ema:
-        # Decay adjustment that aims to keep the decay independent of other hyper-parameters originally proposed at:
-        # https://github.com/facebookresearch/pycls/blob/f8cd9627/pycls/core/net.py#L123
-        #
-        # total_ema_updates = (Dataset_size / n_GPUs) * epochs / (batch_size_per_gpu * EMA_steps)
-        # We consider constant = Dataset_size for a given dataset/setup and omit it. Thus:
-        # adjust = 1 / total_ema_updates ~= n_GPUs * batch_size_per_gpu * EMA_steps / epochs
         adjust = args.world_size * args.batch_size * args.model_ema_steps / args.epochs
         alpha = 1.0 - args.model_ema_decay
         alpha = min(1.0, alpha * adjust)
@@ -442,7 +432,6 @@ def main(args):
             len(dataset),
         )
 
-        # lr_scheduler.step()
         confmat = evaluate(model, data_loader_test, scaler, args, device, epoch, len(dataset_test))
         if model_ema:
             evaluate(model_ema, data_loader_test, scaler, args, device, epoch, len(dataset_test))
