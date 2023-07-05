@@ -10,6 +10,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.utils.data
+import wandb
 from torch import nn
 
 import eqnet
@@ -48,6 +49,9 @@ def evaluate(model, data_loader, scaler, args, device, epoch=0, total_sample=1):
     plot_results(meta, model, args, epoch, "test_")
     metric_logger.synchronize_between_processes()
     print(f"Test loss = {metric_logger.loss.global_avg:.3f}")
+    if args.wandb and utils.is_main_process():
+        wandb.log({"test_loss": metric_logger.loss.global_avg, "epoch": epoch})
+
     return metric_logger
 
 
@@ -117,6 +121,16 @@ def train_one_epoch(
         # break
 
         metric_logger.update(lr=optimizer.param_groups[0]["lr"], **output)
+
+        if args.wandb and utils.is_main_process():
+            wandb.log(
+                {
+                    "train_loss": loss.item(),
+                    "lr": optimizer.param_groups[0]["lr"],
+                    "epoch": epoch,
+                    "batch": i,
+                }
+            )
 
     model.eval()
     plot_results(meta, model, args, epoch, "train_")
@@ -413,7 +427,12 @@ def main(args):
         if scaler:
             scaler.load_state_dict(checkpoint["scaler"])
 
+    # logging
+    if args.wandb and utils.is_main_process():
+        wandb.init(project=args.wandb_project, name=args.wandb_name, config=args)
+
     start_time = time.time()
+    best_loss = float("inf")
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed and (train_sampler is not None):
             train_sampler.set_epoch(epoch)
@@ -432,9 +451,9 @@ def main(args):
             len(dataset),
         )
 
-        confmat = evaluate(model, data_loader_test, scaler, args, device, epoch, len(dataset_test))
+        metric = evaluate(model, data_loader_test, scaler, args, device, epoch, len(dataset_test))
         if model_ema:
-            evaluate(model_ema, data_loader_test, scaler, args, device, epoch, len(dataset_test))
+            metric = evaluate(model_ema, data_loader_test, scaler, args, device, epoch, len(dataset_test))
 
         checkpoint = {
             "model": model_without_ddp.state_dict(),
@@ -447,12 +466,25 @@ def main(args):
             checkpoint["model_ema"] = model_ema.state_dict()
         if scaler:
             checkpoint["scaler"] = scaler.state_dict()
+
         utils.save_on_master(checkpoint, os.path.join(args.output_dir, f"model_{epoch}.pth"))
-        utils.save_on_master(checkpoint, os.path.join(args.output_dir, "checkpoint.pth"))
+        if utils.is_main_process() and metric.loss.global_avg < best_loss:
+            best_loss = metric.loss.global_avg
+            utils.save_on_master(checkpoint, os.path.join(args.output_dir, "checkpoint.pth"))
+            if args.wandb:
+                best_model = wandb.Artifact(
+                    f"{args.wandb_name}",
+                    type="model",
+                    metadata=dict(epoch=epoch, loss=best_loss),
+                )
+                best_model.add_file(os.path.join(args.output_dir, "checkpoint.pth"))
+                wandb.log_artifact(best_model)
 
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print(f"Training time {total_time_str}")
+    if args.wandb:
+        wandb.finish()
 
 
 def get_args_parser(add_help=True):
@@ -636,6 +668,12 @@ def get_args_parser(add_help=True):
     parser.add_argument("--random-crop", action="store_true", help="Random size")
     parser.add_argument("--crop-nt", default=1024, type=int, help="Crop time samples")
     parser.add_argument("--crop-nx", default=1024, type=int, help="Crop space samples")
+
+    # wandb
+    parser.add_argument("--wandb", action="store_true", help="use wandb")
+    parser.add_argument("--wandb-project", default="phasenet-das", type=str, help="wandb project name")
+    parser.add_argument("--wandb-name", default=None, type=str, help="wandb run name")
+    parser.add_argument("--wandb-dir", default="./", type=str, help="wandb dir")
 
     return parser
 
