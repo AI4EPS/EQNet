@@ -38,11 +38,12 @@ def evaluate(model, data_loader, scaler, args, device, epoch=0, total_sample=1):
         for meta in metric_logger.log_every(data_loader, args.print_freq, header):
             output = model(meta)
             preds = output["phase"]
-            batch_size = meta["data"].shape[0]
             targets = meta["targets"].to(preds.device)
             loss = torch.sum(-targets * F.log_softmax(preds, dim=1), dim=1).mean()
+            batch_size = meta["data"].shape[0]
             metric_logger.meters["loss"].update(loss.item(), n=batch_size)
             num_processed_samples += batch_size
+            del output, preds, targets
             if num_processed_samples > total_sample:
                 break
 
@@ -139,15 +140,15 @@ def train_one_epoch(
 def plot_results(meta, model, args, epoch, prefix=""):
     with torch.inference_mode():
         if args.model == "phasenet":
-            out = model(meta)
-            phase = torch.softmax(out["phase"], dim=1).cpu()
-            event = torch.sigmoid(out["event"]).cpu()
-            polarity = torch.sigmoid(out["polarity"]).cpu()
+            output = model(meta)
+            phase = torch.softmax(output["phase"], dim=1).cpu()
+            event = torch.sigmoid(output["event"]).cpu()
+            polarity = torch.sigmoid(output["polarity"]).cpu()
             meta["waveform_raw"] = meta["waveform"].clone()
             meta["waveform"] = normalize_local(meta["waveform"])
             print("Plotting...")
             eqnet.utils.visualize_phasenet_train(meta, phase, event, polarity, epoch=epoch, figure_dir=args.figure_dir)
-            del phase, event, polarity
+            del output, phase, event, polarity
 
         if args.model == "deepdenoiser":
             pass
@@ -158,7 +159,7 @@ def plot_results(meta, model, args, epoch, prefix=""):
             meta["data"] = normalize_local(meta["data"], filter=2048, stride=256)
             print("Plotting...")
             eqnet.utils.visualize_das_train(meta, phase, epoch=epoch, figure_dir=args.figure_dir, prefix=prefix)
-            del phase
+            del output, phase
 
         elif args.model == "autoencoder":
             preds = model(meta).cpu()
@@ -167,12 +168,12 @@ def plot_results(meta, model, args, epoch, prefix=""):
             del preds
 
         elif args.model == "eqnet":
-            out = model(meta)
-            phase = F.softmax(out["phase"], dim=1).cpu()
-            event = torch.sigmoid(out["event"]).cpu()
+            output = model(meta)
+            phase = F.softmax(output["phase"], dim=1).cpu()
+            event = torch.sigmoid(output["event"]).cpu()
             print("Plotting...")
             eqnet.utils.visualize_eqnet_train(meta, phase, event, epoch=epoch, figure_dir=args.figure_dir)
-            del phase, event
+            del output, phase, event
 
 
 def main(args):

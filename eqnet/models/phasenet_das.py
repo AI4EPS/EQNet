@@ -135,7 +135,7 @@ def phasenet_das(in_channels=1, out_channels=3, reg=0.0, *args, **kwargs) -> Pha
         stride=(4, 4),
         padding=(3, 3),
         pad_input=(1024, 1024),
-        local_norm=(2048, 256),
+        local_norm=(2048, 256),  # (nt, nx)
     )
 
     classifier = UNetHead(in_channels=16, out_channels=out_channels, kernel_size=(7, 7), padding=(3, 3), reg=reg)
