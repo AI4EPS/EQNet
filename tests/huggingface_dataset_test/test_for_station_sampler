@@ -26,6 +26,7 @@ data_loader_stations = DataLoader(
     quakeflow_v2,
     batch_sampler=train_batch_sampler,
     num_workers=4,
+    drop_last=True,
 )
 time3 = time.time()
 print("Time to create dataloader: ", time3-time2)
