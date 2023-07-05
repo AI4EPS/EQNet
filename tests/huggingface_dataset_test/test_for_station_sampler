@@ -21,12 +21,11 @@ group_ids = create_groups(quakeflow_v2, num_stations_list=[5,10,20])
 quakeflow_v2 = quakeflow_v2.map(lambda x: cut_reorder_keys(x, num_stations_list=[5,10,20]))
 
 train_sampler = torch.utils.data.SequentialSampler(quakeflow_v2)
-train_batch_sampler = StationSampler(train_sampler, group_ids, 16)
+train_batch_sampler = StationSampler(train_sampler, group_ids, 16, drop_last=True)
 data_loader_stations = DataLoader(
     quakeflow_v2,
     batch_sampler=train_batch_sampler,
     num_workers=4,
-    drop_last=True,
 )
 time3 = time.time()
 print("Time to create dataloader: ", time3-time2)
