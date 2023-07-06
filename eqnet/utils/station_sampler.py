@@ -75,7 +75,7 @@ def _repeat_to_at_least(iterable, n):
     repeated = chain.from_iterable(repeat(iterable, repeat_times))
     return list(repeated)    
     
-def create_groups(dataset, num_stations_list=[5, 10, 20]):
+def create_groups(dataset, num_stations_list=[5, 10, 20], is_pad=False):
     '''
     create groups of data with different number of stations
     '''
@@ -83,10 +83,13 @@ def create_groups(dataset, num_stations_list=[5, 10, 20]):
     for data in dataset:
         num_stations = data["station_location"].shape[0]
         num_stations_list = np.array(sorted(num_stations_list))
-        if num_stations < num_stations_list[0]:
-            group_id = 0
+        if is_pad:
+            group_id = num_stations_list[num_stations_list>=num_stations][0]
         else:
-            group_id = num_stations_list[num_stations_list<=num_stations][-1]
+            if num_stations < num_stations_list[0]:
+                group_id = 0
+            else:
+                group_id = num_stations_list[num_stations_list<=num_stations][-1]
             
         group_ids.append(group_id)
     group_ids=np.array(group_ids)
@@ -106,5 +109,8 @@ def cut_reorder_keys(example, num_stations_list=[5, 10, 20]):
         cut = np.random.permutation(num_stations)[:group_id]
         example["waveform"] = example["waveform"][cut,:,:].permute(1,2,0).contiguous()
         example["phase_pick"] = example["phase_pick"][cut,:,:].permute(1,2,0).contiguous()
+        example["event_center"] = example["event_center"][cut,:].permute(1,0).contiguous()
+        example["event_location"] = example["event_location"][cut,:,:].permute(1,2,0).contiguous()
+        example["event_location_mask"] = example["event_location_mask"][cut,:].permute(1,0).contiguous()
         example["station_location"] = example["station_location"][cut,:].contiguous()
         return example

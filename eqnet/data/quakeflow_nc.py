@@ -110,7 +110,9 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                 {
                     "waveform": datasets.Array3D(shape=(3, self.nt, self.num_stations), dtype='float32'),
                     "phase_pick": datasets.Array3D(shape=(3, self.nt, self.num_stations), dtype='float32'),
-                    "event_location": datasets.Sequence(datasets.Value("float32")),
+                    "event_center" : datasets.Array2D(shape=(self.feature_nt, self.num_stations), dtype='float32'),
+                    "event_location": datasets.Array3D(shape=(4, self.feature_nt, self.num_stations), dtype='float32'),
+                    "event_location_mask": datasets.Array2D(shape=(self.feature_nt, self.num_stations), dtype='float32'),
                     "station_location": datasets.Array2D(shape=(self.num_stations, 3), dtype="float32"),
                 })
             
@@ -119,7 +121,9 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                 {
                     "waveform": datasets.Array3D(shape=(None, 3, self.nt), dtype='float32'),
                     "phase_pick": datasets.Array3D(shape=(None, 3, self.nt), dtype='float32'),
-                    "event_location": datasets.Sequence(datasets.Value("float32")),
+                    "event_center" : datasets.Array2D(shape=(None, self.feature_nt), dtype='float32'),
+                    "event_location": datasets.Array3D(shape=(None, 4, self.feature_nt), dtype='float32'),
+                    "event_location_mask": datasets.Array2D(shape=(None, self.feature_nt), dtype='float32'),
                     "station_location": datasets.Array2D(shape=(None, 3), dtype="float32"),
                 }
             )
@@ -192,6 +196,7 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                 for event_id in fp.keys():
                     event = fp[event_id]
                     station_ids = list(event.keys())
+                    event_attrs = event.attrs
                     
                     if self.config.name=="NCEDC":
                         if len(station_ids) < num_stations:
@@ -200,10 +205,11 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                             station_ids = np.random.choice(station_ids, num_stations, replace=False)
 
                     waveforms = np.zeros([3, self.nt, len(station_ids)])
-                    phase_pick = np.zeros_like(waveforms)
-                    attrs = event.attrs
-                    event_location = [attrs["longitude"], attrs["latitude"], attrs["depth_km"], attrs["event_time_index"]]
-                    station_location = []
+                    phase_pick = np.zeros([3, self.nt, len(station_ids)])
+                    event_center = np.zeros([self.nt, len(station_ids)])
+                    event_location = np.zeros([4, self.nt, len(station_ids)])
+                    event_location_mask = np.zeros([self.nt, len(station_ids)])
+                    station_location = np.zeros([len(station_ids), 3])
                     
                     for i, sta_id in enumerate(station_ids):
                         # trace_id = event_id + "/" + sta_id
@@ -212,7 +218,59 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                         p_picks = attrs["phase_index"][attrs["phase_type"] == "P"]
                         s_picks = attrs["phase_index"][attrs["phase_type"] == "S"]
                         phase_pick[:, :, i] = generate_label([p_picks, s_picks], nt=self.nt)
-                        station_location.append([attrs["longitude"], attrs["latitude"], -attrs["elevation_m"]/1e3])
+                        
+                        ## TODO: how to deal with multiple phases
+                        # center = (attrs["phase_index"][::2] + attrs["phase_index"][1::2])/2.0
+                        ## assuming only one event with both P and S picks
+                        c0 = ((p_picks) + (s_picks)) / 2.0 # phase center
+                        c0_width = ((s_picks - p_picks) * self.sampling_rate / 200.0).max()
+                        dx = round(
+                            (event_attrs["longitude"] - attrs["longitude"])
+                            * np.cos(np.radians(event_attrs["latitude"]))
+                            * self.degree2km,
+                            2,
+                        )
+                        dy = round(
+                            (event_attrs["latitude"] - attrs["latitude"])
+                            * self.degree2km,
+                            2,
+                        )
+                        dz = round(
+                            event_attrs["depth_km"] + attrs["elevation_m"] / 1e3,
+                            2,
+                        )
+                        
+                        event_center[:, i] = generate_label(
+                            [
+                                # [c0 / self.feature_scale],
+                                c0,
+                            ],
+                            label_width=[
+                                c0_width,
+                            ],
+                            # label_width=[
+                            #     10,
+                            # ],
+                            # nt=self.feature_nt,
+                            nt=self.nt,
+                        )[1, :]
+                        mask = event_center[:, i] >= 0.5
+                        event_location[0, :, i] = (
+                            np.arange(self.nt) - event_attrs["event_time_index"]
+                        ) / self.sampling_rate
+                        # event_location[0, :, i] = (np.arange(self.feature_nt) - 3000 / self.feature_scale) / self.sampling_rate
+                        event_location[1:, mask, i] = np.array([dx, dy, dz])[:, np.newaxis]
+                        event_location_mask[:, i] = mask
+                        
+                        ## station location
+                        station_location[i, 0] = round(
+                            attrs["longitude"]
+                            * np.cos(np.radians(attrs["latitude"]))
+                            * self.degree2km,
+                            2,
+                        )
+                        station_location[i, 1] = round(attrs["latitude"] * self.degree2km, 2)
+                        station_location[i, 2] =  round(-attrs["elevation_m"]/1e3, 2)
                         
                     std = np.std(waveforms, axis=1, keepdims=True)
                     std[std == 0] = 1.0
@@ -220,19 +278,23 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                     waveforms = waveforms.astype(np.float32)
                     
                     if self.config.name=="NCEDC":
-                        yield event_id, {
+                        yield {
                             "waveform": torch.from_numpy(waveforms).float(),
                             "phase_pick": torch.from_numpy(phase_pick).float(),
-                            "event_location": torch.from_numpy(np.array(event_location)).float(),
-                            "station_location": torch.from_numpy(np.array(station_location)).float(),
+                            "event_center": torch.from_numpy(event_center[::self.feature_scale]).float(),
+                            "event_location": torch.from_numpy(event_location[:, ::self.feature_scale]).float(),
+                            "event_location_mask": torch.from_numpy(event_location_mask[::self.feature_scale]).float(),
+                            "station_location": torch.from_numpy(station_location).float(),
                         }
                     elif self.config.name=="NCEDC_full_size":
                         
                         yield event_id, {
                             "waveform": torch.from_numpy(waveforms).float().permute(2,0,1),
                             "phase_pick": torch.from_numpy(phase_pick).float().permute(2,0,1),
-                            "event_location": torch.from_numpy(np.array(event_location)).float(),
-                            "station_location": torch.from_numpy(np.array(station_location)).float(),
+                            "event_center": torch.from_numpy(event_center[:: self.feature_scale]).float().permute(1,0),
+                            "event_location": torch.from_numpy(event_location[:, ::self.feature_scale]).float().permute(2,0,1),
+                            "event_location_mask": torch.from_numpy(event_location_mask[::self.feature_scale]).float().permute(1,0),
+                            "station_location": torch.from_numpy(station_location).float(),
                         }
 
 
