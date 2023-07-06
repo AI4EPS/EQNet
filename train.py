@@ -11,10 +11,12 @@ import torch
 import torch.nn.functional as F
 import torch.utils.data
 import wandb
+import datasets
 from torch import nn
 
 import eqnet
 import utils
+from eqnet.utils.station_sampler import StationSampler, cut_reorder_keys, create_groups
 from eqnet.data import (
     AutoEncoderIterableDataset,
     DASDataset,
@@ -38,6 +40,7 @@ def evaluate(model, data_loader, scaler, args, device, epoch=0, total_sample=1):
         for meta in metric_logger.log_every(data_loader, args.print_freq, header):
             output = model(meta)
             preds = output["phase"]
+            #TODO: label "data" "targets" is not continuous, should we modify the dataset file or the train file?
             targets = meta["targets"].to(preds.device)
             loss = torch.sum(-targets * F.log_softmax(preds, dim=1), dim=1).mean()
             batch_size = meta["data"].shape[0]
@@ -51,7 +54,7 @@ def evaluate(model, data_loader, scaler, args, device, epoch=0, total_sample=1):
     metric_logger.synchronize_between_processes()
     print(f"Test loss = {metric_logger.loss.global_avg:.3f}")
     if args.wandb and utils.is_main_process():
-        wandb.log({"test_loss": metric_logger.loss.global_avg, "epoch": epoch})
+        wandb.log({"test/test_loss": metric_logger.loss.global_avg, "test/epoch": epoch})
 
     return metric_logger
 
@@ -77,7 +80,7 @@ def train_one_epoch(
         metric_logger.add_meter("loss_polarity", utils.SmoothedValue(window_size=1, fmt="{value}"))
     header = f"Epoch: [{epoch}]"
 
-    ctx = nullcontext if scaler is None else torch.amp.autocast(device_type=args.device, dtype=ptdtype)
+    ctx = nullcontext() if scaler is None else torch.amp.autocast(device_type=args.device, dtype=ptdtype)
     model.train()
     num_processed_samples = 0
     for i, meta in enumerate(metric_logger.log_every(data_loader, args.print_freq, header)):
@@ -126,10 +129,10 @@ def train_one_epoch(
         if args.wandb and utils.is_main_process():
             wandb.log(
                 {
-                    "train_loss": loss.item(),
-                    "lr": optimizer.param_groups[0]["lr"],
-                    "epoch": epoch,
-                    "batch": i,
+                    "train/train_loss": loss.item(),
+                    "train/lr": optimizer.param_groups[0]["lr"],
+                    "train/epoch": epoch,
+                    "train/batch": i,
                 }
             )
 
@@ -207,13 +210,6 @@ def main(args):
     else:
         torch.backends.cudnn.benchmark = True
 
-    # if args.distributed:
-    #     train_sampler = torch.utils.data.distributed.DistributedSampler(dataset)
-    #     test_sampler = torch.utils.data.distributed.DistributedSampler(dataset_test, shuffle=False)
-    # else:
-    #     train_sampler = torch.utils.data.RandomSampler(dataset)
-    #     test_sampler = torch.utils.data.SequentialSampler(dataset_test)
-
     if args.model == "phasenet":
         dataset = SeismicTraceIterableDataset(
             data_path=args.data_path,
@@ -281,32 +277,72 @@ def main(args):
         dataset_test = dataset
         test_sampler = None
     elif args.model == "eqnet":
-        dataset = SeismicNetworkIterableDataset(args.dataset)
-        train_sampler = None
-        dataset_test = dataset
-        test_sampler = None
+        if args.huggingface_dataset:
+            try:
+                # Get the directory of the train.py
+                code_dir = os.path.dirname(os.path.abspath(__file__))
+                script_dir = os.path.join(code_dir, "eqnet/data/quakeflow_nc.py")
+                dataset = datasets.load_dataset(script_dir, split="train", name="NCEDC_full_size")
+            except:
+                dataset = datasets.load_dataset("AI4EPS/quakeflow_nc", split="train", name="NCEDC_full_size")
+            
+            dataset = dataset.with_format("torch")
+            dataset, dataset_test = dataset.train_test_split(test_size=0.2, shuffle=False)
+            
+            if args.distributed:
+                train_sampler = torch.utils.data.distributed.DistributedSampler(dataset)
+                test_sampler = torch.utils.data.distributed.DistributedSampler(dataset_test, shuffle=False)
+            else:
+                train_sampler = torch.utils.data.RandomSampler(dataset)
+                test_sampler = torch.utils.data.SequentialSampler(dataset_test)
+
+            group_ids = create_groups(dataset, args.num_stations_list)
+            dataset = dataset.map(lambda x: cut_reorder_keys(x, num_stations_list=args.num_stations_list))
+            train_batch_sampler = StationSampler(train_sampler, group_ids, args.batch_size, args.num_stations_list)
+        
+        else:
+            dataset = SeismicNetworkIterableDataset(args.dataset)
+            train_sampler = None
+            test_sampler = None
+            dataset_test = dataset
     else:
         raise ("Unknown model")
+    
+    if args.huggingface_dataset:
+        data_loader = torch.utils.data.DataLoader(
+            dataset,
+            batch_sampler=train_batch_sampler,
+            num_workers=args.workers,
+        )
+        
+        data_loader_test = torch.utils.data.DataLoader(
+            dataset_test,
+            batch_size=1,
+            sampler=test_sampler,
+            num_workers=args.workers,
+            collate_fn=None,
+            drop_last=False,
+        )
+    else:    
+        data_loader = torch.utils.data.DataLoader(
+            dataset,
+            batch_size=args.batch_size,
+            sampler=train_sampler,
+            num_workers=args.workers,
+            # collate_fn=utils.collate_fn,
+            collate_fn=None,
+            # shuffle=True,
+            drop_last=True,
+        )
 
-    data_loader = torch.utils.data.DataLoader(
-        dataset,
-        batch_size=args.batch_size,
-        sampler=train_sampler,
-        num_workers=args.workers,
-        # collate_fn=utils.collate_fn,
-        collate_fn=None,
-        # shuffle=True,
-        drop_last=True,
-    )
-
-    data_loader_test = torch.utils.data.DataLoader(
-        dataset_test,
-        batch_size=args.batch_size,
-        sampler=test_sampler,
-        num_workers=args.workers,
-        collate_fn=None,
-        drop_last=False,
-    )
+        data_loader_test = torch.utils.data.DataLoader(
+            dataset_test,
+            batch_size=args.batch_size,
+            sampler=test_sampler,
+            num_workers=args.workers,
+            collate_fn=None,
+            drop_last=False,
+        )
 
     model = eqnet.models.__dict__[args.model](
         backbone=args.backbone,
@@ -430,7 +466,14 @@ def main(args):
 
     # logging
     if args.wandb and utils.is_main_process():
-        wandb.init(project=args.wandb_project, name=args.wandb_name, config=args)
+        wandb.init(
+            project=args.wandb_project, 
+            name=args.wandb_name, 
+            entity=args.wandb_group,
+            dir=args.wandb_dir,
+            config=args)
+        if args.wandb_watch:
+            wandb.watch(model, log="all", log_freq=args.print_freq)
 
     start_time = time.time()
     best_loss = float("inf")
@@ -674,7 +717,14 @@ def get_args_parser(add_help=True):
     parser.add_argument("--wandb", action="store_true", help="use wandb")
     parser.add_argument("--wandb-project", default="phasenet-das", type=str, help="wandb project name")
     parser.add_argument("--wandb-name", default=None, type=str, help="wandb run name")
+    parser.add_argument("--wandb-group", default=None, type=str, help="wandb group name")
     parser.add_argument("--wandb-dir", default="./", type=str, help="wandb dir")
+    parser.add_argument("--wandb-watch", action="store_true", help="wandb watch model")
+
+    # huggingface dataset
+    parser.add_argument("--huggingface-dataset", action="store_true", help="use huggingface dataset")
+    
+    parser.add_argument("--num-stations-list", default=[5, 10, 20], type=int, nargs="+", help="possible stations number of the dataset")
 
     return parser
 
