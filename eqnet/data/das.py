@@ -314,7 +314,7 @@ def masking(data, target, nt=256, nx=256):
     return data_, target_
 
 
-def masking_edge(data, target, nt=512, nx=512):
+def masking_edge(data, target, nt=1024, nx=1024):
     """masking edges to prevent edge effects"""
 
     crop_nt = random.randint(1, nt)
@@ -325,8 +325,12 @@ def masking_edge(data, target, nt=512, nx=512):
     data_ = data
     target_ = target
 
-    data_[-crop_nt:, -crop_nx:] = 0.0
-    target_[-crop_nt:, -crop_nx:] = 0.0
+    data_[:, -crop_nt:, :] = 0.0
+    target_[0, -crop_nt:, :] = 1.0
+    target_[1:, -crop_nt:, :] = 0.0
+    data_[:, :, -crop_nx:] = 0.0
+    target_[0, :, -crop_nx:] = 1.0
+    target_[1:, :, -crop_nx:] = 0.0
 
     return data_, target_
 
