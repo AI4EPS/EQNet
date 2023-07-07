@@ -60,7 +60,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
             event_center = np.zeros([self.nt, len(station_ids)])
             event_location = np.zeros([4, self.nt, len(station_ids)])
             event_location_mask = np.zeros([self.nt, len(station_ids)])
-            station_location = np.zeros([len(station_ids), 2])
+            station_location = np.zeros([len(station_ids), 3])
 
             for i, sta_id in enumerate(station_ids):
                 trace_id = event_id + "/" + sta_id
@@ -139,6 +139,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
                     2,
                 )
                 station_location[i, 1] = round(self.hdf5_fp[trace_id].attrs["latitude"] * self.degree2km, 2)
+                station_location[i, 2] = round(-self.hdf5_fp[trace_id].attrs["elevation_m"] / 1e3, 2)
 
             std = np.std(data, axis=1, keepdims=True)
             std[std == 0] = 1.0
@@ -148,9 +149,9 @@ class SeismicNetworkIterableDataset(IterableDataset):
             yield {
                 "data": torch.from_numpy(data).float(),
                 "phase_pick": torch.from_numpy(phase_pick).float(),
-                "event_center": torch.from_numpy(event_center[:: self.feature_scale]).float(),
-                "event_location": torch.from_numpy(event_location[:: self.feature_scale]).float(),
-                "event_location_mask": torch.from_numpy(event_location_mask[:: self.feature_scale]).float(),
+                "event_center": torch.from_numpy(event_center[::self.feature_scale]).float(),
+                "event_location": torch.from_numpy(event_location[:, ::self.feature_scale]).float(),
+                "event_location_mask": torch.from_numpy(event_location_mask[::self.feature_scale]).float(),
                 "station_location": torch.from_numpy(station_location).float(),
             }
 

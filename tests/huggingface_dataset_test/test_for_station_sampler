@@ -1,0 +1,49 @@
+# run it under the tests folder
+
+import time
+import numpy as np
+from collections import defaultdict, deque
+
+import datasets
+import torch
+import torch.nn as nn
+import torch.functional as F
+from torch.utils.data import Dataset, DataLoader, Sampler, BatchSampler
+
+import sys
+sys.path.append("../")
+from eqnet.utils.station_sampler import StationSampler, cut_reorder_keys, create_groups
+
+time1 = time.time()
+quakeflow_v2 = datasets.load_dataset("../eqnet/data/quakeflow_nc.py", split="train", name="NCEDC_full_size")
+quakeflow_v2 = quakeflow_v2.with_format("torch")
+time2 = time.time()
+print("Time to load dataset: ", time2-time1)
+group_ids = create_groups(quakeflow_v2, num_stations_list=[5,10,20])
+quakeflow_v2 = quakeflow_v2.map(lambda x: cut_reorder_keys(x, num_stations_list=[5,10,20]))
+
+train_sampler = torch.utils.data.SequentialSampler(quakeflow_v2)
+train_batch_sampler = StationSampler(train_sampler, group_ids, 16, drop_last=True)
+data_loader_stations = DataLoader(
+    quakeflow_v2,
+    batch_sampler=train_batch_sampler,
+    num_workers=4,
+)
+time3 = time.time()
+print("Time to create dataloader: ", time3-time2)
+iter_3 = 0
+for batch in data_loader_stations:
+    if iter_3 and iter_3%4==0:
+        time_worker_1 = time.time()
+        print(f"\n\nTime between workers: {time_worker_1-time_worker_2}\n")
+    print(f"\nDataloader test{iter_3}\n")
+    print(batch.keys())
+    for key in batch.keys():
+        print(key, batch[key].shape, batch[key].dtype)
+    iter_3 += 1
+    if iter_3%4==0:
+        time_worker_2 = time.time()
+
+print("Number of iterations: ", iter_3)
+time4 = time.time()
+print("Time to iterate through dataloader: ", time4-time3)
