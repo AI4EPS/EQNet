@@ -6,51 +6,74 @@ import h5py
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from tqdm import tqdm
+from tqdm.auto import tqdm
 import json
 import multiprocessing as mp
-
-plt.rcParams["figure.facecolor"] = "white"
+import fsspec
+from pathlib import Path
 
 # %%
-h5_in = "ncedc_event_dataset.h5"
+result_path = Path("data")
+if not result_path.exists():
+    result_path.mkdir()
 
-num_per_file = 10000
 
-num = 0
-with h5py.File(h5_in, "r") as fp_in:
+# # %%
+# with open("event_ids.txt") as f:
+#     event_ids = f.read().splitlines()
 
-    for event_id in tqdm(sorted(list(fp_in.keys()))):
+# # %%
+# hdf5 = "gs://quakeflow_ncedc/ncedc_event_dataset_polarity.h5"
+# with fsspec.open(hdf5, "rb") as fs:
+#     with h5py.File(fs, "r") as fp:
+#         for event_id in event_ids:
+#             for station in fp[event_id].keys():
+#                 print(fp[event_id][station].shape)
+#                 raise
 
-        event = fp_in[event_id]
+# %%
+# hdf5 = "gs://quakeflow_ncedc/ncedc_event_dataset_polarity.h5"
+hdf5 = "ncedc_event_dataset_polarity.h5"
+if not Path("event_ids.txt").exists():
+    with fsspec.open(hdf5, "rb") as fs:
+        with h5py.File(fs, "r") as fp:
+            event_ids = list(fp.keys())
 
-        if num % num_per_file == 0:
-            if num > 0:
-                fp_out.close()
-            fp_out = h5py.File(f"QuakeFlow_NC/data/ncedc_event_dataset_{num//num_per_file:03d}.h5", "w")
-            print(f"Writing to {fp_out.filename}")
-        
-        for station_id, station in event.items():
+# %%
+with open("event_ids.txt", "w") as f:
+    f.write("\n".join(event_ids))
 
-            waveform = station[()].T
-            waveform = waveform.astype(np.float32)
+# %%
+def save_by_year(year, hdf5):
+    year1, year2 = year
+    if (year2 - year1) == 1:
+        name = f"NC{year1}.h5"
+    else:
+        name = f"NC{year1}-{year2-1}.h5"
+    with fsspec.open(hdf5, "rb") as fs:
+        with h5py.File(fs, "r") as fp:
+            with h5py.File(result_path/name, "w") as fout:
+                select_events = 0
+                # for event_id in fp.keys():
+                for event_id in event_ids:
+                    # print(event_id)
+                    y = int(fp[event_id].attrs["event_time"][:4])
+                    if y >= year1 and y < year2:
+                        fp.copy(fp[event_id], fout, name=event_id)
+                        select_events += 1
+                print(f"{name}, select_events: {select_events}")
 
-            if event_id not in fp_out:
-                group_ = fp_out.create_group(event_id)
-                for key, value in event.attrs.items():
-                    group_.attrs[key] = value
-            if station_id not in fp_out[event_id]:
-                dataset_ = fp_out[event_id].create_dataset(station_id, data=waveform)
-                for key, value in station.attrs.items():
-                    dataset_.attrs[key] = value
-            else:
-                print("Duplicate station", event_id, station_id)
 
-        num += 1
+# %%
+if __name__ == "__main__":
 
-        # if num >= 2000:
-        #     break
+    # %%
+    with open("event_ids.txt") as f:
+        event_ids = f.read().splitlines()
 
-    fp_out.close()
-print(f"Total number of samples: {num}")
+    years = [[1970, 1990], [1990, 1995], [1995, 2000], [2000, 2005], [2005, 2010], ] + [[x, x+1] for x in range(2010, 2023)]
+    print(years)
+    num_cpu = len(years)
+    with mp.Pool(num_cpu) as pool:
+        pool.starmap(save_by_year, [(year, hdf5) for year in years])
 # %%
