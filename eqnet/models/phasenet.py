@@ -1,5 +1,3 @@
-from collections import OrderedDict
-from functools import partial
 from typing import Any, Dict, List, Optional
 
 import torch
@@ -9,20 +7,25 @@ from torch.nn import functional as F
 from .resnet1d import BasicBlock, Bottleneck, ResNet
 from .unet import UNet
 
-default_cfgs = {
+default_cfg = {
     "backbone": "unet",
     "head": "unet",
     "preprocess": {
-        "local_norm": {
+        "moving_norm": {
             "flag": True,
             "window": 1024,
             "stride": 128,
         },
+        "padding": {
+            "flag": True,
+            "nt": 1024,
+            "nx": 1,
+        },
     },
-    "backbone_cfgs": {
+    "backbone_cfg": {
         "in_channels": 3,
     },
-    "head_cfgs": {
+    "head_cfg": {
         "output_channels": 3,
     },
 }
@@ -46,8 +49,7 @@ class FCNHead(nn.Module):
         # super(FCNHead, self).__init__(*layers)
 
     def forward(self, features, targets=None):
-
-        x = features["out"]
+        x = features["phase"]
         bt, st, ch, nt = x.shape  # batch, station, channel, time
         x = x.view(bt * st, ch, nt)
 
@@ -91,8 +93,7 @@ class DeepLabHead(nn.Module):
         )
 
     def forward(self, features, targets=None, mask=None):
-
-        x = features["out"]
+        x = features["phase"]
         bt, st, ch, nt = x.shape  # batch, station, channel, time
         x = x.view(bt * st, ch, nt)
 
@@ -187,7 +188,7 @@ class ASPP(nn.Module):
 
 class UNetHead(nn.Module):
     def __init__(
-        self, in_channels: int, out_channels: int, kernel_size=(7, 1), padding=(3, 0), feature_names: str = "out"
+        self, in_channels: int, out_channels: int, kernel_size=(7, 1), padding=(3, 0), feature_names: str = "phase"
     ) -> None:
         super().__init__()
         self.out_channels = out_channels
@@ -197,7 +198,6 @@ class UNetHead(nn.Module):
         )
 
     def forward(self, features, targets=None, mask=None):
-
         x = features[self.feature_names]
         x = self.layers(x)
 
@@ -207,7 +207,6 @@ class UNetHead(nn.Module):
         return x, None
 
     def losses(self, inputs, targets, mask=None):
-
         inputs = inputs.float()
 
         if self.out_channels == 1:
@@ -240,7 +239,7 @@ class PhaseNet(nn.Module):
             raise ValueError("backbone only supports resnet18, resnet50, or unet")
 
         if backbone == "unet":
-            self.phase_picker = UNetHead(16, 3, feature_names="out")
+            self.phase_picker = UNetHead(16, 3, feature_names="phase")
             self.event_detector = UNetHead(32, 1, feature_names="event")
             if self.add_polarity:
                 self.polarity_picker = UNetHead(16, 1, feature_names="polarity")
@@ -260,8 +259,7 @@ class PhaseNet(nn.Module):
         return next(self.parameters()).device
 
     def forward(self, batched_inputs: Tensor) -> Dict[str, Tensor]:
-
-        waveform = batched_inputs["waveform"].to(self.device)
+        data = batched_inputs["data"].to(self.device)
 
         if self.training:
             phase_pick = batched_inputs["phase_pick"].to(self.device)
@@ -281,9 +279,9 @@ class PhaseNet(nn.Module):
 
         if self.backbone_name == "swin2":
             station_location = batched_inputs["station_location"].to(self.device)
-            features = self.backbone(waveform, station_location)
+            features = self.backbone(data, station_location)
         else:
-            features = self.backbone(waveform)
+            features = self.backbone(data)
         # features: (batch, station, channel, time)
 
         output_phase, loss_phase = self.phase_picker(features, phase_pick)
@@ -293,7 +291,7 @@ class PhaseNet(nn.Module):
         else:
             output_polarity, loss_polarity = None, 0.0
 
-        # print(f"{waveform.shape = }")
+        # print(f"{data.shape = }")
         # print(f"{phase_pick.shape = }")
         # print(f"{event_center.shape = }")
         # print(f"{output_phase.shape = }")
@@ -315,15 +313,8 @@ class PhaseNet(nn.Module):
 
 
 def phasenet(
-    backbone="resnet50",
-    add_polarity=True,
-    add_event=True,
-    event_loss_weight=1.0,
-    polarity_loss_weight=1.0,
-    *args,
-    **kargs
+    backbone="unet", add_polarity=True, add_event=True, event_loss_weight=1.0, polarity_loss_weight=1.0, *args, **kwargs
 ) -> PhaseNet:
-
     return PhaseNet(
         backbone=backbone,
         add_event=add_event,

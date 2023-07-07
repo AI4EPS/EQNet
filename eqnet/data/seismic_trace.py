@@ -11,7 +11,9 @@ import torch
 from torch.utils.data import Dataset, IterableDataset
 import logging
 from collections import defaultdict
+from datetime import timedelta, datetime
 from scipy import signal
+import fsspec
 
 # import warnings
 # warnings.filterwarnings("error")
@@ -281,6 +283,9 @@ class SeismicTraceIterableDataset(IterableDataset):
         highpass_filter=False,
         rank=0,
         world_size=1,
+        cut_patch=False,
+        nt=1024*4,
+        nx=1024,
     ):
         super().__init__()
         self.rank = rank
@@ -328,6 +333,11 @@ class SeismicTraceIterableDataset(IterableDataset):
         self.drop_channel = drop_channel
         self.min_snr = min_snr
 
+        ## prediction
+        self.cut_patch = cut_patch
+        self.nt = nt
+        self.nx = nx
+
         if self.training:
             print(f"{self.data_path}: {len(self.data_list)} files")
         else:
@@ -335,6 +345,8 @@ class SeismicTraceIterableDataset(IterableDataset):
                 os.path.join(data_path, f".{format}"),
                 f": {len(self.data_list)} files",
             )
+
+        self._data_len = self._count()
 
     def __iter__(self):
         worker_info = torch.utils.data.get_worker_info()
@@ -350,8 +362,17 @@ class SeismicTraceIterableDataset(IterableDataset):
         else:
             return iter(self.sample(data_list))
 
+    def _count(self):
+        if not self.cut_patch:
+            return len(len(self.data_list))
+        else:
+            with fsspec.open(self.data_list[0], "rb") as fs:
+                with h5py.File(fs, "r") as fp:
+                    nx, nt = fp["data"].shape
+            return len(self.data_list) *  ((nt - 1) // self.nt + 1) * ((nx - 1) // self.nx + 1)
+
     def __len__(self):
-        return len(self.data_list)
+        return self._data_len
 
     def calc_snr(self, waveform, picks, noise_window=300, signal_window=300, gap_window=50):
 
@@ -732,49 +753,69 @@ class SeismicTraceIterableDataset(IterableDataset):
 
     def read_das_hdf5(self, fname):
         meta = {}
-        with h5py.File(fname, "r", libver="latest", swmr=True) as fp:
-            raw_data = fp["data"][()]  # [nt, nx]
-            raw_data = raw_data - np.mean(raw_data, axis=0, keepdims=True)
-            raw_data = raw_data - np.median(raw_data, axis=1, keepdims=True)
-            std = np.std(raw_data, axis=0, keepdims=True)
-            std[std == 0] = 1.0
-            raw_data = raw_data / std
-            attrs = fp["data"].attrs
-            nt, nx = raw_data.shape
-            data = np.zeros([3, nt, nx], dtype=np.float32)
-            data[-1, :, :] = raw_data[:, :]
-            meta["waveform"] = torch.from_numpy(data)
-            if "station_id" in attrs:
-                station_id = attrs["station_name"]
-            else:
-                station_id = [f"{i}" for i in range(nt)]
-            meta["station_id"] = station_id
-            meta["begin_time"] = attrs["begin_time"]
-            meta["dt_s"] = attrs["dt_s"]
+        with fsspec.open(fname, "rb") as fs:
+            try:
+                with h5py.File(fs, "r") as fp:
+                    # raw_data = fp["data"][()]  # [nt, nx]
+                    raw_data = fp["data"][:, :].T # (nx, nt) -> (nt, nx)
+                    raw_data = raw_data - np.mean(raw_data, axis=0, keepdims=True)
+                    raw_data = raw_data - np.median(raw_data, axis=1, keepdims=True)
+                    std = np.std(raw_data, axis=0, keepdims=True)
+                    std[std == 0] = 1.0
+                    raw_data = raw_data / std
+                    attrs = fp["data"].attrs
+                    nt, nx = raw_data.shape
+                    data = np.zeros([3, nt, nx], dtype=np.float32)
+                    data[-1, :, :] = raw_data[:, :]
+                    meta["waveform"] = torch.from_numpy(data)
+                    if "station_id" in attrs:
+                        station_id = attrs["station_name"]
+                    else:
+                        station_id = [f"{i}" for i in range(nx)]
+                    meta["station_id"] = station_id
+                    meta["begin_time"] = attrs["begin_time"]
+                    meta["dt_s"] = attrs["dt_s"]
+            except Exception as e:
+                print(f"Error reading {fname}:\n{e}")
+                return None
         return meta
 
     def sample(self, data_list):
 
-        for f in data_list:
+        for fname in data_list:
             if self.format == "mseed":
                 meta = self.read_mseed(
-                    os.path.join(self.data_path, f),
+                    fname,
                     response_xml=self.response_xml,
                     highpass_filter=self.highpass_filter,
                     sampling_rate=self.sampling_rate,
                 )
             elif (self.format == "h5") and (self.dataset == "seismic_trace"):
-                meta = self.read_hdf5(f)
+                meta = self.read_hdf5(fname)
             elif (self.format == "h5") and (self.dataset == "das"):
-                meta = self.read_das_hdf5(os.path.join(self.data_path, f))
+                meta = self.read_das_hdf5(fname)
             elif (self.format == "segy") or (self.format == "sgy"):
-                meta = self.read_segy(os.path.join(self.data_path, f))
+                meta = self.read_segy(fname)
             else:
                 raise NotImplementedError
             if meta is None:
                 continue
-            meta["file_name"] = f
-            yield meta
+            meta["file_name"] = fname
+
+            if not self.cut_patch:
+                yield meta
+            else:
+                _, nt, nx = meta["waveform"].shape
+                for i in list(range(0, nt, self.nt)):
+                    for j in list(range(0, nx, self.nx)):
+                        yield {
+                            "waveform": meta["waveform"][:, i : i + self.nt, j : j + self.nx],
+                            "station_id": meta["station_id"][j : j + self.nx],
+                            "begin_time": (datetime.fromisoformat(meta["begin_time"]) + timedelta(seconds=i * meta["dt_s"])).isoformat(timespec="milliseconds"),
+                            "begin_time_index": i,
+                            "dt_s": meta["dt_s"],
+                            "file_name": meta["file_name"] + f"_{i:04d}_{j:04d}",
+                        }
 
 
 if __name__ == "__main__":

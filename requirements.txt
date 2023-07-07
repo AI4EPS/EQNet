@@ -6,3 +6,5 @@ h5py
 matplotlib
 pandas
 tqdm
+fsspec
+obspy
