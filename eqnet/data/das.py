@@ -261,15 +261,6 @@ def pad_noise(noise: torch.Tensor, nt: int = 1024 * 3, nx: int = 1024 * 5):
     return noise
 
 
-def flip_lr(data, targets=None):
-    data = data.flip(-1)
-    if targets is not None:
-        targets = targets.flip(-1)
-        return data, targets
-    else:
-        return data
-
-
 def calc_snr(data: torch.Tensor, picks: list, noise_window: int = 200, signal_window: int = 200):
     SNR = []
     S = []
@@ -291,14 +282,23 @@ def stack_noise(data, noise, snr):
     return data + noise * max(0, snr - 2) * torch.rand(1)
 
 
-def masking(data, target, nt=256, nx=256):
-    """masking edges to prevent edge effects"""
+def flip_lr(data, targets=None):
+    data = data.flip(-1)
+    if targets is not None:
+        targets = targets.flip(-1)
+        return data, targets
+    else:
+        return data
 
+
+def masking(data, target, nt=256, nx=256):
     nc0, nt0, nx0 = data.shape
     nt_ = random.randint(32, nt)
     nt0_ = random.randint(0, nt0 - nt_)
-    data_ = torch.clone(data)
-    target_ = torch.clone(target)
+    # data_ = torch.clone(data)
+    # target_ = torch.clone(target)
+    data_ = data
+    target_ = target
 
     data_[:, nt0_ : nt0_ + nt_, :] = 0.0
     target_[0, nt0_ : nt0_ + nt_, :] = 1.0
@@ -310,6 +310,23 @@ def masking(data, target, nt=256, nx=256):
         data_[:, :, nx0_ : nx0_ + nx_] = 0.0
         target_[0, :, nx0_ : nx0_ + nx_] = 1.0
         target_[1:, :, nx0_ : nx0_ + nx_] = 0.0
+
+    return data_, target_
+
+
+def masking_edge(data, target, nt=512, nx=512):
+    """masking edges to prevent edge effects"""
+
+    crop_nt = random.randint(1, nt)
+    crop_nx = random.randint(1, nx)
+
+    # data_ = torch.clone(data)
+    # target_ = torch.clone(target)
+    data_ = data
+    target_ = target
+
+    data_[-crop_nt:, -crop_nx:] = 0.0
+    target_[-crop_nt:, -crop_nx:] = 0.0
 
     return data_, target_
 
@@ -709,12 +726,16 @@ class DASIterableDataset(IterableDataset):
                     if self.masking and (np.random.rand() < 0.3):
                         data_, targets_ = masking(data_, targets_)
 
+                    ## prevent edge effect on the right and bottom
+                    if np.random.rand() < 0.05:
+                        data_, targets_ = masking_edge(data_, targets_)
+
                     # data_ = normalize(data_)
                     # data_ = data_ - torch.median(data_, dim=2, keepdims=True)[0]
 
                     yield {
                         "data": torch.nan_to_num(data_),
-                        "targets": targets_,
+                        "phase_pick": targets_,
                         "file_name": os.path.splitext(label_file.split("/")[-1])[0] + f"_{ii:02d}",
                         "height": data_.shape[-2],
                         "width": data_.shape[-1],

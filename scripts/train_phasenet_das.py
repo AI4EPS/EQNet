@@ -20,5 +20,5 @@ elif num_gpu == 1:
 else:
     cmd = f"torchrun --standalone --nproc_per_node={num_gpu} {args}"
 print(cmd)
-# os.system(cmd)
+os.system(cmd)
 # %%

@@ -202,9 +202,11 @@ class UNetHead(nn.Module):
         x = self.layers(x)
 
         if self.training:
-            return None, self.losses(x, targets, mask)
-
-        return x, None
+            return x, self.losses(x, targets)
+        else:
+            if targets is not None:  ## for validation, but breaks for torch.compile
+                return x, self.losses(x, targets)
+            return x, None
 
     def losses(self, inputs, targets, mask=None):
         inputs = inputs.float()
@@ -297,22 +299,18 @@ class PhaseNet(nn.Module):
         # print(f"{output_phase.shape = }")
         # print(f"{output_event.shape = }")
 
-        if self.training:
-            return {
-                "loss": loss_phase + loss_event * self.event_loss_weight + loss_polarity * self.polarity_loss_weight,
-                "loss_phase": loss_phase,
-                "loss_event": loss_event,
-                "loss_polarity": loss_polarity,
-            }
-        else:
-            return {
-                "phase": output_phase,
-                "event": output_event,
-                "polarity": output_polarity,
-            }
+        return {
+            "loss": loss_phase + loss_event * self.event_loss_weight + loss_polarity * self.polarity_loss_weight,
+            "loss_phase": loss_phase,
+            "loss_event": loss_event,
+            "loss_polarity": loss_polarity,
+            "phase": output_phase,
+            "event": output_event,
+            "polarity": output_polarity,
+        }
 
 
-def phasenet(
+def build_model(
     backbone="unet", add_polarity=True, add_event=True, event_loss_weight=1.0, polarity_loss_weight=1.0, *args, **kwargs
 ) -> PhaseNet:
     return PhaseNet(

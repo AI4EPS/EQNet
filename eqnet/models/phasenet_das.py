@@ -1,27 +1,32 @@
-from collections import OrderedDict
-from functools import partial
+from typing import Dict, Optional
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch import Tensor
 from torch.nn.modules.loss import _WeightedLoss
-from .unet import UNet
-from ._utils import _SimpleSegmentationModel
 
-default_cfgs = {
+from .unet import UNet
+
+default_cfg = {
     "backbone": "unet",
     "head": "unet",
-    "preprocess": {
-        "local_norm": {
+    "transform_cfg": {
+        "moving_norm": {
             "flag": True,
             "window": 2048,
             "stride": 256,
         },
+        "padding": {
+            "flag": True,
+            "nt": 1024,
+            "nx": 1024,
+        },
     },
-    "backbone_cfgs": {
-        "in_channels": 3,
+    "backbone_cfg": {
+        "in_channels": 1,
     },
-    "head_cfgs": {
+    "head_cfg": {
         "output_channels": 3,
     },
 }
@@ -33,7 +38,6 @@ class WeightedLoss(_WeightedLoss):
         self.weight = weight
 
     def forward(self, input, target):
-
         log_pred = nn.functional.log_softmax(input, 1)
 
         if self.weight is not None:
@@ -49,7 +53,7 @@ class UNetHead(nn.Module):
         out_channels: int = 3,
         kernel_size=(7, 7),
         padding=(3, 3),
-        feature_names: str = "out",
+        feature_names: str = "phase",
         reg: float = 0.1,
     ):
         super().__init__()
@@ -76,14 +80,14 @@ class UNetHead(nn.Module):
     def forward(self, features, targets=None):
         x = features[self.feature_names]
         x = self.layers(x)
-
         if self.training:
-            return None, self.losses(x, targets)
-
-        return x, None
+            return x, self.losses(x, targets)
+        else:
+            if targets is not None:  ## for validation, but breaks for torch.compile
+                return x, self.losses(x, targets)
+            return x, None
 
     def losses(self, inputs, targets):
-
         inputs = inputs.float()  # https://github.com/pytorch/pytorch/issues/48163
         # loss = F.cross_entropy(
         #     inputs, targets, reduction="mean", ignore_index=self.ignore_value
@@ -99,12 +103,31 @@ class UNetHead(nn.Module):
         return loss
 
 
-class PhaseNetDAS(_SimpleSegmentationModel):
-    pass
+class PhaseNetDAS(nn.Module):
+    def __init__(self, backbone: nn.Module, classifier: nn.Module) -> None:
+        super().__init__()
+        self.backbone = backbone
+        self.classifier = classifier
+
+    @property
+    def device(self):
+        return next(self.parameters()).device
+
+    def forward(self, batched_inputs: Dict[str, Tensor]) -> Dict[str, Tensor]:
+        data = batched_inputs["data"].to(self.device, non_blocking=True)
+        if self.training:
+            phase_pick = batched_inputs["phase_pick"].to(self.device, non_blocking=True)
+        else:
+            if "phase_pick" in batched_inputs:  ## for validation, but breaks for torch.compile
+                phase_pick = batched_inputs["phase_pick"].to(self.device, non_blocking=True)
+            else:
+                phase_pick = None
+        features = self.backbone(data)
+        phase, loss = self.classifier(features, phase_pick)
+        return {"phase": phase, "loss": loss}
 
 
-def phasenet_das(in_channels=1, out_channels=3, reg=0.0, *args, **kwargs) -> PhaseNetDAS:
-
+def build_model(in_channels=1, out_channels=3, reg=0.0, *args, **kwargs) -> PhaseNetDAS:
     backbone = UNet(
         in_channels=in_channels,
         out_channels=out_channels,
@@ -113,8 +136,7 @@ def phasenet_das(in_channels=1, out_channels=3, reg=0.0, *args, **kwargs) -> Pha
         kernel_size=(7, 7),
         stride=(4, 4),
         padding=(3, 3),
-        pad_input=(1024, 1024),
-        local_norm=(2048, 256),
+        moving_norm=(2048, 256),
     )
 
     classifier = UNetHead(in_channels=16, out_channels=out_channels, kernel_size=(7, 7), padding=(3, 3), reg=reg)

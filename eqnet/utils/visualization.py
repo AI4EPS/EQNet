@@ -65,7 +65,7 @@ def visualize_das_train(meta, preds, epoch, figure_dir="figures", dt=0.01, dx=10
     meta_data = meta["data"].cpu()
     raw_data = meta_data.clone().permute(0, 2, 3, 1).numpy()
     # data = normalize_local(meta_data.clone()).permute(0, 2, 3, 1).numpy()
-    targets = meta["targets"].permute(0, 2, 3, 1).numpy()
+    targets = meta["phase_pick"].permute(0, 2, 3, 1).numpy()
     y = preds.permute(0, 2, 3, 1).numpy()
 
     if targets.shape[-1] < 3:
