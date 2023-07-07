@@ -9,6 +9,9 @@ import numpy as np
 from tqdm.auto import tqdm
 import random
 
+np.random.seed(42)
+random.seed(42)
+
 # %%
 protocol = "gs://"
 bucket = "quakeflow_das"
@@ -19,6 +22,8 @@ figure_path.mkdir(exist_ok=True)
 plot_figure = False
 label_path = Path("results/training")
 label_path.mkdir(exist_ok=True)
+fs = fsspec.filesystem(protocol.replace("://", ""))
+folders = ["mammoth_north", "mammoth_south", "ridgecrest_north", "ridgecrest_south"]
 
 
 # %%
@@ -34,8 +39,6 @@ def filter_noise(data_list, gamma_list):
 
 
 # %%
-fs = fsspec.filesystem(protocol.replace("://", ""))
-folders = ["mammoth_north", "mammoth_south", "ridgecrest_north", "ridgecrest_south"]
 for folder in folders:
     if not (label_path / folder / "labels").exists():
         (label_path / folder / "labels").mkdir(parents=True)
@@ -104,9 +107,9 @@ noise = []
 for folder in folders:
     labels += list((label_path / folder / "labels").glob("*.csv"))
     with open(label_path / f"{folder}" / "data.txt", "r") as f:
-        data += f.readlines()
+        data += f.read().splitlines()
     with open(label_path / f"{folder}" / "noise.txt", "r") as f:
-        noise += f.readlines()
+        noise += f.read().splitlines()
 
 labels_train = sorted(random.sample(labels, int(len(labels) * 0.8)))
 labels_test = sorted(list(set(labels) - set(labels_train)))
@@ -117,8 +120,10 @@ with open(label_path / "labels_train.txt", "w") as f:
 with open(label_path / "labels_test.txt", "w") as f:
     f.write("\n".join([str(file) for file in labels_test]))
 with open(label_path / "noise_train.txt", "w") as f:
-    f.write("".join([str(file) for file in noise_train]))
+    f.write("\n".join([str(file) for file in noise_train]))
 with open(label_path / "noise_test.txt", "w") as f:
-    f.write("".join([str(file) for file in noise_test]))
+    f.write("\n".join([str(file) for file in noise_test]))
 with open(label_path / "data.txt", "w") as f:
-    f.write("".join(data))
+    f.write("\n".join(data))
+
+# %%

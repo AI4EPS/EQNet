@@ -107,7 +107,7 @@ def cut_reorder_keys(example, num_stations_list=[5, 10, 20]):
     else:
         group_id = num_stations_list[num_stations_list<=num_stations][-1]
         cut = np.random.permutation(num_stations)[:group_id]
-        example["waveform"] = example["waveform"][cut,:,:].permute(1,2,0).contiguous()
+        example["data"] = example["data"][cut,:,:].permute(1,2,0).contiguous()
         example["phase_pick"] = example["phase_pick"][cut,:,:].permute(1,2,0).contiguous()
         example["event_center"] = example["event_center"][cut,:].permute(1,0).contiguous()
         example["event_location"] = example["event_location"][cut,:,:].permute(1,2,0).contiguous()

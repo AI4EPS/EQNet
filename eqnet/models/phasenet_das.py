@@ -1,5 +1,3 @@
-from collections import OrderedDict
-from functools import partial
 from typing import Dict, Optional
 
 import torch
@@ -10,20 +8,25 @@ from torch.nn.modules.loss import _WeightedLoss
 
 from .unet import UNet
 
-default_cfgs = {
+default_cfg = {
     "backbone": "unet",
     "head": "unet",
-    "preprocess": {
-        "local_norm": {
+    "transform_cfg": {
+        "moving_norm": {
             "flag": True,
             "window": 2048,
             "stride": 256,
         },
+        "padding": {
+            "flag": True,
+            "nt": 1024,
+            "nx": 1024,
+        },
     },
-    "backbone_cfgs": {
-        "in_channels": 3,
+    "backbone_cfg": {
+        "in_channels": 1,
     },
-    "head_cfgs": {
+    "head_cfg": {
         "output_channels": 3,
     },
 }
@@ -50,7 +53,7 @@ class UNetHead(nn.Module):
         out_channels: int = 3,
         kernel_size=(7, 7),
         padding=(3, 3),
-        feature_names: str = "out",
+        feature_names: str = "phase",
         reg: float = 0.1,
     ):
         super().__init__()
@@ -77,11 +80,12 @@ class UNetHead(nn.Module):
     def forward(self, features, targets=None):
         x = features[self.feature_names]
         x = self.layers(x)
-
         if self.training:
-            return None, self.losses(x, targets)
-
-        return x, None
+            return x, self.losses(x, targets)
+        else:
+            if targets is not None:  ## for validation, but breaks for torch.compile
+                return x, self.losses(x, targets)
+            return x, None
 
     def losses(self, inputs, targets):
         inputs = inputs.float()  # https://github.com/pytorch/pytorch/issues/48163
@@ -109,23 +113,21 @@ class PhaseNetDAS(nn.Module):
     def device(self):
         return next(self.parameters()).device
 
-    def forward(self, batched_inputs: Tensor) -> Dict[str, Tensor]:
-        waveform = batched_inputs["data"].to(self.device)
+    def forward(self, batched_inputs: Dict[str, Tensor]) -> Dict[str, Tensor]:
+        data = batched_inputs["data"].to(self.device, non_blocking=True)
         if self.training:
-            targets = batched_inputs["targets"].to(self.device)
+            phase_pick = batched_inputs["phase_pick"].to(self.device, non_blocking=True)
         else:
-            targets = None
-
-        features = self.backbone(waveform)
-        phase, loss = self.classifier(features, targets)
-
-        if self.training:
-            return {"loss": loss}
-        else:
-            return {"phase": phase}
+            if "phase_pick" in batched_inputs:  ## for validation, but breaks for torch.compile
+                phase_pick = batched_inputs["phase_pick"].to(self.device, non_blocking=True)
+            else:
+                phase_pick = None
+        features = self.backbone(data)
+        phase, loss = self.classifier(features, phase_pick)
+        return {"phase": phase, "loss": loss}
 
 
-def phasenet_das(in_channels=1, out_channels=3, reg=0.0, *args, **kwargs) -> PhaseNetDAS:
+def build_model(in_channels=1, out_channels=3, reg=0.0, *args, **kwargs) -> PhaseNetDAS:
     backbone = UNet(
         in_channels=in_channels,
         out_channels=out_channels,
@@ -134,8 +136,7 @@ def phasenet_das(in_channels=1, out_channels=3, reg=0.0, *args, **kwargs) -> Pha
         kernel_size=(7, 7),
         stride=(4, 4),
         padding=(3, 3),
-        pad_input=(1024, 1024),
-        local_norm=(2048, 256),  # (nt, nx)
+        moving_norm=(2048, 256),
     )
 
     classifier = UNetHead(in_channels=16, out_channels=out_channels, kernel_size=(7, 7), padding=(3, 3), reg=reg)

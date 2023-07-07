@@ -261,15 +261,6 @@ def pad_noise(noise: torch.Tensor, nt: int = 1024 * 3, nx: int = 1024 * 5):
     return noise
 
 
-def flip_lr(data, targets=None):
-    data = data.flip(-1)
-    if targets is not None:
-        targets = targets.flip(-1)
-        return data, targets
-    else:
-        return data
-
-
 def calc_snr(data: torch.Tensor, picks: list, noise_window: int = 200, signal_window: int = 200):
     SNR = []
     S = []
@@ -291,23 +282,51 @@ def stack_noise(data, noise, snr):
     return data + noise * max(0, snr - 2) * torch.rand(1)
 
 
-def masking(data, target, nt=256, nx=256):
-    """masking edges to prevent edge effects"""
+def flip_lr(data, targets=None):
+    data = data.flip(-1)
+    if targets is not None:
+        targets = targets.flip(-1)
+        return data, targets
+    else:
+        return data
 
-    nch0, nt0, nx0 = data.shape
+
+def masking(data, target, nt=256, nx=256):
+    nc0, nt0, nx0 = data.shape
     nt_ = random.randint(32, nt)
-    nx_ = random.randint(32, nx)
     nt0_ = random.randint(0, nt0 - nt_)
-    nx0_ = random.randint(0, nx0 - nx_)
-    data_ = torch.clone(data)
-    target_ = torch.clone(target)
+    # data_ = torch.clone(data)
+    # target_ = torch.clone(target)
+    data_ = data
+    target_ = target
 
     data_[:, nt0_ : nt0_ + nt_, :] = 0.0
     target_[0, nt0_ : nt0_ + nt_, :] = 1.0
     target_[1:, nt0_ : nt0_ + nt_, :] = 0.0
-    data_[:, :, nx0_ : nx0_ + nx_] = 0.0
-    target_[0, :, nx0_ : nx0_ + nx_] = 1.0
-    target_[1:, :, nx0_ : nx0_ + nx_] = 0.0
+
+    if random.random() > 0.5:
+        nx_ = random.randint(32, nx)
+        nx0_ = random.randint(0, nx0 - nx_)
+        data_[:, :, nx0_ : nx0_ + nx_] = 0.0
+        target_[0, :, nx0_ : nx0_ + nx_] = 1.0
+        target_[1:, :, nx0_ : nx0_ + nx_] = 0.0
+
+    return data_, target_
+
+
+def masking_edge(data, target, nt=512, nx=512):
+    """masking edges to prevent edge effects"""
+
+    crop_nt = random.randint(1, nt)
+    crop_nx = random.randint(1, nx)
+
+    # data_ = torch.clone(data)
+    # target_ = torch.clone(target)
+    data_ = data
+    target_ = target
+
+    data_[-crop_nt:, -crop_nx:] = 0.0
+    target_[-crop_nt:, -crop_nx:] = 0.0
 
     return data_, target_
 
@@ -376,18 +395,6 @@ def filter_labels(label_list):
             label_selected.append(label)
     print(f"{len(label_selected) = }")
     return label_selected
-
-
-# def load_segy(infile, nTrace=1250):
-#     filesize = os.path.getsize(infile)
-#     nSample = int(((filesize - 3600) / nTrace - 240) / 4)
-#     data = np.zeros((nTrace, nSample), dtype=np.float32)
-#     fid = open(infile, "rb")
-#     fid.seek(3600)
-#     for i in range(nTrace):
-#         fid.seek(240, 1)
-#         data[i, :] = np.fromfile(fid, dtype=np.float32, count=nSample)
-#     return data
 
 
 def read_PASSCAL_segy(fid, nTraces=1250, nSample=900000, TraceOff=0, strain_rate=True):
@@ -642,16 +649,20 @@ class DASIterableDataset(IterableDataset):
                 noise = None
                 if self.stack_noise and (self.noise_list is not None):
                     tmp = self.noise_list[np.random.randint(0, len(self.noise_list))]
-                    with fsspec.open(tmp, "rb") as f:
-                        with h5py.File(f, "r") as fp:
-                            noise = fp["data"][:, :].T
-                        ## The first 30s are noise in the training data
-                        noise = np.roll(noise, max(0, self.nt - 3000), axis=0)  # nt, nx
-                        noise = noise[np.newaxis, : self.nt, :]  # nchn, nt, nx
-                        noise = noise / np.std(noise)
-                        noise = torch.from_numpy(noise.astype(np.float32))
+                    try:
+                        with fsspec.open(tmp, "rb") as f:
+                            with h5py.File(f, "r") as fp:
+                                noise = fp["data"][:, :].T
+                            ## The first 30s are noise in the training data
+                            noise = np.roll(noise, max(0, self.nt - 3000), axis=0)  # nt, nx
+                            noise = noise[np.newaxis, : self.nt, :]  # nchn, nt, nx
+                            noise = noise / np.std(noise)
+                            noise = torch.from_numpy(noise.astype(np.float32))
 
-                    noise = noise - torch.mean(noise, dim=1, keepdim=True)
+                        noise = noise - torch.mean(noise, dim=1, keepdim=True)
+                    except:
+                        print(f"Error reading noise file {tmp}")
+                        noise = torch.zeros([1, self.nt, self.nx], dtype=torch.float32)
 
                 ## snr
                 if "P" in meta:
@@ -715,12 +726,16 @@ class DASIterableDataset(IterableDataset):
                     if self.masking and (np.random.rand() < 0.3):
                         data_, targets_ = masking(data_, targets_)
 
+                    ## prevent edge effect on the right and bottom
+                    if np.random.rand() < 0.05:
+                        data_, targets_ = masking_edge(data_, targets_)
+
                     # data_ = normalize(data_)
                     # data_ = data_ - torch.median(data_, dim=2, keepdims=True)[0]
 
                     yield {
                         "data": torch.nan_to_num(data_),
-                        "targets": targets_,
+                        "phase_pick": targets_,
                         "file_name": os.path.splitext(label_file.split("/")[-1])[0] + f"_{ii:02d}",
                         "height": data_.shape[-2],
                         "width": data_.shape[-1],

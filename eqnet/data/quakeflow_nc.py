@@ -108,7 +108,7 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
         if self.config.name=="NCEDC":
             features=datasets.Features(
                 {
-                    "waveform": datasets.Array3D(shape=(3, self.nt, self.num_stations), dtype='float32'),
+                    "data": datasets.Array3D(shape=(3, self.nt, self.num_stations), dtype='float32'),
                     "phase_pick": datasets.Array3D(shape=(3, self.nt, self.num_stations), dtype='float32'),
                     "event_center" : datasets.Array2D(shape=(self.feature_nt, self.num_stations), dtype='float32'),
                     "event_location": datasets.Array3D(shape=(4, self.feature_nt, self.num_stations), dtype='float32'),
@@ -119,7 +119,7 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
         elif self.config.name=="NCEDC_full_size":
             features=datasets.Features(
                 {
-                    "waveform": datasets.Array3D(shape=(None, 3, self.nt), dtype='float32'),
+                    "data": datasets.Array3D(shape=(None, 3, self.nt), dtype='float32'),
                     "phase_pick": datasets.Array3D(shape=(None, 3, self.nt), dtype='float32'),
                     "event_center" : datasets.Array2D(shape=(None, self.feature_nt), dtype='float32'),
                     "event_location": datasets.Array3D(shape=(None, 4, self.feature_nt), dtype='float32'),
@@ -279,7 +279,7 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                     
                     if self.config.name=="NCEDC":
                         yield {
-                            "waveform": torch.from_numpy(waveforms).float(),
+                            "data": torch.from_numpy(waveforms).float(),
                             "phase_pick": torch.from_numpy(phase_pick).float(),
                             "event_center": torch.from_numpy(event_center[::self.feature_scale]).float(),
                             "event_location": torch.from_numpy(event_location[:, ::self.feature_scale]).float(),
@@ -289,7 +289,7 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                     elif self.config.name=="NCEDC_full_size":
                         
                         yield event_id, {
-                            "waveform": torch.from_numpy(waveforms).float().permute(2,0,1),
+                            "data": torch.from_numpy(waveforms).float().permute(2,0,1),
                             "phase_pick": torch.from_numpy(phase_pick).float().permute(2,0,1),
                             "event_center": torch.from_numpy(event_center[:: self.feature_scale]).float().permute(1,0),
                             "event_location": torch.from_numpy(event_location[:, ::self.feature_scale]).float().permute(2,0,1),
