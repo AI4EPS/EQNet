@@ -10,7 +10,9 @@ import torch.nn as nn
 import torch.functional as F
 from torch.utils.data import Dataset, DataLoader, Sampler, BatchSampler
 
-from ...eqnet.utils.station_sampler import StationSampler, cut_reorder_keys, create_groups
+import sys
+sys.path.append("../")
+from eqnet.utils.station_sampler import StationSampler, cut_reorder_keys, create_groups
 
 time1 = time.time()
 quakeflow_v2 = datasets.load_dataset("../eqnet/data/quakeflow_nc.py", split="train", name="NCEDC_full_size")
