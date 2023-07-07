@@ -8,11 +8,11 @@ from contextlib import nullcontext
 import matplotlib
 import numpy as np
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.data
 import wandb
 import datasets
-from torch import nn
 
 import eqnet
 import utils
@@ -24,7 +24,7 @@ from eqnet.data import (
     SeismicNetworkIterableDataset,
     SeismicTraceIterableDataset,
 )
-from eqnet.models.unet import normalize_local
+from eqnet.models.unet import moving_normalization
 
 matplotlib.use("agg")
 logger = logging.getLogger("EQNet")
@@ -35,31 +35,22 @@ def evaluate(model, data_loader, scaler, args, device, epoch=0, total_sample=1):
     metric_logger = utils.MetricLogger(delimiter="  ")
     header = f"Test: "
 
-    if args.model == "phasenet_das":
-        data_key = "data"
-        phase_targets_key = "targets"
-    elif args.model == "eqnet":
-        data_key = "waveform"
-        phase_targets_key = "phase_pick"
-    
     num_processed_samples = 0
     with torch.inference_mode():
         for meta in metric_logger.log_every(data_loader, args.print_freq, header):
             output = model(meta)
-            preds = output["phase"]
-            #TODO: key "data" "targets" is not continuous, should we modify the dataset file or the train file?
-            targets = meta[phase_targets_key].to(preds.device)
-            loss = torch.sum(-targets * F.log_softmax(preds, dim=1), dim=1).mean()
-            batch_size = meta[data_key].shape[0]
+            loss = output["loss"]
+            batch_size = meta["data"].shape[0]
             metric_logger.meters["loss"].update(loss.item(), n=batch_size)
             num_processed_samples += batch_size
-            del output, preds, targets
             if num_processed_samples > total_sample:
                 break
 
-    plot_results(meta, model, args, epoch, "test_")
+    plot_results(meta, model, output, device, args, epoch, "test_")
+    del meta, output, loss
+
     metric_logger.synchronize_between_processes()
-    print(f"Test loss = {metric_logger.loss.global_avg:.3f}")
+    print(f"Test loss = {metric_logger.loss.global_avg:.3e}")
     if args.wandb and utils.is_main_process():
         wandb.log({"test/test_loss": metric_logger.loss.global_avg, "test/epoch": epoch})
 
@@ -91,16 +82,6 @@ def train_one_epoch(
     model.train()
     num_processed_samples = 0
     for i, meta in enumerate(metric_logger.log_every(data_loader, args.print_freq, header)):
-        start_time = time.time()
-        if args.random_crop:
-            crop_nt = random.randint(1, args.crop_nt)
-            crop_nx = random.randint(1, args.crop_nx)
-            data = meta["data"]
-            target = meta["targets"]
-            meta["data"] = data[:, :, :-crop_nt, :-crop_nx]
-            meta["targets"] = target[:, :, :-crop_nt, :-crop_nx]
-            del data, target
-
         with ctx:
             output = model(meta)
 
@@ -131,7 +112,7 @@ def train_one_epoch(
             break
         # break
 
-        metric_logger.update(lr=optimizer.param_groups[0]["lr"], **output)
+        metric_logger.update(lr=optimizer.param_groups[0]["lr"], loss=loss.item())
 
         if args.wandb and utils.is_main_process():
             wandb.log(
@@ -144,18 +125,18 @@ def train_one_epoch(
             )
 
     model.eval()
-    plot_results(meta, model, args, epoch, "train_")
+    plot_results(meta, model, output, device, args, epoch, "train_")
+    del meta, output, loss
 
 
-def plot_results(meta, model, args, epoch, prefix=""):
+def plot_results(meta, model, output, device, args, epoch, prefix=""):
     with torch.inference_mode():
         if args.model == "phasenet":
-            output = model(meta)
-            phase = torch.softmax(output["phase"], dim=1).cpu()
-            event = torch.sigmoid(output["event"]).cpu()
-            polarity = torch.sigmoid(output["polarity"]).cpu()
-            meta["waveform_raw"] = meta["waveform"].clone()
-            meta["waveform"] = normalize_local(meta["waveform"])
+            phase = torch.softmax(output["phase"], dim=1).cpu().floa()
+            event = torch.sigmoid(output["event"]).cpu().floa()
+            polarity = torch.sigmoid(output["polarity"]).cpu().floa()
+            # meta["raw"] = meta["data"].clone()
+            meta["data"] = moving_normalization(meta["data"])
             print("Plotting...")
             eqnet.utils.visualize_phasenet_train(meta, phase, event, polarity, epoch=epoch, figure_dir=args.figure_dir)
             del output, phase, event, polarity
@@ -164,23 +145,22 @@ def plot_results(meta, model, args, epoch, prefix=""):
             pass
 
         elif args.model == "phasenet_das":
-            output = model(meta)
-            phase = torch.softmax(output["phase"], dim=1).cpu()
-            meta["data"] = normalize_local(meta["data"], filter=2048, stride=256)
+            phase = torch.softmax(output["phase"], dim=1).cpu().float()
+            meta["data"] = moving_normalization(meta["data"], filter=2048, stride=256)
             print("Plotting...")
             eqnet.utils.visualize_das_train(meta, phase, epoch=epoch, figure_dir=args.figure_dir, prefix=prefix)
             del output, phase
 
         elif args.model == "autoencoder":
-            preds = model(meta).cpu()
+            preds = model(meta)
             print("Plotting...")
             eqnet.utils.visualize_autoencoder_das_train(meta, preds, epoch=epoch, figure_dir=args.figure_dir)
             del preds
 
         elif args.model == "eqnet":
             output = model(meta)
-            phase = F.softmax(output["phase"], dim=1).cpu()
-            event = torch.sigmoid(output["event"]).cpu()
+            phase = F.softmax(output["phase"], dim=1).cpu().float()
+            event = torch.sigmoid(output["event"]).cpu().float()
             print("Plotting...")
             eqnet.utils.visualize_eqnet_train(meta, phase, event, epoch=epoch, figure_dir=args.figure_dir)
             del output, phase, event
@@ -265,8 +245,8 @@ def main(args):
             nx=args.nx,
             format="h5",
             training=True,
-            stack_event=False,
             stack_noise=False,
+            stack_event=False,
             resample_space=False,
             resample_time=False,
             masking=False,
@@ -353,7 +333,7 @@ def main(args):
             drop_last=False,
         )
 
-    model = eqnet.models.__dict__[args.model](
+    model = eqnet.models.__dict__[args.model].build_model(
         backbone=args.backbone,
         in_channels=1,
         out_channels=(len(args.phases) + 1),
@@ -367,6 +347,9 @@ def main(args):
     print("Model:\n{}".format(model))
 
     model.to(device)
+    if args.compile:
+        print("compiling the model...")
+        model = torch.compile(model)  # requires PyTorch 2.0
 
     if args.distributed and args.sync_bn:
         model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
@@ -444,10 +427,6 @@ def main(args):
         )
     else:
         lr_scheduler = main_lr_scheduler
-
-    if args.compile:
-        print("compiling the model...")
-        model = torch.compile(model)  # requires PyTorch 2.0
 
     model_without_ddp = model
     if args.distributed:
