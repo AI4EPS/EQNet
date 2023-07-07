@@ -35,15 +35,22 @@ def evaluate(model, data_loader, scaler, args, device, epoch=0, total_sample=1):
     metric_logger = utils.MetricLogger(delimiter="  ")
     header = f"Test: "
 
+    if args.model == "phasenet_das":
+        data_key = "data"
+        phase_targets_key = "targets"
+    elif args.model == "eqnet":
+        data_key = "waveform"
+        phase_targets_key = "phase_pick"
+    
     num_processed_samples = 0
     with torch.inference_mode():
         for meta in metric_logger.log_every(data_loader, args.print_freq, header):
             output = model(meta)
             preds = output["phase"]
-            #TODO: label "data" "targets" is not continuous, should we modify the dataset file or the train file?
-            targets = meta["targets"].to(preds.device)
+            #TODO: key "data" "targets" is not continuous, should we modify the dataset file or the train file?
+            targets = meta[phase_targets_key].to(preds.device)
             loss = torch.sum(-targets * F.log_softmax(preds, dim=1), dim=1).mean()
-            batch_size = meta["data"].shape[0]
+            batch_size = meta[data_key].shape[0]
             metric_logger.meters["loss"].update(loss.item(), n=batch_size)
             num_processed_samples += batch_size
             del output, preds, targets
@@ -287,7 +294,9 @@ def main(args):
                 dataset = datasets.load_dataset("AI4EPS/quakeflow_nc", split="train", name="NCEDC_full_size")
             
             dataset = dataset.with_format("torch")
-            dataset, dataset_test = dataset.train_test_split(test_size=0.2, shuffle=False)
+            dataset_dict = dataset.train_test_split(test_size=0.2, shuffle=False)
+            dataset = dataset_dict["train"]
+            dataset_test = dataset_dict["test"]
             
             if args.distributed:
                 train_sampler = torch.utils.data.distributed.DistributedSampler(dataset)
