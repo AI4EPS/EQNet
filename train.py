@@ -132,9 +132,9 @@ def train_one_epoch(
 def plot_results(meta, model, output, device, args, epoch, prefix=""):
     with torch.inference_mode():
         if args.model == "phasenet":
-            phase = torch.softmax(output["phase"], dim=1).cpu().floa()
-            event = torch.sigmoid(output["event"]).cpu().floa()
-            polarity = torch.sigmoid(output["polarity"]).cpu().floa()
+            phase = torch.softmax(output["phase"], dim=1).cpu().float()
+            event = torch.sigmoid(output["event"]).cpu().float()
+            polarity = torch.sigmoid(output["polarity"]).cpu().float()
             # meta["raw"] = meta["data"].clone()
             meta["data"] = moving_normalization(meta["data"])
             print("Plotting...")
@@ -272,12 +272,12 @@ def main(args):
                 dataset = datasets.load_dataset(script_dir, split="train", name="NCEDC_full_size")
             except:
                 dataset = datasets.load_dataset("AI4EPS/quakeflow_nc", split="train", name="NCEDC_full_size")
-            
+
             dataset = dataset.with_format("torch")
             dataset_dict = dataset.train_test_split(test_size=0.2, shuffle=False)
             dataset = dataset_dict["train"]
             dataset_test = dataset_dict["test"]
-            
+
             if args.distributed:
                 train_sampler = torch.utils.data.distributed.DistributedSampler(dataset)
                 test_sampler = torch.utils.data.distributed.DistributedSampler(dataset_test, shuffle=False)
@@ -288,7 +288,7 @@ def main(args):
             group_ids = create_groups(dataset, args.num_stations_list)
             dataset = dataset.map(lambda x: cut_reorder_keys(x, num_stations_list=args.num_stations_list))
             train_batch_sampler = StationSampler(train_sampler, group_ids, args.batch_size, args.num_stations_list)
-        
+
         else:
             dataset = SeismicNetworkIterableDataset(args.dataset)
             train_sampler = None
@@ -296,14 +296,14 @@ def main(args):
             dataset_test = dataset
     else:
         raise ("Unknown model")
-    
+
     if args.huggingface_dataset:
         data_loader = torch.utils.data.DataLoader(
             dataset,
             batch_sampler=train_batch_sampler,
             num_workers=args.workers,
         )
-        
+
         data_loader_test = torch.utils.data.DataLoader(
             dataset_test,
             batch_size=1,
@@ -312,7 +312,7 @@ def main(args):
             collate_fn=None,
             drop_last=False,
         )
-    else:    
+    else:
         data_loader = torch.utils.data.DataLoader(
             dataset,
             batch_size=args.batch_size,
@@ -455,11 +455,8 @@ def main(args):
     # logging
     if args.wandb and utils.is_main_process():
         wandb.init(
-            project=args.wandb_project, 
-            name=args.wandb_name, 
-            entity=args.wandb_group,
-            dir=args.wandb_dir,
-            config=args)
+            project=args.wandb_project, name=args.wandb_name, entity=args.wandb_group, dir=args.wandb_dir, config=args
+        )
         if args.wandb_watch:
             wandb.watch(model, log="all", log_freq=args.print_freq)
 
@@ -711,8 +708,9 @@ def get_args_parser(add_help=True):
 
     # huggingface dataset
     parser.add_argument("--huggingface-dataset", action="store_true", help="use huggingface dataset")
-    
-    parser.add_argument("--num-stations-list", default=[5, 10, 20], type=int, nargs="+", help="possible stations number of the dataset")
+    parser.add_argument(
+        "--num-stations-list", default=[5, 10, 20], type=int, nargs="+", help="possible stations number of the dataset"
+    )
 
     return parser
 
