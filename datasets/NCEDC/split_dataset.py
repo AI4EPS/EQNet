@@ -13,7 +13,7 @@ import fsspec
 from pathlib import Path
 
 # %%
-result_path = Path("data")
+result_path = Path("/home/weiqiang/data/quakeflow_nc/data")
 if not result_path.exists():
     result_path.mkdir()
 
@@ -33,15 +33,17 @@ if not result_path.exists():
 
 # %%
 # hdf5 = "gs://quakeflow_ncedc/ncedc_event_dataset_polarity.h5"
-hdf5 = "ncedc_event_dataset_polarity.h5"
+# hdf5 = "ncedc_event_dataset_polarity.h5"
+hdf5 = "/home/weiqiang/data/waveform.h5"
 if not Path("event_ids.txt").exists():
     with fsspec.open(hdf5, "rb") as fs:
         with h5py.File(fs, "r") as fp:
             event_ids = list(fp.keys())
 
-# %%
-with open("event_ids.txt", "w") as f:
-    f.write("\n".join(event_ids))
+    # %%
+    with open("event_ids.txt", "w") as f:
+        f.write("\n".join(event_ids))
+
 
 # %%
 def save_by_year(year, hdf5):
@@ -52,7 +54,7 @@ def save_by_year(year, hdf5):
         name = f"NC{year1}-{year2-1}.h5"
     with fsspec.open(hdf5, "rb") as fs:
         with h5py.File(fs, "r") as fp:
-            with h5py.File(result_path/name, "w") as fout:
+            with h5py.File(result_path / name, "w") as fout:
                 select_events = 0
                 # for event_id in fp.keys():
                 for event_id in event_ids:
@@ -66,12 +68,17 @@ def save_by_year(year, hdf5):
 
 # %%
 if __name__ == "__main__":
-
     # %%
     with open("event_ids.txt") as f:
         event_ids = f.read().splitlines()
 
-    years = [[1970, 1990], [1990, 1995], [1995, 2000], [2000, 2005], [2005, 2010], ] + [[x, x+1] for x in range(2010, 2023)]
+    years = [
+        [1970, 1990],
+        [1990, 1995],
+        [1995, 2000],
+        [2000, 2005],
+        [2005, 2010],
+    ] + [[x, x + 1] for x in range(2010, 2023)]
     print(years)
     num_cpu = len(years)
     with mp.Pool(num_cpu) as pool:
