@@ -12,7 +12,7 @@ def log_transform(x):
     return x
 
 
-def moving_normalization(data, filter=1024, stride=128):
+def moving_normalize(data, filter=1024, stride=128):
     nb, nch, nt, nx = data.shape
 
     # if nt % stride == 0:
@@ -240,7 +240,7 @@ class UNet(nn.Module):
 
     def forward(self, x):
         bt, ch, nt, nx = x.shape  # batch, channel, time, station
-        x = moving_normalization(x, filter=self.moving_norm[0], stride=self.moving_norm[1])
+        x = moving_normalize(x, filter=self.moving_norm[0], stride=self.moving_norm[1])
 
         #         if self.use_stft:
         #             sgram = torch.squeeze(x, 3)  # bt, ch, nt, 1

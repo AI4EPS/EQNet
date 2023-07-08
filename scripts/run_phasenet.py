@@ -27,7 +27,7 @@ for folder in folders:
     # %%
     num_gpu = torch.cuda.device_count()
     if num_gpu == 0:
-        cmd = f"python ../predict.py --model phasenet --add_polarity --add_event --format h5 --data_list {result_path/'h5_list.txt'} --batch_size 1 --result_path {result_path} --dataset=das  --cut_patch --nx=1024"
+        cmd = f"python ../predict.py --model phasenet --add_polarity --add_event --format h5 --data_list {result_path/'h5_list.txt'} --batch_size 1 --result_path {result_path} --device=cpu --dataset=das  --cut_patch --nx=1024"
     else:
         cmd = f"torchrun --standalone --nproc_per_node {num_gpu}   ../predict.py --model phasenet --add_polarity --add_event --format h5 --data_list {result_path/'h5_list.txt'} --batch_size 1 --result_path {result_path} --dataset=das  --cut_patch --nx=1024"
     print(cmd)

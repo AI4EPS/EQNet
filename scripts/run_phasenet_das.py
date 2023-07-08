@@ -27,13 +27,13 @@ for folder in folders:
     # %%
     num_gpu = torch.cuda.device_count()
     if num_gpu == 0:
-        cmd = f"python ../predict.py --model phasenet_das --format h5 --data_list {result_path/'h5_list.txt'} --batch_size 1 --result_path {result_path} --dataset=das"
+        cmd = f"python ../predict.py --model phasenet_das --format h5 --data_list {result_path/'h5_list.txt'} --batch_size 1 --result_path {result_path} --dataset=das --device=cpu"
     else:
         cmd = f"torchrun --standalone --nproc_per_node {num_gpu}   ../predict.py --model phasenet_das --format h5 --data_list {result_path/'h5_list.txt'} --batch_size 1 --result_path {result_path} --dataset=das"
     print(cmd)
-    # os.system(cmd)
+    os.system(cmd)
 
     # %%
     cmd = f"gsutil -m cp -r {result_path}/picks_phasenet_das {protocol}{bucket}/{folder}/phasenet_das/picks"
     print(cmd)
-    # os.system(cmd)
+    os.system(cmd)
