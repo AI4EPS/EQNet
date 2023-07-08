@@ -15,17 +15,17 @@ sys.path.append("../")
 from eqnet.utils.station_sampler import StationSampler, cut_reorder_keys, create_groups
 
 time1 = time.time()
-quakeflow_v2 = datasets.load_dataset("../eqnet/data/quakeflow_nc.py", split="train", name="NCEDC_full_size")
-quakeflow_v2 = quakeflow_v2.with_format("torch")
+quakeflow_nc = datasets.load_dataset("../eqnet/data/quakeflow_nc.py", split="test", name="event_test")
+quakeflow_nc = quakeflow_nc.with_format("torch")
 time2 = time.time()
 print("Time to load dataset: ", time2-time1)
-group_ids = create_groups(quakeflow_v2, num_stations_list=[5,10,20])
-quakeflow_v2 = quakeflow_v2.map(lambda x: cut_reorder_keys(x, num_stations_list=[5,10,20]))
+group_ids = create_groups(quakeflow_nc, num_stations_list=[5,10,20])
+quakeflow_nc = quakeflow_nc.map(lambda x: cut_reorder_keys(x, num_stations_list=[5,10,20]))
 
-train_sampler = torch.utils.data.SequentialSampler(quakeflow_v2)
+train_sampler = torch.utils.data.SequentialSampler(quakeflow_nc)
 train_batch_sampler = StationSampler(train_sampler, group_ids, 16, drop_last=True)
 data_loader_stations = DataLoader(
-    quakeflow_v2,
+    quakeflow_nc,
     batch_sampler=train_batch_sampler,
     num_workers=4,
 )
