@@ -24,7 +24,7 @@ from eqnet.data import (
     SeismicNetworkIterableDataset,
     SeismicTraceIterableDataset,
 )
-from eqnet.models.unet import moving_normalization
+from eqnet.models.unet import moving_normalize
 
 matplotlib.use("agg")
 logger = logging.getLogger("EQNet")
@@ -136,7 +136,7 @@ def plot_results(meta, model, output, device, args, epoch, prefix=""):
             event = torch.sigmoid(output["event"]).cpu().float()
             polarity = torch.sigmoid(output["polarity"]).cpu().float()
             # meta["raw"] = meta["data"].clone()
-            meta["data"] = moving_normalization(meta["data"])
+            meta["data"] = moving_normalize(meta["data"])
             print("Plotting...")
             eqnet.utils.visualize_phasenet_train(meta, phase, event, polarity, epoch=epoch, figure_dir=args.figure_dir)
             del output, phase, event, polarity
@@ -146,7 +146,7 @@ def plot_results(meta, model, output, device, args, epoch, prefix=""):
 
         elif args.model == "phasenet_das":
             phase = torch.softmax(output["phase"], dim=1).cpu().float()
-            meta["data"] = moving_normalization(meta["data"], filter=2048, stride=256)
+            meta["data"] = moving_normalize(meta["data"], filter=2048, stride=256)
             print("Plotting...")
             eqnet.utils.visualize_das_train(meta, phase, epoch=epoch, figure_dir=args.figure_dir, prefix=prefix)
             del output, phase

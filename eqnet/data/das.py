@@ -314,7 +314,7 @@ def masking(data, target, nt=256, nx=256):
     return data_, target_
 
 
-def masking_edge(data, target, nt=1024, nx=1024):
+def masking_edge(data, target, nt=0, nx=1024):
     """masking edges to prevent edge effects"""
 
     crop_nt = random.randint(1, nt)
@@ -460,7 +460,13 @@ def add_moveout(data, targets=None, vmin=2.0, vmax=6.0, dt=0.01, dx=0.01, shift_
         return data
 
 
-######################## not used anymore ########################
+def padding(data, min_nt=1024, min_nx=1):
+    nch, nt, nx = data.shape
+    pad_nt = (min_nt - nt % min_nt) % min_nt
+    pad_nx = (min_nx - nx % min_nx) % min_nx
+    with torch.no_grad():
+        data = F.pad(data, (0, pad_nx, 0, pad_nt), mode="constant")
+    return data
 
 
 class DASIterableDataset(IterableDataset):
@@ -473,10 +479,12 @@ class DASIterableDataset(IterableDataset):
         suffix="",
         nt=1024 * 3,
         nx=1024 * 5,
+        min_nt=1024,
+        min_nx=1024,
         ## training
         training=False,
         phases=["P", "S"],
-        label_path=None,
+        label_path="./",
         label_list=None,
         noise_list=None,
         stack_noise=False,
@@ -531,6 +539,10 @@ class DASIterableDataset(IterableDataset):
         self.dx = kwargs["dx"] if "dx" in kwargs else 10.0  # m
         self.nt = nt
         self.nx = nx
+        self.min_nt = min_nt
+        self.min_nx = min_nx
+        assert self.nt % self.min_nt == 0
+        assert self.nx % self.min_nx == 0
 
         ## training and data augmentation
         self.training = training
@@ -590,14 +602,16 @@ class DASIterableDataset(IterableDataset):
             return len(self.data_list)
         else:
             if self.format == "h5":
-                meta = h5py.File(self.fs.open(self.data_list[0]), "r")
-                if self.system == "optasense":
-                    nx, nt = meta["Data"].shape
-                else:
-                    nt, nx = meta["data"].shape
+                with fsspec.open(self.data_list[0], "rb") as fs:
+                    with h5py.File(fs, "r") as meta:
+                        if self.system == "optasense":
+                            nx, nt = meta["Data"].shape
+                        else:
+                            nt, nx = meta["data"].shape
             elif self.format == "segy":
                 print("Start reading segy file")
-                nx, nt = read_PASSCAL_segy(self.fs.open(self.data_list[0])).shape
+                with fsspec.open(self.data_list[0], "rb") as fs:
+                    nx, nt = read_PASSCAL_segy(fs).shape
                 print("End reading segy file")
             else:
                 raise ValueError("Unknown dataset")
@@ -731,7 +745,7 @@ class DASIterableDataset(IterableDataset):
                         data_, targets_ = masking(data_, targets_)
 
                     ## prevent edge effect on the right and bottom
-                    if np.random.rand() < 0.05:
+                    if np.random.rand() < 0.2:
                         data_, targets_ = masking_edge(data_, targets_)
 
                     # data_ = normalize(data_)
@@ -747,111 +761,77 @@ class DASIterableDataset(IterableDataset):
 
     def sample(self, file_list):
         for file in file_list:
-            if not self.fs.exists(file):
-                print(f"{file} does not exist.")
-                continue
-
             sample = {}
 
             if self.format == "npz":
-                meta = np.load(os.path.join(self.data_path, file))
-                data = meta["data"][np.newaxis, :, :]
-                data = torch.from_numpy(data.astype(np.float32))
+                data = np.load(file)["data"]
 
             elif self.format == "npy":
-                data = np.load(os.path.join(self.data_path, file))  # (nx, nt)
-                data = data.T[np.newaxis, :, :]  # (nch, nt, nx)
-                data = torch.from_numpy(data.astype(np.float32))
+                data = np.load(file)  # (nx, nt)
                 sample["begin_time"] = datetime.fromisoformat("1970-01-01 00:00:00")
                 sample["dt_s"] = 0.01
                 sample["dx_m"] = 10.0
 
             elif self.format == "h5" and (self.system is None):
-                with h5py.File(self.fs.open(file), "r") as fp:
-                    # data = fp["data"][:].T  # nt x nx
-                    data = fp["data"][:]  # nt x nx
-                    if self.highpass_filter > 0.0:
-                        b, a = scipy.signal.butter(2, self.highpass_filter, "hp", fs=100)
-                        data = scipy.signal.filtfilt(b, a, data, axis=0)
-                    if "begin_time" in fp["data"].attrs:
-                        sample["begin_time"] = datetime.fromisoformat(fp["data"].attrs["begin_time"].rstrip("Z"))
-                    if "dt_s" in fp["data"].attrs:
-                        sample["dt_s"] = fp["data"].attrs["dt_s"]
-                        # if self.dt / sample["dt_s"] >= 2:
-                        #     downsample_ratio = int(self.dt / sample["dt_s"])
-                        #     sample["dt_s"] *= downsample_ratio
-                        #     data = data[::downsample_ratio, :]
-                    else:
-                        sample["dt_s"] = self.dt
-                    if "dx_m" in fp["data"].attrs:
-                        sample["dx_m"] = fp["data"].attrs["dx_m"]
-                        # if self.dx / sample["dx_m"] >= 2:
-                        #     downsample_ratio = int(self.dx / sample["dx_m"])
-                        #     sample["dx_m"] *= downsample_ratio
-                        #     data = data[:, ::downsample_ratio]
-                    else:
-                        sample["dx_m"] = self.dx
-
-                    data = data[np.newaxis, :, :]
-
-                    ## debug converted phase
-                    # N = data[:, 0:3000, :]
-                    # S = data[:, 3000:6000, :]
-                    # data = S / np.std(S) + N / np.std(N) * 0
-
-                    ## debug resampling
-                    # t = np.linspace(0, 1, data.shape[1])
-                    # f = interp1d(t, data, axis=1)
-                    # t_interp = np.linspace(0, 1, data.shape[1]*3)
-                    # data = f(t_interp)
-
-                    data = torch.from_numpy(data.astype(np.float32))
-
+                with fsspec.open(file, "rb") as fs:
+                    with h5py.File(fs, "r") as fp:
+                        dataset = fp["data"]  # nt x nx
+                        data = dataset[()]
+                        if "begin_time" in dataset.attrs:
+                            sample["begin_time"] = datetime.fromisoformat(dataset.attrs["begin_time"].rstrip("Z"))
+                        if "dt_s" in dataset.attrs:
+                            sample["dt_s"] = dataset.attrs["dt_s"]
+                        else:
+                            sample["dt_s"] = self.dt
+                        if "dx_m" in dataset.attrs:
+                            sample["dx_m"] = dataset.attrs["dx_m"]
+                        else:
+                            sample["dx_m"] = self.dx
             elif (self.format == "h5") and (self.system == "optasense"):
-                with h5py.File(self.fs.open(file), "r") as fp:
-                    dataset = fp["Data"]
-                    if "startTime" in dataset.attrs:
-                        sample["begin_time"] = datetime.fromisoformat(dataset.attrs["startTime"].rstrip("Z"))
-                    if "dt" in dataset.attrs:
-                        sample["dt_s"] = dataset.attrs["dt"]
-                    if "dCh" in dataset.attrs:
-                        sample["dx_m"] = dataset.attrs["dCh"]
-                    if "nt" in dataset.attrs:
-                        sample["nt"] = dataset.attrs["nt"]
-                    if "nCh" in dataset.attrs:
-                        sample["nx"] = dataset.attrs["nCh"]
-                    data = dataset[:].T
-                    data = np.gradient(data, axis=0)
-
-                if self.highpass_filter > 0.0:
-                    b, a = scipy.signal.butter(2, self.highpass_filter, "hp", fs=100)
-                    data = scipy.signal.filtfilt(b, a, data, axis=0)
-                data = data[np.newaxis, :, :]  # nchn, nt, nx
-                # data = torch.from_numpy(data.astype(np.float32))
-                # data = torch.diff(data, n=1, dim=1)
-
-                data = torch.from_numpy(data.astype(np.float32))
+                with fsspsec.open(file, "rb") as fs:
+                    with h5py.File(fs, "r") as fp:
+                        dataset = fp["Data"]
+                        data = dataset[()]
+                        if "startTime" in dataset.attrs:
+                            sample["begin_time"] = datetime.fromisoformat(dataset.attrs["startTime"].rstrip("Z"))
+                        if "dt" in dataset.attrs:
+                            sample["dt_s"] = dataset.attrs["dt"]
+                        if "dCh" in dataset.attrs:
+                            sample["dx_m"] = dataset.attrs["dCh"]
+                        if "nt" in dataset.attrs:
+                            sample["nt"] = dataset.attrs["nt"]
+                        if "nCh" in dataset.attrs:
+                            sample["nx"] = dataset.attrs["nCh"]
 
             elif self.format == "segy":
                 meta = {}
-                # data = self.load_segy(os.path.join(self.data_path, file), nTrace=self.nTrace)
-                data = read_PASSCAL_segy(self.fs.open(file, "rb"))
-                data = data.T
-                data = data[np.newaxis, :, :]  # nchn, nt, nx
-                data = torch.from_numpy(data)
-                ## hard code for Ridgecrest DAS
+                with fsspec.open(file, "rb") as fs:
+                    data = read_PASSCAL_segy(fs)
+
+                ## FIXME: hard code for Ridgecrest DAS
                 sample["begin_time"] = datetime.strptime(file.split("/")[-1].rstrip(".segy"), "%Y%m%d%H")
                 sample["dt_s"] = 1.0 / 250.0
                 sample["dx_m"] = 8.0
             else:
                 raise (f"Unsupported format: {self.format}")
 
-            data = data - torch.mean(data, dim=1, keepdim=True)
-            data = data - torch.median(data, dim=2, keepdims=True)[0]
+            data = data - np.mean(data, axis=-1, keepdims=True)  # (nx, nt)
+            data = data - np.median(data, axis=-2, keepdims=True)
+            if self.highpass_filter > 0.0:
+                b, a = scipy.signal.butter(2, self.highpass_filter, "hp", fs=100)
+                data = scipy.signal.filtfilt(b, a, data, axis=-1)  # (nt, nx)
+
+            data = data.T  # (nx, nt) -> (nt, nx)
+            data = data[np.newaxis, :, :]  # (nchn, nt, nx)
+            data = torch.from_numpy(data.astype(np.float32))
 
             if not self.cut_patch:
+                nt, nx = data.shape[1:]
+                data = padding(data, self.min_nt, self.min_nx)
                 yield {
                     "data": data,
+                    "nt": nt,
+                    "nx": nx,
                     "file_name": os.path.splitext(file.split("/")[-1])[0],
                     "begin_time": sample["begin_time"].isoformat(timespec="milliseconds"),
                     "begin_time_index": 0,
@@ -863,8 +843,13 @@ class DASIterableDataset(IterableDataset):
                 _, nt, nx = data.shape
                 for i in list(range(0, nt, self.nt)):
                     for j in list(range(0, nx, self.nx)):
+                        data_path = data[:, i : i + self.nt, j : j + self.nx]
+                        nt, nx = data_path.shape[1:]
+                        data_path = padding(data_path, self.min_nt, self.min_nx)
                         yield {
-                            "data": data[:, i : i + self.nt, j : j + self.nx],
+                            "data": data_path,
+                            "nt": nt,
+                            "nx": nx,
                             "file_name": os.path.splitext(file.split("/")[-1])[0] + f"_{i:04d}_{j:04d}",
                             "begin_time": (sample["begin_time"] + timedelta(seconds=i * sample["dt_s"])).isoformat(
                                 timespec="milliseconds"

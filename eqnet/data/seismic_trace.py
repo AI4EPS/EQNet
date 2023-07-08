@@ -41,7 +41,6 @@ def generate_label(
     mask_width=None,
     return_mask=True,
 ):
-
     target = np.zeros([len(phase_list) + 1, nt], dtype=np.float32)
     mask = np.zeros([nt], dtype=np.float32)
 
@@ -51,7 +50,7 @@ def generate_label(
         mask_width = [int(x * 1.5) for x in label_width]
     else:
         width = mask_width
-        mask_width =  [min(int(x * 1.5), width) for x in label_width]
+        mask_width = [min(int(x * 1.5), width) for x in label_width]
 
     for i, (picks, w, m) in enumerate(zip(phase_list, label_width, mask_width)):
         for phase_time in picks:
@@ -74,7 +73,6 @@ def stack_event(
     meta2,
     max_shift=1024 * 4,
 ):
-
     waveform1 = meta1["waveform"].copy()
     waveform2 = meta2["waveform"].copy()
     phase_pick1 = meta1["phase_pick"].copy()
@@ -118,7 +116,6 @@ def stack_event(
     for i in range(random.randint(1, 10)):
         tries = 0
         while tries < max_tries:
-
             min_ratio2 = np.log10(amp_noise1 * 2 / amp_signal2)
             max_ratio2 = np.log10(amp_signal1 / 2 / amp_noise2)
             if min_ratio2 > max_ratio2:
@@ -188,7 +185,6 @@ def stack_event(
 
 
 def cut_data(meta, nt=1024 * 4, min_point=200):
-
     nch0, nt0, nx0 = meta["waveform"].shape  # [3, nt, nsta]
 
     tries = 0
@@ -233,7 +229,6 @@ def flip_polarity(meta):
 
 
 def drop_channel(meta):
-
     nch, nt, nx = meta["waveform"].shape
     drop_EH = False
     random_i = random.random()
@@ -253,7 +248,6 @@ def drop_channel(meta):
 
 
 class SeismicTraceIterableDataset(IterableDataset):
-
     degree2km = 111.32
     nt = 4096  ## 8992
     feature_scale = 16
@@ -284,7 +278,7 @@ class SeismicTraceIterableDataset(IterableDataset):
         rank=0,
         world_size=1,
         cut_patch=False,
-        nt=1024*4,
+        nt=1024 * 4,
         nx=1024,
     ):
         super().__init__()
@@ -369,13 +363,12 @@ class SeismicTraceIterableDataset(IterableDataset):
             with fsspec.open(self.data_list[0], "rb") as fs:
                 with h5py.File(fs, "r") as fp:
                     nx, nt = fp["data"].shape
-            return len(self.data_list) *  ((nt - 1) // self.nt + 1) * ((nx - 1) // self.nx + 1)
+            return len(self.data_list) * ((nt - 1) // self.nt + 1) * ((nx - 1) // self.nx + 1)
 
     def __len__(self):
         return self._data_len
 
     def calc_snr(self, waveform, picks, noise_window=300, signal_window=300, gap_window=50):
-
         noises = []
         signals = []
         snr = []
@@ -423,7 +416,6 @@ class SeismicTraceIterableDataset(IterableDataset):
     #     return data_, picks_, noise_
 
     def _read_training_h5(self, trace_id):
-
         if self.hdf5_fp is None:
             hdf5_fp = h5py.File(os.path.join(self.data_path, trace_id), "r")
             event_id = "data"
@@ -469,10 +461,16 @@ class SeismicTraceIterableDataset(IterableDataset):
         up = attrs["phase_index"][attrs["phase_polarity"] == "U"]
         dn = attrs["phase_index"][attrs["phase_polarity"] == "D"]
         ## assuming having both P and S picks
-        mask_width = (attrs["phase_index"][attrs["phase_type"] == "S"] - attrs["phase_index"][attrs["phase_type"] == "P"])//2
+        mask_width = (
+            attrs["phase_index"][attrs["phase_type"] == "S"] - attrs["phase_index"][attrs["phase_type"] == "P"]
+        ) // 2
         mask_width = int(min(mask_width))
-        phase_up, mask_up = generate_label([up], nt=nt, label_width=self.polarity_width, mask_width=mask_width, return_mask=True)
-        phase_dn, mask_dn = generate_label([dn], nt=nt, label_width=self.polarity_width, mask_width=mask_width, return_mask=True)
+        phase_up, mask_up = generate_label(
+            [up], nt=nt, label_width=self.polarity_width, mask_width=mask_width, return_mask=True
+        )
+        phase_dn, mask_dn = generate_label(
+            [dn], nt=nt, label_width=self.polarity_width, mask_width=mask_width, return_mask=True
+        )
         # phase_up, mask_up = generate_label([up], nt=nt, label_width=self.polarity_width, return_mask=True)
         # phase_dn, mask_dn = generate_label([dn], nt=nt, label_width=self.polarity_width, return_mask=True)
         polarity = ((phase_up[1, :] - phase_dn[1, :]) + 1.0) / 2.0
@@ -544,9 +542,7 @@ class SeismicTraceIterableDataset(IterableDataset):
         }
 
     def sample_train(self, data_list):
-
         while True:
-
             trace_id = np.random.choice(data_list)
             # if True:
             try:
@@ -573,15 +569,15 @@ class SeismicTraceIterableDataset(IterableDataset):
             if self.flip_polarity and (random.random() < 0.5):
                 meta = flip_polarity(meta)
 
-            if np.std(meta["waveform"], axis=(1,2))[-1] == 0:
+            if np.std(meta["waveform"], axis=(1, 2))[-1] == 0:
                 ## polarity is picked by the last channel
                 # print(f"Error reading {trace_id}: zeros in Z channel {np.std(meta['waveform'], axis=(1,2))}")
                 meta["polarity_mask"] = np.zeros_like(meta["polarity_mask"])
-                
+
             if self.drop_channel and (random.random() < 0.1):
                 meta = drop_channel(meta)
-        
-            if (np.std(meta["waveform"], axis=(1,2)) == 0).all():
+
+            if (np.std(meta["waveform"], axis=(1, 2)) == 0).all():
                 # print(f"Error reading {trace_id}: all zeros {np.std(meta['waveform'], axis=(1,2))}")
                 continue
 
@@ -614,7 +610,6 @@ class SeismicTraceIterableDataset(IterableDataset):
         return stream
 
     def read_mseed(self, fname, response_xml=None, highpass_filter=False, sampling_rate=100):
-
         try:
             stream = obspy.read(fname)
             stream = stream.merge(fill_value="latest")
@@ -627,7 +622,6 @@ class SeismicTraceIterableDataset(IterableDataset):
 
         tmp_stream = obspy.Stream()
         for trace in stream:
-
             if len(trace.data) < 10:
                 continue
 
@@ -670,13 +664,12 @@ class SeismicTraceIterableDataset(IterableDataset):
             station_ids[tr.id[:-1]].append(tr.id[-1])
             if tr.id[-1] not in comp:
                 print(f"Unknown component {tr.id[-1]}")
-                
+
         station_keys = sorted(list(station_ids.keys()))
         nx = len(station_ids)
         nt = len(stream[0].data)
         data = np.zeros([3, nt, nx], dtype=np.float32)
         for i, sta in enumerate(station_keys):
-
             for c in station_ids[sta]:
                 j = comp2idx[c]
 
@@ -701,7 +694,6 @@ class SeismicTraceIterableDataset(IterableDataset):
         }
 
     def read_segy(self, fname, highpass_filter=False, sampling_rate=2000, channels=[2, 1, 0]):
-
         try:
             stream = obspy.read(fname, format="SEGY")
         except Exception as e:
@@ -757,7 +749,7 @@ class SeismicTraceIterableDataset(IterableDataset):
             try:
                 with h5py.File(fs, "r") as fp:
                     # raw_data = fp["data"][()]  # [nt, nx]
-                    raw_data = fp["data"][:, :].T # (nx, nt) -> (nt, nx)
+                    raw_data = fp["data"][:, :].T  # (nx, nt) -> (nt, nx)
                     raw_data = raw_data - np.mean(raw_data, axis=0, keepdims=True)
                     raw_data = raw_data - np.median(raw_data, axis=1, keepdims=True)
                     std = np.std(raw_data, axis=0, keepdims=True)
@@ -781,7 +773,6 @@ class SeismicTraceIterableDataset(IterableDataset):
         return meta
 
     def sample(self, data_list):
-
         for fname in data_list:
             if self.format == "mseed":
                 meta = self.read_mseed(
@@ -811,7 +802,9 @@ class SeismicTraceIterableDataset(IterableDataset):
                         yield {
                             "waveform": meta["waveform"][:, i : i + self.nt, j : j + self.nx],
                             "station_id": meta["station_id"][j : j + self.nx],
-                            "begin_time": (datetime.fromisoformat(meta["begin_time"]) + timedelta(seconds=i * meta["dt_s"])).isoformat(timespec="milliseconds"),
+                            "begin_time": (
+                                datetime.fromisoformat(meta["begin_time"]) + timedelta(seconds=i * meta["dt_s"])
+                            ).isoformat(timespec="milliseconds"),
                             "begin_time_index": i,
                             "dt_s": meta["dt_s"],
                             "file_name": meta["file_name"] + f"_{i:04d}_{j:04d}",
@@ -819,7 +812,6 @@ class SeismicTraceIterableDataset(IterableDataset):
 
 
 if __name__ == "__main__":
-
     import matplotlib.pyplot as plt
 
     # dataset = SeismicNetworkIterableDataset("../../datasets/NCEDC/ncedc_seismic_dataset_3.h5")
@@ -828,7 +820,6 @@ if __name__ == "__main__":
         # print(x)
         fig, axes = plt.subplots(1, 5, figsize=(15, 5))
         for i in range(x["waveform"].shape[-1]):
-
             axes[0].plot((x["waveform"][-1, :, i]) / torch.std(x["waveform"][-1, :, i]) / 10 + i)
 
             axes[1].plot(x["phase_pick"][1, :, i] + i)

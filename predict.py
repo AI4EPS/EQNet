@@ -18,7 +18,7 @@ matplotlib.use("agg")
 import eqnet
 import utils
 from eqnet.data import DASIterableDataset, SeismicTraceIterableDataset
-from eqnet.models.unet import normalize_local
+from eqnet.models.unet import moving_normalize
 from eqnet.utils import (
     detect_peaks,
     extract_picks,
@@ -32,6 +32,20 @@ warnings.filterwarnings("ignore", ".*Length of IterableDataset.*")
 logger = logging.getLogger()
 
 
+def postprocess(meta, output):
+    nt, nx = meta["nt"], meta["nx"]
+    data = meta["data"][:, :, :nt, :nx]
+    # data = moving_normalize(data)
+    meta["data"] = data
+    if "phase" in output:
+        output["phase"] = output["phase"][:, :, :nt, :nx]
+    if "polarity" in output:
+        output["polarity"] = output["polarity"][:, :, :nt, :nx]
+    if "event" in output:
+        output["event"] = output["event"][:, :, :nt, :nx]
+    return meta, output
+
+
 def pred_phasenet(args, model, data_loader, pick_path, figure_path, event_path=None):
     model.eval()
     metric_logger = utils.MetricLogger(delimiter="  ")
@@ -41,7 +55,7 @@ def pred_phasenet(args, model, data_loader, pick_path, figure_path, event_path=N
         for meta in metric_logger.log_every(data_loader, 1, header):
             with ctx:
                 output = model(meta)
-
+                meta, output = postprocess(meta, output)
             if "phase" in output:
                 phase_scores = torch.softmax(output["phase"], dim=1)  # [batch, nch, nt, nsta]
                 if ("polarity" in output) and (output["polarity"] is not None):
@@ -103,7 +117,7 @@ def pred_phasenet(args, model, data_loader, pick_path, figure_path, event_path=N
 
             if args.plot_figure:
                 # meta["waveform_raw"] = meta["waveform"].clone()
-                meta["waveform"] = normalize_local(meta["waveform"])
+                # meta["data"] = moving_normalize(meta["data"])
                 plot_phasenet(
                     meta,
                     phase_scores.cpu(),
@@ -139,6 +153,7 @@ def pred_phasenet_das(args, model, data_loader, pick_path, figure_path):
             with ctx:
                 output = model(meta)
 
+            meta, output = postprocess(meta, output)
             scores = torch.softmax(output["phase"], dim=1)  # [batch, nch, nt, nsta]
             topk_scores, topk_inds = detect_peaks(scores, vmin=args.min_prob, kernel=21)
 
@@ -272,7 +287,7 @@ def main(args):
         drop_last=False,
     )
 
-    model = eqnet.models.__dict__[args.model](
+    model = eqnet.models.__dict__[args.model].build_model(
         backbone=args.backbone,
         in_channels=1,
         out_channels=(len(args.phases) + 1),
