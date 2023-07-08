@@ -239,8 +239,6 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
             ]
         else:
             raise ValueError("config.name is not in BUILDER_CONFIGS")
-        
-   
 
     # method parameters are unpacked from `gen_kwargs` as given in `_split_generators`
     def _generate_examples(self, filepath, split):
