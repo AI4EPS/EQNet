@@ -314,7 +314,7 @@ def masking(data, target, nt=256, nx=256):
     return data_, target_
 
 
-def masking_edge(data, target, nt=0, nx=1024):
+def masking_edge(data, target, nt=1024, nx=1024):
     """masking edges to prevent edge effects"""
 
     crop_nt = random.randint(1, nt)
@@ -745,7 +745,7 @@ class DASIterableDataset(IterableDataset):
                         data_, targets_ = masking(data_, targets_)
 
                     ## prevent edge effect on the right and bottom
-                    if np.random.rand() < 0.2:
+                    if np.random.rand() < 0.05:
                         data_, targets_ = masking_edge(data_, targets_)
 
                     # data_ = normalize(data_)

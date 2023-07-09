@@ -1,19 +1,16 @@
 import logging
 import os
 import warnings
+from contextlib import nullcontext
 
 import matplotlib
 import matplotlib.pyplot as plt
 import pandas as pd
-from contextlib import nullcontext
 import torch
-import torch.utils.data
 import torch.multiprocessing as mp
-
-mp.set_start_method("spawn", force=True)
-
-matplotlib.use("agg")
-
+import torch.utils.data
+import wandb
+from glob import glob
 
 import eqnet
 import utils
@@ -27,8 +24,8 @@ from eqnet.utils import (
     plot_phasenet,
 )
 
-warnings.filterwarnings("ignore", ".*Length of IterableDataset.*")
-# logging.basicConfig(level=logging.INFO)
+mp.set_start_method("spawn", force=True)
+matplotlib.use("agg")
 logger = logging.getLogger()
 
 
@@ -316,7 +313,7 @@ def main(args):
             model_url = "https://github.com/AI4EPS/models/releases/download/PhaseNet-Polarity-v3/model_99.pth"
         elif args.model == "phasenet_das":
             if args.location is None:
-                model_url = "https://github.com/AI4EPS/models/releases/download/PhaseNet-DAS-v5/model_29.pth"
+                model_url = "ai4eps/model-registry/PhaseNet-DAS:latest"
             elif args.location == "forge":
                 model_url = (
                     "https://github.com/AI4EPS/models/releases/download/PhaseNet-DAS-ConvertedPhase/model_99.pth"
@@ -325,10 +322,16 @@ def main(args):
                 raise ("Missing pretrained model for this location")
         else:
             raise
-        state_dict = torch.hub.load_state_dict_from_url(
-            model_url, model_dir="./", progress=True, check_hash=True, map_location="cpu"
-        )
-        model_without_ddp.load_state_dict(state_dict["model"], strict=True)
+        # state_dict = torch.hub.load_state_dict_from_url(
+        #     model_url, model_dir="./", progress=True, check_hash=True, map_location="cpu"
+        # )
+        # model_without_ddp.load_state_dict(state_dict["model"], strict=True)
+        run = wandb.init()
+        artifact = run.use_artifact(model_url, type="model")
+        artifact_dir = artifact.download()
+        run.finish()
+        checkpoint = torch.load(glob(os.path.join(artifact_dir, "*.pth"))[0], map_location="cpu")
+        model_without_ddp.load_state_dict(checkpoint["model"], strict=True)
 
     if args.model == "phasenet":
         pred_phasenet(args, model, data_loader, pick_path, figure_path, event_path)
