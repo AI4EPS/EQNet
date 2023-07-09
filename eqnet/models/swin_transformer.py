@@ -1,5 +1,5 @@
 from functools import partial
-from typing import Any, Callable, List, Optional
+from typing import Any, Callable, List, Optional, Dict
 
 import torch
 import torch.nn.functional as F
@@ -9,9 +9,18 @@ from torch.fx import wrap
 
 __all__ = [
     "SwinTransformer",
+    "Swin_T_Weights",
+    "Swin_S_Weights",
+    "Swin_B_Weights",
+    "Swin_V2_T_Weights",
+    "Swin_V2_S_Weights",
+    "Swin_V2_B_Weights",
     "swin_t",
     "swin_s",
     "swin_b",
+    "swin_v2_t",
+    "swin_v2_s",
+    "swin_v2_b",
 ]
 
 ### from ..ops.misc import MLP, Permute
@@ -71,6 +80,7 @@ class Permute(torch.nn.Module):
 
 
 ### from ..ops.stochastic_depth import StochasticDepth
+@torch.fx.wrap
 def stochastic_depth(input: Tensor, p: float, mode: str, training: bool = True) -> Tensor:
     """
     Implements the Stochastic Depth from `"Deep Networks with Stochastic Depth"
@@ -106,9 +116,6 @@ def stochastic_depth(input: Tensor, p: float, mode: str, training: bool = True) 
     return input * noise
 
 
-torch.fx.wrap("stochastic_depth")
-
-
 class StochasticDepth(nn.Module):
     """
     See :func:`stochastic_depth`.
@@ -128,10 +135,18 @@ class StochasticDepth(nn.Module):
 
 ############################################
 
+@torch.fx.wrap
 def _patch_merging_pad(x):
     H, W, _ = x.shape[-3:]
     # x = F.pad(x, (0, 0, 0, W % 2, 0, H % 2))
-    x = F.pad(x, (0, 0, 0, W % 2, 0, 0)) ## for seismic time series
+    #ATTENTION: The pad function pads the last dimension first
+    #so if we only want to deal with the time dimension, we should use pad((0, 0, 0, 0, 0, H % 2))
+    x = F.pad(x, (0, 0, 0, 0, 0, H % 2)) ## for seismic time series
+    ## for seismic time series
+    x0 = x[..., 0::2, :, :]  # ... H/2 W/2 C, H is nt
+    x1 = x[..., 1::2, :, :]  # ... H/2 W/2 C
+    x = torch.cat([x0, x1], -1)  # ... H/2 W/2 2*C 
+    
     return x
 
 
@@ -148,39 +163,22 @@ class PatchMerging(nn.Module):
     def __init__(self, dim: int, norm_layer: Callable[..., nn.Module] = nn.LayerNorm):
         super().__init__()
         self.dim = dim
-        # self.reduction = nn.Linear(4 * dim, 2 * dim, bias=False)
-        # self.norm = norm_layer(4 * dim)
-        
         # self.norm = norm_layer(2 * dim)
 
-    def forward(self, x: Tensor):
+    def forward(self, meta: Dict):
         """
         Args:
             x (Tensor): input tensor with expected layout of [..., H, W, C]
         Returns:
             Tensor with layout of [..., H/2, W/2, 2*C]
         """
+        x, loc = meta["x"], meta["loc"]
         x = _patch_merging_pad(x)
-
-        # x0 = x[..., 0::2, 0::2, :]  # ... H/2 W/2 C
-        # x1 = x[..., 1::2, 0::2, :]  # ... H/2 W/2 C
-        # x2 = x[..., 0::2, 1::2, :]  # ... H/2 W/2 C
-        # x3 = x[..., 1::2, 1::2, :]  # ... H/2 W/2 C
-        # x = torch.cat([x0, x1, x2, x3], -1)  # ... H/2 W/2 4*C
-
         # x = self.norm(x)
-        # x = self.reduction(x)  # ... H/2 W/2 2*C
 
-        ## for seismic time series
-        x0 = x[..., 0::2, :, :]  # ... H/2 W/2 C
-        x1 = x[..., 1::2, :, :]  # ... H/2 W/2 C
-        x = torch.cat([x0, x1], -1)  # ... H/2 W/2 2*C 
+        return {"x": x, "loc": loc}
 
-        # x = self.norm(x)
-        
-        return x
-
-
+@torch.fx.wrap
 def shifted_window_attention(
     input: Tensor,
     qkv_weight: Tensor,
@@ -193,7 +191,9 @@ def shifted_window_attention(
     dropout: float = 0.0,
     qkv_bias: Optional[Tensor] = None,
     proj_bias: Optional[Tensor] = None,
-):
+    logit_scale: Optional[torch.Tensor] = None,
+    training: bool = True,
+) -> Tensor:
     """
     Window based multi-head self attention (W-MSA) module with relative position bias.
     It supports both of shifted and non-shifted window.
@@ -209,10 +209,12 @@ def shifted_window_attention(
         dropout (float): Dropout ratio of output. Default: 0.0.
         qkv_bias (Tensor[out_dim], optional): The bias tensor of query, key, value. Default: None.
         proj_bias (Tensor[out_dim], optional): The bias tensor of projection. Default: None.
+        logit_scale (Tensor[out_dim], optional): Logit scale of cosine attention for Swin Transformer V2. Default: None.
+        training (bool, optional): Training flag used by the dropout parameters. Default: True.
     Returns:
         Tensor[N, H, W, C]: The output tensor after shifted window attention.
     """
-    B, H, W, C = input.shape
+    B, H, W, C = input.shape # batch, nt, nsta, nhead
     # pad feature maps to multiples of window size
     pad_r = (window_size[1] - W % window_size[1]) % window_size[1]
     pad_b = (window_size[0] - H % window_size[0]) % window_size[0]
@@ -236,13 +238,26 @@ def shifted_window_attention(
     x = x.permute(0, 1, 3, 2, 4, 5).reshape(B * num_windows, window_size[0] * window_size[1], C)  # B*nW, Ws*Ws, C
 
     # multi-head attention
+    if logit_scale is not None and qkv_bias is not None:
+        qkv_bias = qkv_bias.clone()
+        length = qkv_bias.numel() // 3
+        qkv_bias[length : 2 * length].zero_()
     qkv = F.linear(x, qkv_weight, qkv_bias)
     qkv = qkv.reshape(x.size(0), x.size(1), 3, num_heads, C // num_heads).permute(2, 0, 3, 1, 4)
     q, k, v = qkv[0], qkv[1], qkv[2]
-    q = q * (C // num_heads) ** -0.5
-    attn = q.matmul(k.transpose(-2, -1))
+    if logit_scale is not None:
+        # cosine attention
+        attn = F.normalize(q, dim=-1) @ F.normalize(k, dim=-1).transpose(-2, -1)
+        logit_scale = torch.clamp(logit_scale, max=np.log(100.0)).exp()
+        attn = attn * logit_scale
+    else:
+        q = q * (C // num_heads) ** -0.5
+        attn = q.matmul(k.transpose(-2, -1))
     # add relative position bias
-    attn = attn + relative_position_bias ## Not using seismic station information
+    # TODO: check whether relative position bias is correctly implemented
+    relative_position_bias_shape = relative_position_bias.shape
+    relative_position_bias = relative_position_bias.unsqueeze(1).repeat(1, num_windows, 1, 1, 1).view(B * num_windows, *relative_position_bias_shape[1:])
+    attn = attn + relative_position_bias
 
     if sum(shift_size) > 0:
         # generate attention mask
@@ -263,11 +278,11 @@ def shifted_window_attention(
         attn = attn.view(-1, num_heads, x.size(1), x.size(1))
 
     attn = F.softmax(attn, dim=-1)
-    attn = F.dropout(attn, p=attention_dropout)
+    attn = F.dropout(attn, p=attention_dropout, training=training)
 
     x = attn.matmul(v).transpose(1, 2).reshape(x.size(0), x.size(1), C)
     x = F.linear(x, proj_weight, proj_bias)
-    x = F.dropout(x, p=dropout)
+    x = F.dropout(x, p=dropout, training=training)
 
     # reverse windows
     x = x.view(B, pad_H // window_size[0], pad_W // window_size[1], window_size[0], window_size[1], C)
@@ -280,9 +295,6 @@ def shifted_window_attention(
     # unpad features
     x = x[:, :H, :W, :].contiguous()
     return x
-
-
-torch.fx.wrap("shifted_window_attention")
 
 
 class ShiftedWindowAttention(nn.Module):
@@ -370,8 +382,96 @@ class ShiftedWindowAttention(nn.Module):
             dropout=self.dropout,
             qkv_bias=self.qkv.bias,
             proj_bias=self.proj.bias,
+            logit_scale=self.logit_scale,
+            training=self.training,
         )
 
+
+class ShiftedWindowAttentionV2(ShiftedWindowAttention):
+    """
+    See :func:`shifted_window_attention_v2`.
+    """
+
+    def __init__(
+        self,
+        dim: int,
+        window_size: List[int],
+        shift_size: List[int],
+        num_heads: int,
+        qkv_bias: bool = True,
+        proj_bias: bool = True,
+        attention_dropout: float = 0.0,
+        dropout: float = 0.0,
+    ):
+        super().__init__(
+            dim,
+            window_size,
+            shift_size,
+            num_heads,
+            qkv_bias=qkv_bias,
+            proj_bias=proj_bias,
+            attention_dropout=attention_dropout,
+            dropout=dropout,
+        )
+
+        self.logit_scale = nn.Parameter(torch.log(10 * torch.ones((num_heads, 1, 1))))
+        # mlp to generate continuous relative position bias
+        self.cpb_mlp = nn.Sequential(
+            nn.Linear(2, 512, bias=True), nn.ReLU(inplace=True), nn.Linear(512, num_heads, bias=False)
+        )
+        if qkv_bias:
+            length = self.qkv.bias.numel() // 3
+            self.qkv.bias[length : 2 * length].data.zero_()
+
+    def define_relative_position_bias_table(self):
+        # get relative_coords_table
+        relative_coords_h = torch.arange(-(self.window_size[0] - 1), self.window_size[0], dtype=torch.float32)
+        relative_coords_w = torch.arange(-(self.window_size[1] - 1), self.window_size[1], dtype=torch.float32)
+        relative_coords_table = torch.stack(torch.meshgrid([relative_coords_h, relative_coords_w], indexing="ij"))
+        relative_coords_table = relative_coords_table.permute(1, 2, 0).contiguous().unsqueeze(0)  # 1, 2*Wh-1, 2*Ww-1, 2
+
+        relative_coords_table[:, :, :, 0] /= self.window_size[0] - 1
+        relative_coords_table[:, :, :, 1] /= self.window_size[1] - 1
+
+        relative_coords_table *= 8  # normalize to -8, 8
+        relative_coords_table = (
+            torch.sign(relative_coords_table) * torch.log2(torch.abs(relative_coords_table) + 1.0) / 3.0
+        )
+        self.register_buffer("relative_coords_table", relative_coords_table)
+
+    def get_relative_position_bias(self) -> torch.Tensor:
+        relative_position_bias = _get_relative_position_bias(
+            self.cpb_mlp(self.relative_coords_table).view(-1, self.num_heads),
+            self.relative_position_index,  # type: ignore[arg-type]
+            self.window_size,
+        )
+        relative_position_bias = 16 * torch.sigmoid(relative_position_bias)
+        return relative_position_bias
+
+    def forward(self, x: Tensor, loc: Tensor):
+        """
+        Args:
+            x (Tensor): Tensor with layout of [B, H, W, C]
+            loc (Tensor): Station location with layout of [B, W, 3]
+        Returns:
+            Tensor with same layout as input, i.e. [B, H, W, C]
+        """
+        relative_position_bias = self.get_relative_position_bias()
+        return shifted_window_attention(
+            x,
+            self.qkv.weight,
+            self.proj.weight,
+            relative_position_bias,
+            self.window_size,
+            self.num_heads,
+            shift_size=self.shift_size,
+            attention_dropout=self.attention_dropout,
+            dropout=self.dropout,
+            qkv_bias=self.qkv.bias,
+            proj_bias=self.proj.bias,
+            logit_scale=self.logit_scale,
+            training=self.training,
+        )
 
 class SwinTransformerBlock(nn.Module):
     """
@@ -388,7 +488,7 @@ class SwinTransformerBlock(nn.Module):
         norm_layer (nn.Module): Normalization layer.  Default: nn.LayerNorm.
         attn_layer (nn.Module): Attention layer. Default: ShiftedWindowAttention
     """
-
+    
     def __init__(
         self,
         dim: int,
@@ -423,16 +523,68 @@ class SwinTransformerBlock(nn.Module):
                 if m.bias is not None:
                     nn.init.normal_(m.bias, std=1e-6)
 
-    def forward(self, x: Tensor):
-        x = x + self.stochastic_depth(self.attn(self.norm1(x)))
+    def forward(self, meta: Dict[str, Tensor]):
+        x, loc = meta["x"], meta["loc"]
+        x = x + self.stochastic_depth(self.attn(self.norm1(x), loc))
         x = x + self.stochastic_depth(self.mlp(self.norm2(x)))
+        return {"x": x, "loc": loc}
+
+
+class SwinTransformerBlockV2(SwinTransformerBlock):
+    """
+    Swin Transformer V2 Block.
+    Args:
+        dim (int): Number of input channels.
+        num_heads (int): Number of attention heads.
+        window_size (List[int]): Window size.
+        shift_size (List[int]): Shift size for shifted window attention.
+        mlp_ratio (float): Ratio of mlp hidden dim to embedding dim. Default: 4.0.
+        dropout (float): Dropout rate. Default: 0.0.
+        attention_dropout (float): Attention dropout rate. Default: 0.0.
+        stochastic_depth_prob: (float): Stochastic depth rate. Default: 0.0.
+        norm_layer (nn.Module): Normalization layer.  Default: nn.LayerNorm.
+        attn_layer (nn.Module): Attention layer. Default: ShiftedWindowAttentionV2.
+    """
+
+    def __init__(
+        self,
+        dim: int,
+        num_heads: int,
+        window_size: List[int],
+        shift_size: List[int],
+        mlp_ratio: float = 4.0,
+        dropout: float = 0.0,
+        attention_dropout: float = 0.0,
+        stochastic_depth_prob: float = 0.0,
+        norm_layer: Callable[..., nn.Module] = nn.LayerNorm,
+        attn_layer: Callable[..., nn.Module] = ShiftedWindowAttentionV2,
+    ):
+        super().__init__(
+            dim,
+            num_heads,
+            window_size,
+            shift_size,
+            mlp_ratio=mlp_ratio,
+            dropout=dropout,
+            attention_dropout=attention_dropout,
+            stochastic_depth_prob=stochastic_depth_prob,
+            norm_layer=norm_layer,
+            attn_layer=attn_layer,
+        )
+
+    def forward(self, meta: Dict[str, Tensor]):
+        x, loc = meta["x"], meta["loc"]
+        # Here is the difference, we apply norm after the attention in V2.
+        # In V1 we applied norm before the attention.
+        x = x + self.stochastic_depth(self.norm1(self.attn(x, loc)))
+        x = x + self.stochastic_depth(self.norm2(self.mlp(x)))
         return x
 
 
 class SwinTransformer(nn.Module):
     """
     Implements Swin Transformer from the `"Swin Transformer: Hierarchical Vision Transformer using
-    Shifted Windows" <https://arxiv.org/pdf/2103.14030>`_ paper.
+    Shifted Windows" <https://arxiv.org/abs/2103.14030>`_ paper.
     Args:
         patch_size (List[int]): Patch size.
         embed_dim (int): Patch embedding dimension.
@@ -442,10 +594,11 @@ class SwinTransformer(nn.Module):
         mlp_ratio (float): Ratio of mlp hidden dim to embedding dim. Default: 4.0.
         dropout (float): Dropout rate. Default: 0.0.
         attention_dropout (float): Attention dropout rate. Default: 0.0.
-        stochastic_depth_prob (float): Stochastic depth rate. Default: 0.0.
+        stochastic_depth_prob (float): Stochastic depth rate. Default: 0.1.
         num_classes (int): Number of classes for classification head. Default: 1000.
         block (nn.Module, optional): SwinTransformer Block. Default: None.
         norm_layer (nn.Module, optional): Normalization layer. Default: None.
+        downsample_layer (nn.Module): Downsample layer (patch merging). Default: PatchMerging.
     """
 
     def __init__(
@@ -461,29 +614,33 @@ class SwinTransformer(nn.Module):
         stochastic_depth_prob: float = 0.0,
         num_classes: int = 1000,
         norm_layer: Optional[Callable[..., nn.Module]] = None,
-        block: Optional[Callable[..., nn.Module]] = None,
+        block_name: Optional[str] = None,
+        downsample_layer: Callable[..., nn.Module] = PatchMerging,
     ):
         super().__init__()
-        self.num_classes = num_classes
+        # self.num_classes = num_classes
 
-        if block is None:
+        block: Optional[Callable[..., nn.Module]]
+        if block_name is None or block_name == "SwinTransformerBlock":
             block = SwinTransformerBlock
+        elif block_name == "SwinTransformerBlockV2":
+            block = SwinTransformerBlockV2
+        else:
+            raise ValueError(f"Unknown Swin Transformer block: {block_name}")
 
         if norm_layer is None:
             norm_layer = partial(nn.LayerNorm, eps=1e-5)
 
-        layers: List[nn.Module] = []
         # split image into non-overlapping patches
-        layers.append(
-            nn.Sequential(
+        self.split_patch = nn.Sequential(
                 nn.Conv2d(
                     3, embed_dim, kernel_size=(patch_size[0], patch_size[1]), stride=(patch_size[0], patch_size[1])
                 ),
                 Permute([0, 2, 3, 1]),
                 norm_layer(embed_dim),
             )
-        )
 
+        layers: List[nn.Module] = []
         total_stage_blocks = sum(depths)
         stage_block_id = 0
         # build SwinTransformer blocks
@@ -510,13 +667,11 @@ class SwinTransformer(nn.Module):
             layers.append(nn.Sequential(*stage))
             # add patch merging layer
             if i_stage < (len(depths) - 1):
-                layers.append(PatchMerging(dim, norm_layer))
+                layers.append(downsample_layer(dim, norm_layer))
         self.features = nn.Sequential(*layers)
 
         num_features = embed_dim * 2 ** (len(depths) - 1)
         self.norm = norm_layer(num_features)
-        # self.avgpool = nn.AdaptiveAvgPool2d(1)
-        # self.head = nn.Linear(num_features, num_classes)
 
         for m in self.modules():
             if isinstance(m, nn.Linear):
@@ -524,15 +679,12 @@ class SwinTransformer(nn.Module):
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
 
-    def forward(self, x):
-        x = self.features(x)
-        x = self.norm(x)
-        # x = x.permute(0, 3, 1, 2)
-        # x = self.avgpool(x)
-        # x = torch.flatten(x, 1)
-        # x = self.head(x)
-        # return x
+    def forward(self, x, loc):
         
+        x = self.split_patch(x)
+        meta = self.features({"x":x, "loc":loc})
+        x = self.norm(meta["x"])
+
         ## for seismic time series
         x = x.permute(0, 2, 3, 1).contiguous() ## bt, st, chn, nt
         return {"out": x}
@@ -547,10 +699,11 @@ def _swin_transformer(
     stochastic_depth_prob: float,
     weights,
     progress: bool,
+    block_name: Optional[str],
     **kwargs: Any,
 ) -> SwinTransformer:
-    if weights is not None:
-        _ovewrite_named_param(kwargs, "num_classes", len(weights.meta["categories"]))
+    # if weights is not None:
+    #     _ovewrite_named_param(kwargs, "num_classes", len(weights.meta["categories"]))
 
     model = SwinTransformer(
         patch_size=patch_size,
@@ -559,6 +712,7 @@ def _swin_transformer(
         num_heads=num_heads,
         window_size=window_size,
         stochastic_depth_prob=stochastic_depth_prob,
+        block_name=block_name,
         **kwargs,
     )
 
@@ -566,111 +720,3 @@ def _swin_transformer(
         model.load_state_dict(weights.get_state_dict(progress=progress))
 
     return model
-
-
-
-
-
-def swin_t(*, weights = None, progress: bool = True, **kwargs: Any) -> SwinTransformer:
-    """
-    Constructs a swin_tiny architecture from
-    `Swin Transformer: Hierarchical Vision Transformer using Shifted Windows <https://arxiv.org/pdf/2103.14030>`_.
-
-    Args:
-        weights (:class:`~torchvision.models.Swin_T_Weights`, optional): The
-            pretrained weights to use. See
-            :class:`~torchvision.models.Swin_T_Weights` below for
-            more details, and possible values. By default, no pre-trained
-            weights are used.
-        progress (bool, optional): If True, displays a progress bar of the
-            download to stderr. Default is True.
-        **kwargs: parameters passed to the ``torchvision.models.swin_transformer.SwinTransformer``
-            base class. Please refer to the `source code
-            <https://github.com/pytorch/vision/blob/main/torchvision/models/swin_transformer.py>`_
-            for more details about this class.
-
-    .. autoclass:: torchvision.models.Swin_T_Weights
-        :members:
-    """
-
-    return _swin_transformer(
-        patch_size=[4, 4],
-        embed_dim=96,
-        depths=[2, 2, 6, 2],
-        num_heads=[3, 6, 12, 24],
-        window_size=[7, 7],
-        stochastic_depth_prob=0.2,
-        weights=weights,
-        progress=progress,
-        **kwargs,
-    )
-
-
-def swin_s(*, weights = None, progress: bool = True, **kwargs: Any) -> SwinTransformer:
-    """
-    Constructs a swin_small architecture from
-    `Swin Transformer: Hierarchical Vision Transformer using Shifted Windows <https://arxiv.org/pdf/2103.14030>`_.
-
-    Args:
-        weights (:class:`~torchvision.models.Swin_S_Weights`, optional): The
-            pretrained weights to use. See
-            :class:`~torchvision.models.Swin_S_Weights` below for
-            more details, and possible values. By default, no pre-trained
-            weights are used.
-        progress (bool, optional): If True, displays a progress bar of the
-            download to stderr. Default is True.
-        **kwargs: parameters passed to the ``torchvision.models.swin_transformer.SwinTransformer``
-            base class. Please refer to the `source code
-            <https://github.com/pytorch/vision/blob/main/torchvision/models/swin_transformer.py>`_
-            for more details about this class.
-
-    .. autoclass:: torchvision.models.Swin_S_Weights
-        :members:
-    """
-
-    return _swin_transformer(
-        patch_size=[4, 4],
-        embed_dim=96,
-        depths=[2, 2, 18, 2],
-        num_heads=[3, 6, 12, 24],
-        window_size=[7, 7],
-        stochastic_depth_prob=0.3,
-        weights=weights,
-        progress=progress,
-        **kwargs,
-    )
-
-
-def swin_b(*, weights = None, progress: bool = True, **kwargs: Any) -> SwinTransformer:
-    """
-    Constructs a swin_base architecture from
-    `Swin Transformer: Hierarchical Vision Transformer using Shifted Windows <https://arxiv.org/pdf/2103.14030>`_.
-
-    Args:
-        weights (:class:`~torchvision.models.Swin_B_Weights`, optional): The
-            pretrained weights to use. See
-            :class:`~torchvision.models.Swin_B_Weights` below for
-            more details, and possible values. By default, no pre-trained
-            weights are used.
-        progress (bool, optional): If True, displays a progress bar of the
-            download to stderr. Default is True.
-        **kwargs: parameters passed to the ``torchvision.models.swin_transformer.SwinTransformer``
-            base class. Please refer to the `source code
-            <https://github.com/pytorch/vision/blob/main/torchvision/models/swin_transformer.py>`_
-            for more details about this class.
-
-    .. autoclass:: torchvision.models.Swin_B_Weights
-        :members:
-    """
-
-    return _swin_transformer(
-        patch_size=[4, 4],
-        embed_dim=128,
-        depths=[2, 2, 18, 2],
-        num_heads=[4, 8, 16, 32],
-        window_size=[7, 7],
-        stochastic_depth_prob=0.5,
-        weights=weights,
-        progress=progress,
-        **kwargs,
-    )
