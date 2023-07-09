@@ -297,11 +297,6 @@ def main(args):
     if args.distributed:
         model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
 
-    model_without_ddp = model
-    if args.distributed:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
-        model_without_ddp = model.module
-
     if args.resume:
         checkpoint = torch.load(args.resume, map_location="cpu")
         model_without_ddp.load_state_dict(checkpoint["model"], strict=True)
@@ -322,16 +317,26 @@ def main(args):
                 raise ("Missing pretrained model for this location")
         else:
             raise
-        # state_dict = torch.hub.load_state_dict_from_url(
-        #     model_url, model_dir="./", progress=True, check_hash=True, map_location="cpu"
-        # )
-        # model_without_ddp.load_state_dict(state_dict["model"], strict=True)
-        run = wandb.init()
-        artifact = run.use_artifact(model_url, type="model")
-        artifact_dir = artifact.download()
-        run.finish()
-        checkpoint = torch.load(glob(os.path.join(artifact_dir, "*.pth"))[0], map_location="cpu")
-        model_without_ddp.load_state_dict(checkpoint["model"], strict=True)
+
+        ## load model from wandb
+        if utils.is_main_process():
+            run = wandb.init()
+            artifact = run.use_artifact(model_url, type="model")
+            artifact_dir = artifact.download()
+            run.finish()
+            checkpoint = torch.load(glob(os.path.join(artifact_dir, "*.pth"))[0], map_location="cpu")
+            model.load_state_dict(checkpoint["model"], strict=True)
+
+    model_without_ddp = model
+    if args.distributed:
+        torch.distributed.barrier()
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
+        model_without_ddp = model.module
+    ## load model from url
+    # state_dict = torch.hub.load_state_dict_from_url(
+    #     model_url, model_dir="./", progress=True, check_hash=True, map_location="cpu"
+    # )
+    # model_without_ddp.load_state_dict(state_dict["model"], strict=True)
 
     if args.model == "phasenet":
         pred_phasenet(args, model, data_loader, pick_path, figure_path, event_path)

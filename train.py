@@ -512,7 +512,7 @@ def main(args):
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print(f"Training time {total_time_str}")
-    if args.wandb:
+    if args.wandb and utils.is_main_process():
         wandb.finish()
 
 
