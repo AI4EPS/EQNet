@@ -23,10 +23,12 @@ def get_args_parser():
     parser = argparse.ArgumentParser(description="Run GaMMA")
     parser.add_argument("--bucket", type=str, default="gs://quakeflow_das")
     parser.add_argument("--folder", type=str, default="mammoth_north")
+    parser.add_argument("--picker", type=str, default="phasenet_das")
     parser.add_argument("--station_csv", type=str, default="das_info.csv")
     parser.add_argument("--catalog_csv", type=str, default="catalog_data.csv")
     parser.add_argument("--plot_figure", type=bool, default=True)
     parser.add_argument("--protocol", type=str, default="gs")
+    parser.add_argument("--overwrite", action="store_true", default=False)
 
     return parser
 
@@ -153,13 +155,19 @@ def run(files, event_list, config, stations, result_path):
         #     (0, config["z(km)"][1] + 1),  # z
         #     (None, None),  # t
         # )
-
-        try:
-            picks = pd.read_csv(file)
-            picks = picks[picks["phase_score"] > 0.5]
-        except Exception as e:
-            print(e)
+        if os.path.exists(result_path / "picks" / file.name) and (not args.overwrite):
             continue
+
+        if os.path.getsize(file) == 0:
+            continue
+
+        picks = pd.read_csv(file)
+        picks = picks[picks["phase_score"] > 0.5]
+        if len(picks) < config["min_picks_per_eq"]:
+            continue
+
+        if ("station_id" not in picks.columns) and ("channel_index" in picks.columns):
+            picks["station_id"] = picks["channel_index"]
 
         events, picks = associate(picks, stations, config)
         if (events is None) or (picks is None):
@@ -244,7 +252,7 @@ if __name__ == "__main__":
     # print(args)
 
     # %%
-    result_path = Path(f"results/gamma/{args.folder}")
+    result_path = Path(f"results/gamma/{args.picker}/{args.folder}")
     if not result_path.exists():
         result_path.mkdir(parents=True)
     if not (result_path / "picks").exists():
@@ -257,8 +265,8 @@ if __name__ == "__main__":
     # %%
     manager = Manager()
     event_list = manager.list()
-    picks_path = Path(f"results/phasenet/{args.folder}/picks_phasenet")
-    files = sorted(list(picks_path.rglob("*.csv")))
+    picks_path = Path(f"results/{args.picker}/{args.folder}/picks_{args.picker}")
+    files = sorted(list(picks_path.rglob("*.csv")), key=lambda x: os.path.getsize(x))
 
     jobs = []
     num_cores = max(1, multiprocessing.cpu_count() // 2)
@@ -278,8 +286,8 @@ if __name__ == "__main__":
     else:
         print("No events found!")
 
-    cmd = f"gsutil -m cp -r {result_path}/picks {args.bucket}/{args.folder}/gamma/picks"
-    cmd += f" && gsutil cp -r {result_path}/gamma_events.csv {args.bucket}/{args.folder}/gamma/gamma_events.csv"
-    cmd += f" && gsutil cp -r {result_path}/station_catalog.png {args.bucket}/{args.folder}/gamma/station_catalog.png"
+    cmd = f"gsutil -m cp -r {result_path}/picks {args.bucket}/{args.folder}/gamma/{args.picker}/picks"
+    cmd += f" && gsutil cp -r {result_path}/gamma_events.csv {args.bucket}/{args.folder}/gamma/{args.picker}/gamma_events.csv"
+    cmd += f" && gsutil cp -r {result_path}/station_catalog.png {args.bucket}/{args.folder}/gamma/{args.picker}/station_catalog.png"
     print(cmd)
-    os.system(cmd)
+    # os.system(cmd)

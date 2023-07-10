@@ -26,7 +26,7 @@ for folder in folders:
 
     # %%
     num_gpu = torch.cuda.device_count()
-    base_cmd = f"../predict.py --model phasenet_das --format h5 --data_list {result_path/'h5_list.txt'} --batch_size 1 --result_path {result_path} --dataset=das --min_prob=0.5 --plot_figure"
+    base_cmd = f"../predict.py --model phasenet_das --format h5 --data_list {result_path/'h5_list.txt'} --batch_size 1 --result_path {result_path} --dataset=das --min_prob=0.5"
     if num_gpu == 0:
         cmd = f"python {base_cmd} --device=cpu"
     if num_gpu == 1:

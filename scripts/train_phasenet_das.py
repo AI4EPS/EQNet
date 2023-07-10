@@ -11,7 +11,7 @@ bucket = "quakeflow_das"
 # %%
 num_gpu = torch.cuda.device_count()
 # args = f"../train.py --model phasenet_das --compile --sync-bn --amp --batch-size=4 --epochs=10 --wd=1e-1  --stack-event --stack-noise --resample-space --resample-time --masking --random-crop --output=model_phasenet_das --wandb --wandb-project=phasenet-das"
-args = f"../train.py --model phasenet_das --sync-bn --amp --batch-size=4 --epochs=10 --wd=1e-1  --stack-event --stack-noise --resample-space --resample-time --masking --random-crop --output=model_phasenet_das --wandb --wandb-project=phasenet-das"
+args = f"../train.py --model phasenet_das --sync-bn--batch-size=4 --epochs=10 --wd=1e-1  --stack-event --stack-noise --resample-space --resample-time --masking --random-crop --output=model_phasenet_das --wandb --wandb-project=phasenet-das"
 args += f" --data-path {protocol}{bucket} --data-list results/training/data.txt --label-list results/training/labels_train.txt --noise-list results/training/noise_train.txt --test-data-path {protocol}{bucket} --test-data-list results/training/data.txt --test-label-list results/training/labels_test.txt --test-noise-list results/training/noise_test.txt"
 if num_gpu == 0:
     cmd = f"python {args} --device cpu"

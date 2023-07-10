@@ -1,10 +1,8 @@
 import logging
 import os
-import warnings
 from contextlib import nullcontext
 
 import matplotlib
-import matplotlib.pyplot as plt
 import pandas as pd
 import torch
 import torch.multiprocessing as mp
@@ -24,7 +22,7 @@ from eqnet.utils import (
     plot_phasenet,
 )
 
-mp.set_start_method("spawn", force=True)
+# mp.set_start_method("spawn", force=True)
 matplotlib.use("agg")
 logger = logging.getLogger()
 
@@ -47,7 +45,8 @@ def pred_phasenet(args, model, data_loader, pick_path, figure_path, event_path=N
     model.eval()
     metric_logger = utils.MetricLogger(delimiter="  ")
     header = "Predicting:"
-    ctx = nullcontext() if args.device == "cpu" else torch.cuda.amp.autocast(enabled=args.amp)
+    # ctx = nullcontext() if args.device == "cpu" else torch.cuda.amp.autocast(enabled=args.amp)
+    ctx = nullcontext() if args.device == "cpu" else torch.amp.autocast(device_type=args.device, dtype=args.ptdtype)
     with torch.inference_mode():
         for meta in metric_logger.log_every(data_loader, 1, header):
             with ctx:
@@ -144,7 +143,8 @@ def pred_phasenet_das(args, model, data_loader, pick_path, figure_path):
     model.eval()
     metric_logger = utils.MetricLogger(delimiter="  ")
     header = "Predicting:"
-    ctx = nullcontext() if args.device == "cpu" else torch.cuda.amp.autocast(enabled=args.amp)
+    # ctx = nullcontext() if args.device == "cpu" else torch.cuda.amp.autocast(enabled=args.amp)
+    ctx = nullcontext() if args.device == "cpu" else torch.amp.autocast(device_type=args.device, dtype=args.ptdtype)
     with torch.inference_mode():
         for meta in metric_logger.log_every(data_loader, 1, header):
             with ctx:
@@ -237,6 +237,16 @@ def main(args):
     else:
         rank, world_size = 0, 1
     device = torch.device(args.device)
+    dtype = "bfloat16" if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else "float16"
+    ptdtype = {"float32": torch.float32, "bfloat16": torch.bfloat16, "float16": torch.float16}[dtype]
+    args.dtype, args.ptdtype = dtype, ptdtype
+    torch.backends.cuda.matmul.allow_tf32 = True  # allow tf32 on matmul
+    torch.backends.cudnn.allow_tf32 = True  # allow tf32 on cudnn
+    if args.use_deterministic_algorithms:
+        torch.backends.cudnn.benchmark = False
+        torch.use_deterministic_algorithms(True)
+    else:
+        torch.backends.cudnn.benchmark = True
 
     if args.model == "phasenet":
         dataset = SeismicTraceIterableDataset(
@@ -291,7 +301,7 @@ def main(args):
         add_polarity=args.add_polarity,
         add_event=args.add_event,
     )
-    # logger.info("Model:\n{}".format(model))
+    logger.info("Model:\n{}".format(model))
 
     model.to(device)
     if args.distributed:
@@ -299,7 +309,7 @@ def main(args):
 
     if args.resume:
         checkpoint = torch.load(args.resume, map_location="cpu")
-        model_without_ddp.load_state_dict(checkpoint["model"], strict=True)
+        model.load_state_dict(checkpoint["model"], strict=True)
         print("Loaded checkpoint '{}' (epoch {})".format(args.resume, checkpoint["epoch"]))
     else:
         if args.model == "phasenet" and (not args.add_polarity):
