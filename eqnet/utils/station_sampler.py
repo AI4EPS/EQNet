@@ -1,6 +1,7 @@
 # sample a batch of data with different number of stations
 
 import numpy as np
+import torch
 import math
 from torch.utils.data.sampler import Sampler, BatchSampler
 from glob import glob
@@ -84,7 +85,10 @@ def create_groups(dataset, num_stations_list=[5, 10, 20], is_pad=False):
         num_stations = data["station_location"].shape[0]
         num_stations_list = np.array(sorted(num_stations_list))
         if is_pad:
-            group_id = num_stations_list[num_stations_list>=num_stations][0]
+            if num_stations >= num_stations_list[-1]:
+                group_id = num_stations_list[-1]
+            else:
+                group_id = num_stations_list[num_stations_list>=num_stations][0]
         else:
             if num_stations < num_stations_list[0]:
                 group_id = 0
@@ -95,22 +99,65 @@ def create_groups(dataset, num_stations_list=[5, 10, 20], is_pad=False):
     group_ids=np.array(group_ids)
     counts = np.unique(group_ids, return_counts=True)[1]
     # print group and counts
-    print(f"groups: {num_stations_list}, counts: {counts[1:]}, sum: {counts[1:].sum()}")
+    if is_pad:
+        print(f"groups: {num_stations_list}, counts: {counts}, sum: {counts.sum()}")
+    else:
+        print(f"groups: {num_stations_list}, counts: {counts[1:]}, sum: {counts[1:].sum()}")
     return group_ids
 
 
-def cut_reorder_keys(example, num_stations_list=[5, 10, 20]):
+def cut_reorder_keys(example, num_stations_list=[5, 10, 20], is_pad=False):
     num_stations = example["station_location"].shape[0]
     num_stations_list = np.array(sorted(num_stations_list))
-    if num_stations < num_stations_list[0]:
-        return example
+    if is_pad:
+        if num_stations >= num_stations_list[-1]:
+            group_id = num_stations_list[-1]
+            cut = np.random.permutation(num_stations)[:group_id]
+            example["data"] = example["data"][cut,:,:].permute(1,2,0).contiguous()
+            example["phase_pick"] = example["phase_pick"][cut,:,:].permute(1,2,0).contiguous()
+            example["event_center"] = example["event_center"][cut,:].permute(1,0).contiguous()
+            example["event_location"] = example["event_location"][cut,:,:].permute(1,2,0).contiguous()
+            example["event_location_mask"] = example["event_location_mask"][cut,:].permute(1,0).contiguous()
+            example["station_location"] = example["station_location"][cut,:].contiguous()
+            return example
+        else:
+            group_id = num_stations_list[num_stations_list>=num_stations][0]
+            # randomly choose a subset of stations to pad the batch
+            # so that the number of stations is equal to group_id
+            pad_size = group_id - num_stations
+            # patch the data
+            if pad_size > 0:
+                pad_indices = np.random.choice(num_stations, pad_size, replace=True)
+                example["data"] = torch.cat([example["data"], example["data"][pad_indices,:,:]], dim=0)
+                example["phase_pick"] = torch.cat([example["phase_pick"], example["phase_pick"][pad_indices,:,:]], dim=0)
+                example["event_center"] = torch.cat([example["event_center"], example["event_center"][pad_indices,:]], dim=0)
+                example["event_location"] = torch.cat([example["event_location"], example["event_location"][pad_indices,:,:]], dim=0)
+                example["event_location_mask"] = torch.cat([example["event_location_mask"], example["event_location_mask"][pad_indices,:]], dim=0)
+                example["station_location"] = torch.cat([example["station_location"], example["station_location"][pad_indices,:]], dim=0)
+            # reorder the stations
+            example["data"] = example["data"].permute(1,2,0).contiguous()
+            example["phase_pick"] = example["phase_pick"].permute(1,2,0).contiguous()
+            example["event_center"] = example["event_center"].permute(1,0).contiguous()
+            example["event_location"] = example["event_location"].permute(1,2,0).contiguous()
+            example["event_location_mask"] = example["event_location_mask"].permute(1,0).contiguous()
+            example["station_location"] = example["station_location"].contiguous()
+            return example
     else:
-        group_id = num_stations_list[num_stations_list<=num_stations][-1]
-        cut = np.random.permutation(num_stations)[:group_id]
-        example["data"] = example["data"][cut,:,:].permute(1,2,0).contiguous()
-        example["phase_pick"] = example["phase_pick"][cut,:,:].permute(1,2,0).contiguous()
-        example["event_center"] = example["event_center"][cut,:].permute(1,0).contiguous()
-        example["event_location"] = example["event_location"][cut,:,:].permute(1,2,0).contiguous()
-        example["event_location_mask"] = example["event_location_mask"][cut,:].permute(1,0).contiguous()
-        example["station_location"] = example["station_location"][cut,:].contiguous()
-        return example
+        if num_stations < num_stations_list[0]:
+            example["data"] = example["data"].permute(1,2,0).contiguous()
+            example["phase_pick"] = example["phase_pick"].permute(1,2,0).contiguous()
+            example["event_center"] = example["event_center"].permute(1,0).contiguous()
+            example["event_location"] = example["event_location"].permute(1,2,0).contiguous()
+            example["event_location_mask"] = example["event_location_mask"].permute(1,0).contiguous()
+            example["station_location"] = example["station_location"].contiguous()
+            return example
+        else:
+            group_id = num_stations_list[num_stations_list<=num_stations][-1]
+            cut = np.random.permutation(num_stations)[:group_id]
+            example["data"] = example["data"][cut,:,:].permute(1,2,0).contiguous()
+            example["phase_pick"] = example["phase_pick"][cut,:,:].permute(1,2,0).contiguous()
+            example["event_center"] = example["event_center"][cut,:].permute(1,0).contiguous()
+            example["event_location"] = example["event_location"][cut,:,:].permute(1,2,0).contiguous()
+            example["event_location_mask"] = example["event_location_mask"][cut,:].permute(1,0).contiguous()
+            example["station_location"] = example["station_location"][cut,:].contiguous()
+            return example
