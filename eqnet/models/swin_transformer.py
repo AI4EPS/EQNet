@@ -382,7 +382,6 @@ class ShiftedWindowAttention(nn.Module):
             dropout=self.dropout,
             qkv_bias=self.qkv.bias,
             proj_bias=self.proj.bias,
-            logit_scale=self.logit_scale,
             training=self.training,
         )
 
@@ -414,39 +413,19 @@ class ShiftedWindowAttentionV2(ShiftedWindowAttention):
             dropout=dropout,
         )
 
-        self.logit_scale = nn.Parameter(torch.log(10 * torch.ones((num_heads, 1, 1))))
+        # give up us logit_scale because the length of time dimension won't be too far from the original length
+        self.logit_scale = None# nn.Parameter(torch.log(10 * torch.ones((num_heads, 1, 1))))
+        ## https://github.com/microsoft/Swin-Transformer/blob/b720b4191588c19222ccf129860e905fb02373a7/models/swin_transformer_v2.py#L92
         # mlp to generate continuous relative position bias
-        self.cpb_mlp = nn.Sequential(
-            nn.Linear(2, 512, bias=True), nn.ReLU(inplace=True), nn.Linear(512, num_heads, bias=False)
-        )
+        self.cpb_mlp = nn.Sequential(nn.Linear(4, 512, bias=True),
+                                     nn.ReLU(inplace=True),
+                                     nn.Linear(512, num_heads, bias=False))
         if qkv_bias:
             length = self.qkv.bias.numel() // 3
             self.qkv.bias[length : 2 * length].data.zero_()
 
-    def define_relative_position_bias_table(self):
-        # get relative_coords_table
-        relative_coords_h = torch.arange(-(self.window_size[0] - 1), self.window_size[0], dtype=torch.float32)
-        relative_coords_w = torch.arange(-(self.window_size[1] - 1), self.window_size[1], dtype=torch.float32)
-        relative_coords_table = torch.stack(torch.meshgrid([relative_coords_h, relative_coords_w], indexing="ij"))
-        relative_coords_table = relative_coords_table.permute(1, 2, 0).contiguous().unsqueeze(0)  # 1, 2*Wh-1, 2*Ww-1, 2
-
-        relative_coords_table[:, :, :, 0] /= self.window_size[0] - 1
-        relative_coords_table[:, :, :, 1] /= self.window_size[1] - 1
-
-        relative_coords_table *= 8  # normalize to -8, 8
-        relative_coords_table = (
-            torch.sign(relative_coords_table) * torch.log2(torch.abs(relative_coords_table) + 1.0) / 3.0
-        )
-        self.register_buffer("relative_coords_table", relative_coords_table)
-
-    def get_relative_position_bias(self) -> torch.Tensor:
-        relative_position_bias = _get_relative_position_bias(
-            self.cpb_mlp(self.relative_coords_table).view(-1, self.num_heads),
-            self.relative_position_index,  # type: ignore[arg-type]
-            self.window_size,
-        )
-        relative_position_bias = 16 * torch.sigmoid(relative_position_bias)
-        return relative_position_bias
+        coords_t = torch.arange(self.window_size[0]).unsqueeze(-1).unsqueeze(-1).repeat(1, self.window_size[1], 1) # nt, nx 1
+        self.register_buffer("coords_t", coords_t)
 
     def forward(self, x: Tensor, loc: Tensor):
         """
@@ -456,7 +435,14 @@ class ShiftedWindowAttentionV2(ShiftedWindowAttention):
         Returns:
             Tensor with same layout as input, i.e. [B, H, W, C]
         """
-        relative_position_bias = self.get_relative_position_bias()
+        coords_t = self.coords_t.repeat(loc.shape[0], 1, 1, 1) #bt, nt, nx 1
+        coords_x = loc.unsqueeze(-3).repeat(1, self.coords_t.shape[0], 1, 1) #bt, nt, nx, 3
+        coords = torch.cat((coords_t, coords_x), dim=-1) #bt, nt, nx, 4
+        coords_flatten = torch.flatten(coords, 1, 2)  # bt, nt * nx, 4
+        relative_coords = coords_flatten[:, :, None, :] - coords_flatten[:, None, :, :]  # bt, Wh*Ww, Wh*Ww, 4
+        relative_position_bias = self.cpb_mlp(relative_coords) #bt, Wh*Ww, Wh*Ww, nH
+        relative_position_bias = relative_position_bias.permute(0, 3, 1, 2)
+        
         return shifted_window_attention(
             x,
             self.qkv.weight,
@@ -572,13 +558,13 @@ class SwinTransformerBlockV2(SwinTransformerBlock):
             attn_layer=attn_layer,
         )
 
-    def forward(self, meta: Dict[str, Tensor]):
+    def forward(self, meta: Dict):
         x, loc = meta["x"], meta["loc"]
         # Here is the difference, we apply norm after the attention in V2.
         # In V1 we applied norm before the attention.
         x = x + self.stochastic_depth(self.norm1(self.attn(x, loc)))
         x = x + self.stochastic_depth(self.norm2(self.mlp(x)))
-        return x
+        return {"x": x, "loc": loc}
 
 
 class SwinTransformer(nn.Module):
