@@ -330,10 +330,9 @@ def main(args):
 
         ## load model from wandb
         if utils.is_main_process():
-            run = wandb.init()
-            artifact = run.use_artifact(model_url, type="model")
-            artifact_dir = artifact.download()
-            run.finish()
+            with wandb.init() as run:
+                artifact = run.use_artifact(model_url, type="model")
+                artifact_dir = artifact.download()
             checkpoint = torch.load(glob(os.path.join(artifact_dir, "*.pth"))[0], map_location="cpu")
             model.load_state_dict(checkpoint["model"], strict=True)
 
