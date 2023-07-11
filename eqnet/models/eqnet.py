@@ -173,7 +173,7 @@ class EQNet(nn.Module):
                 embed_dim=16,
                 depths=[2, 2, 6, 2],
                 num_heads=[2, 4, 8, 8],
-                window_size=[7, 10],
+                window_size=[8, 10],
                 stochastic_depth_prob=0.2,
                 block_name="SwinTransformerBlock",
             )
@@ -183,7 +183,7 @@ class EQNet(nn.Module):
                 embed_dim=16,
                 depths=[2, 2, 6, 2],
                 num_heads=[2, 4, 8, 8],
-                window_size=[7, 10],
+                window_size=[8, 10],
                 stochastic_depth_prob=0.2,
                 block_name="SwinTransformerBlockV2",
             )
