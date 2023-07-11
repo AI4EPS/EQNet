@@ -280,6 +280,8 @@ class SeismicTraceIterableDataset(IterableDataset):
         cut_patch=False,
         nt=1024 * 4,
         nx=1024,
+        min_nt=1024,
+        min_nx=1,
     ):
         super().__init__()
         self.rank = rank
@@ -331,6 +333,8 @@ class SeismicTraceIterableDataset(IterableDataset):
         self.cut_patch = cut_patch
         self.nt = nt
         self.nx = nx
+        self.min_nt = min_nt
+        self.min_nx = min_nx
 
         if self.training:
             print(f"{self.data_path}: {len(self.data_list)} files")

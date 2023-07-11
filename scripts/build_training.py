@@ -20,10 +20,15 @@ bucket = "quakeflow_das"
 figure_path = Path("debug_figures")
 figure_path.mkdir(exist_ok=True)
 plot_figure = False
-label_path = Path("results/training")
-label_path.mkdir(exist_ok=True)
+label_path = Path("results/training_v1")
+if label_path.exists():
+    print(f"Warning: {label_path} exist!")
+    raise FileExistsError
+else:
+    label_path.mkdir(parents=True)
 fs = fsspec.filesystem(protocol.replace("://", ""))
 folders = ["mammoth_north", "mammoth_south", "ridgecrest_north", "ridgecrest_south"]
+picker = "phasenet_das"
 
 
 # %%
@@ -44,7 +49,7 @@ for folder in folders:
         (label_path / folder / "labels").mkdir(parents=True)
 
     data_list = list(fs.glob(f"{bucket}/{folder}/data/*.h5"))
-    gamma_events = list(fs.glob(f"{bucket}/{folder}/gamma/picks/*.csv"))
+    gamma_events = list(fs.glob(f"{bucket}/{folder}/gamma/{picker}/picks/*.csv"))
     print(f"{folder}: data {len(data_list)}, label {len(gamma_events)}")
 
     ## data list

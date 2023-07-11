@@ -30,7 +30,7 @@ matplotlib.use("agg")
 logger = logging.getLogger("EQNet")
 
 
-def evaluate(model, data_loader, scaler, args, device, epoch=0, total_sample=1):
+def evaluate(model, data_loader, scaler, args, epoch=0, total_sample=1):
     model.eval()
     metric_logger = utils.MetricLogger(delimiter="  ")
     header = f"Test: "
@@ -46,7 +46,7 @@ def evaluate(model, data_loader, scaler, args, device, epoch=0, total_sample=1):
             if num_processed_samples > total_sample:
                 break
 
-    plot_results(meta, model, output, device, args, epoch, "test_")
+    plot_results(meta, model, output, args, epoch, "test_")
     del meta, output, loss
 
     metric_logger.synchronize_between_processes()
@@ -65,8 +65,6 @@ def train_one_epoch(
     model_ema,
     scaler,
     args,
-    device,
-    ptdtype,
     epoch,
     total_sample,
 ):
@@ -78,7 +76,8 @@ def train_one_epoch(
         metric_logger.add_meter("loss_polarity", utils.SmoothedValue(window_size=1, fmt="{value}"))
     header = f"Epoch: [{epoch}]"
 
-    ctx = nullcontext() if scaler is None else torch.amp.autocast(device_type=args.device, dtype=ptdtype)
+    # ctx = nullcontext() if scaler is None else torch.amp.autocast(device_type=args.device, dtype=args.ptdtype)
+    ctx = nullcontext() if args.device == "cpu" else torch.amp.autocast(device_type=args.device, dtype=args.ptdtype)
     model.train()
     num_processed_samples = 0
     for i, meta in enumerate(metric_logger.log_every(data_loader, args.print_freq, header)):
@@ -125,11 +124,11 @@ def train_one_epoch(
             )
 
     model.eval()
-    plot_results(meta, model, output, device, args, epoch, "train_")
+    plot_results(meta, model, output, args, epoch, "train_")
     del meta, output, loss
 
 
-def plot_results(meta, model, output, device, args, epoch, prefix=""):
+def plot_results(meta, model, output, args, epoch, prefix=""):
     with torch.inference_mode():
         if args.model == "phasenet":
             phase = torch.softmax(output["phase"], dim=1).cpu().float()
@@ -189,6 +188,7 @@ def main(args):
     device = torch.device(args.device)
     dtype = "bfloat16" if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else "float16"
     ptdtype = {"float32": torch.float32, "bfloat16": torch.bfloat16, "float16": torch.float16}[dtype]
+    args.dtype, args.ptdtype = dtype, ptdtype
     torch.backends.cuda.matmul.allow_tf32 = True  # allow tf32 on matmul
     torch.backends.cudnn.allow_tf32 = True  # allow tf32 on cudnn
     if args.use_deterministic_algorithms:
@@ -385,7 +385,8 @@ def main(args):
     else:
         raise RuntimeError(f"Invalid optimizer {args.opt}. Only SGD, RMSprop and AdamW are supported.")
 
-    scaler = torch.cuda.amp.GradScaler() if args.amp else None
+    # scaler = torch.cuda.amp.GradScaler() if args.amp else None
+    scaler = torch.cuda.amp.GradScaler(enabled=(dtype == "float16"))
 
     iters_per_epoch = len(data_loader)
     args.lr_scheduler = args.lr_scheduler.lower()
@@ -474,15 +475,13 @@ def main(args):
             model_ema,
             scaler,
             args,
-            device,
-            ptdtype,
             epoch,
             len(dataset),
         )
 
-        metric = evaluate(model, data_loader_test, scaler, args, device, epoch, len(dataset_test))
+        metric = evaluate(model, data_loader_test, scaler, args, epoch, len(dataset_test))
         if model_ema:
-            metric = evaluate(model_ema, data_loader_test, scaler, args, device, epoch, len(dataset_test))
+            metric = evaluate(model_ema, data_loader_test, scaler, args, epoch, len(dataset_test))
 
         checkpoint = {
             "model": model_without_ddp.state_dict(),
@@ -512,7 +511,7 @@ def main(args):
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print(f"Training time {total_time_str}")
-    if args.wandb:
+    if args.wandb and utils.is_main_process():
         wandb.finish()
 
 
