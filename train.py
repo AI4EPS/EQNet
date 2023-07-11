@@ -17,7 +17,6 @@ import wandb
 import datasets
 import eqnet
 import utils
-from eqnet.utils.station_sampler import StationSampler, cut_reorder_keys, create_groups, reorder_keys
 from eqnet.data import (
     AutoEncoderIterableDataset,
     DASDataset,
