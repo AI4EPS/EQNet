@@ -151,9 +151,6 @@ def _patch_merging_pad(x):
     return x
 
 
-torch.fx.wrap("_patch_merging_pad")
-
-
 class PatchMerging(nn.Module):
     """Patch Merging Layer.
     Args:
