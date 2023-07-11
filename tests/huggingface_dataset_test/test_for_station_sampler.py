@@ -19,8 +19,10 @@ quakeflow_nc = datasets.load_dataset("../eqnet/data/quakeflow_nc.py", split="tes
 quakeflow_nc = quakeflow_nc.with_format("torch")
 time2 = time.time()
 print("Time to load dataset: ", time2-time1)
-group_ids = create_groups(quakeflow_nc, num_stations_list=[5,10,20])
-quakeflow_nc = quakeflow_nc.map(lambda x: cut_reorder_keys(x, num_stations_list=[5,10,20]))
+is_pad = True
+print("is_pad: ", is_pad)
+group_ids = create_groups(quakeflow_nc, num_stations_list=[5,10,20], is_pad=is_pad)
+quakeflow_nc = quakeflow_nc.map(lambda x: cut_reorder_keys(x, num_stations_list=[5,10,20], is_pad=is_pad))
 
 train_sampler = torch.utils.data.SequentialSampler(quakeflow_nc)
 train_batch_sampler = StationSampler(train_sampler, group_ids, 16, drop_last=True)
