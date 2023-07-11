@@ -16,7 +16,7 @@ import datasets
 
 import eqnet
 import utils
-from eqnet.utils.station_sampler import StationSampler, cut_reorder_keys, create_groups
+from eqnet.utils.station_sampler import StationSampler, cut_reorder_keys, create_groups, reorder_keys
 from eqnet.data import (
     AutoEncoderIterableDataset,
     DASDataset,
@@ -96,6 +96,11 @@ def train_one_epoch(
             scaler.update()
         else:
             loss.backward()
+            # print("Not scaling...")
+            # print("Checking None grads...")
+            # for name, param in model.named_parameters():
+            #     if param.grad is None:
+            #         print(name)
             if args.clip_grad_norm is not None:
                 nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad_norm)
             optimizer.step()
@@ -162,7 +167,7 @@ def plot_results(meta, model, output, device, args, epoch, prefix=""):
             phase = F.softmax(output["phase"], dim=1).cpu().float()
             event = torch.sigmoid(output["event"]).cpu().float()
             print("Plotting...")
-            eqnet.utils.visualize_eqnet_train(meta, phase, event, epoch=epoch, figure_dir=args.figure_dir)
+            eqnet.utils.visualize_eqnet_train(meta, phase, event, epoch=epoch, figure_dir=args.figure_dir, prefix=prefix)
             del output, phase, event
 
 
@@ -269,14 +274,19 @@ def main(args):
                 # Get the directory of the train.py
                 code_dir = os.path.dirname(os.path.abspath(__file__))
                 script_dir = os.path.join(code_dir, "eqnet/data/quakeflow_nc.py")
-                dataset = datasets.load_dataset(script_dir, split="train", name="NCEDC_full_size")
+                # dataset = datasets.load_dataset(script_dir, split="train", name="event")
+                # dataset_test = datasets.load_dataset(script_dir, split="test", name="event")
+                # TODO: just for testing
+                dataset = datasets.load_dataset(script_dir, split="test", name="event_test")
+                dataset_dict = dataset.train_test_split(test_size=0.2, seed=42)
+                dataset = dataset_dict["train"]
+                dataset_test = dataset_dict["test"]
             except:
-                dataset = datasets.load_dataset("AI4EPS/quakeflow_nc", split="train", name="NCEDC_full_size")
+                dataset = datasets.load_dataset("AI4EPS/quakeflow_nc", split="train", name="event")
+                dataset_test = datasets.load_dataset("AI4EPS/quakeflow_nc", split="test", name="event")
 
             dataset = dataset.with_format("torch")
-            dataset_dict = dataset.train_test_split(test_size=0.2, shuffle=False)
-            dataset = dataset_dict["train"]
-            dataset_test = dataset_dict["test"]
+            dataset_test = dataset_test.with_format("torch")
 
             if args.distributed:
                 train_sampler = torch.utils.data.distributed.DistributedSampler(dataset)
@@ -285,9 +295,11 @@ def main(args):
                 train_sampler = torch.utils.data.RandomSampler(dataset)
                 test_sampler = torch.utils.data.SequentialSampler(dataset_test)
 
-            group_ids = create_groups(dataset, args.num_stations_list)
-            dataset = dataset.map(lambda x: cut_reorder_keys(x, num_stations_list=args.num_stations_list))
+            group_ids = create_groups(dataset, args.num_stations_list, is_pad=True)
+            dataset = dataset.map(lambda x: cut_reorder_keys(x, num_stations_list=args.num_stations_list, is_pad=True))
             train_batch_sampler = StationSampler(train_sampler, group_ids, args.batch_size, args.num_stations_list)
+            # dataset_test = dataset_test.map(lambda x: reorder_keys(x))
+            dataset_test = dataset_test.map(lambda x: cut_reorder_keys(x, num_stations_list=args.num_stations_list, is_pad=True))
 
         else:
             dataset = SeismicNetworkIterableDataset(args.dataset)
@@ -430,7 +442,7 @@ def main(args):
 
     model_without_ddp = model
     if args.distributed:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=False)
         model_without_ddp = model.module
 
     model_ema = None
