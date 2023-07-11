@@ -318,11 +318,11 @@ def plot_phasenet(
 
 
 def visualize_eqnet_train(meta, phase, event, epoch, figure_dir="figures"):
-    for i in range(meta["waveform"].shape[0]):
+    for i in range(meta["data"].shape[0]):
         plt.close("all")
         fig, axes = plt.subplots(3, 1, figsize=(10, 10))
         for j in range(phase.shape[-1]):
-            axes[0].plot((meta["waveform"][i, -1, :, j]) / torch.std(meta["waveform"][i, -1, :, j]) / 8 + j)
+            axes[0].plot((meta["data"][i, -1, :, j]) / torch.std(meta["data"][i, -1, :, j]) / 8 + j)
 
             axes[1].plot(phase[i, 1, :, j] + j, "r")
             axes[1].plot(phase[i, 2, :, j] + j, "b")
