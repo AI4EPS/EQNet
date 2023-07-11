@@ -161,3 +161,13 @@ def cut_reorder_keys(example, num_stations_list=[5, 10, 20], is_pad=False):
             example["event_location_mask"] = example["event_location_mask"][cut,:].permute(1,0).contiguous()
             example["station_location"] = example["station_location"][cut,:].contiguous()
             return example
+        
+        
+def reorder_keys(example):
+    example["data"] = example["data"].permute(1,2,0).contiguous()
+    example["phase_pick"] = example["phase_pick"].permute(1,2,0).contiguous()
+    example["event_center"] = example["event_center"].permute(1,0).contiguous()
+    example["event_location"] = example["event_location"].permute(1,2,0).contiguous()
+    example["event_location_mask"] = example["event_location_mask"].permute(1,0).contiguous()
+    example["station_location"] = example["station_location"].contiguous()
+    return example

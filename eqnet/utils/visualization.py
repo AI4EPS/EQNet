@@ -317,7 +317,7 @@ def plot_phasenet(
             plt.close(fig)
 
 
-def visualize_eqnet_train(meta, phase, event, epoch, figure_dir="figures"):
+def visualize_eqnet_train(meta, phase, event, epoch, figure_dir="figures", prefix=""):
     for i in range(meta["data"].shape[0]):
         plt.close("all")
         fig, axes = plt.subplots(3, 1, figsize=(10, 10))
@@ -332,11 +332,14 @@ def visualize_eqnet_train(meta, phase, event, epoch, figure_dir="figures"):
             axes[2].plot(event[i, :, j] + j, "b")
             axes[2].plot(meta["event_center"][i, :, j] + j, "--C0")
 
+        axes[0].set_title("data")
+        axes[1].set_title("phase_pick")
+        axes[2].set_title("event_center")
         if "LOCAL_RANK" in os.environ:
             local_rank = int(os.environ["LOCAL_RANK"])
-            fig.savefig(f"{figure_dir}/{epoch:02d}_{i:02d}_{local_rank}.png", dpi=300)
+            fig.savefig(f"{figure_dir}/{prefix}{epoch:02d}_{i:02d}_{local_rank}.png", dpi=300)
         else:
-            fig.savefig(f"{figure_dir}/{epoch:02d}_{i:02d}.png", dpi=300)
+            fig.savefig(f"{figure_dir}/{prefix}{epoch:02d}_{i:02d}.png", dpi=300)
 
 
 def plot_das(data, pred, picks=None, phases=["P", "S"], file_name=None, figure_dir="./figures", epoch=0, **kwargs):

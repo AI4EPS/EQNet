@@ -75,7 +75,10 @@ class EventDetector(nn.Module):
 
         if self.training:
             return None, self.losses(x, targets)
-        return x, {}
+        elif targets is not None:
+            return x, self.losses(x, targets)
+        else:
+            return x, {}
 
     def losses(self, inputs, targets):
         inputs = inputs.float()  # https://github.com/pytorch/pytorch/issues/48163
@@ -142,7 +145,10 @@ class PhasePicker(nn.Module):
 
         if self.training:
             return None, self.losses(x, targets)
-        return x, {}
+        elif targets is not None:
+            return x, self.losses(x, targets)
+        else:
+            return x, {}
 
     def losses(self, inputs, targets):
         inputs = inputs.float()  # https://github.com/pytorch/pytorch/issues/48163
@@ -152,9 +158,10 @@ class PhasePicker(nn.Module):
 
 
 class EQNet(nn.Module):
-    def __init__(self, backbone="resnet50") -> None:
+    def __init__(self, backbone="resnet50", head="simple") -> None:
         super().__init__()
         self.backbone_name = backbone
+        self.head_name = head
         if backbone == "resnet18":
             self.backbone = ResNet(BasicBlock, [2, 2, 2, 2])  # ResNet18
             # self.backbone = ResNet(BasicBlock, [3, 4, 6, 3]) #ResNet34
@@ -183,8 +190,9 @@ class EQNet(nn.Module):
         else:
             raise ValueError("backbone must be one of 'resnet' or 'swin'")
 
-        self.event_detector = EventDetector()
-        self.phase_picker = PhasePicker()
+        if head == "simple":
+            self.event_detector = EventDetector()
+            self.phase_picker = PhasePicker()
 
     @property
     def device(self):
@@ -194,6 +202,11 @@ class EQNet(nn.Module):
         data = batched_inputs["data"].to(self.device)
 
         if self.training:
+            phase_pick = batched_inputs["phase_pick"].to(self.device)
+            event_center = batched_inputs["event_center"].to(self.device)
+            event_location = batched_inputs["event_location"].to(self.device)
+            event_location_mask = batched_inputs["event_location_mask"].to(self.device)
+        elif batched_inputs["phase_pick"] is not None: # validation
             phase_pick = batched_inputs["phase_pick"].to(self.device)
             event_center = batched_inputs["event_center"].to(self.device)
             event_location = batched_inputs["event_location"].to(self.device)
@@ -208,14 +221,19 @@ class EQNet(nn.Module):
         else:
             features = self.backbone(data)
 
-        output_phase, loss_phase = self.phase_picker(features, phase_pick)
-        output_event, loss_event = self.event_detector(features, event_center, event_location, event_location_mask)
+        if self.head_name == "simple":
+            output_phase, loss_phase = self.phase_picker(features, phase_pick)
+            output_event, loss_event = self.event_detector(features, event_center, event_location, event_location_mask)
 
         if self.training:
             return {"loss": loss_phase + loss_event, "loss_phase": loss_phase, "loss_event": loss_event}
+            # return {"loss": loss_phase, "loss_phase": loss_phase}
+        elif phase_pick is not None: # validation
+            return {"phase": output_phase, "event": output_event, "loss": loss_phase + loss_event, "loss_phase": loss_phase, "loss_event": loss_event}
         else:
             return {"phase": output_phase, "event": output_event}
+            # return {"phase": output_phase}
 
 
-def build_model(backbone="resnet", **kargs) -> EQNet:
+def build_model(backbone="resnet50", head="simple", **kargs) -> EQNet:
     return EQNet(backbone=backbone)
