@@ -1,19 +1,14 @@
 import logging
 import os
-import warnings
+from contextlib import nullcontext
 
 import matplotlib
-import matplotlib.pyplot as plt
 import pandas as pd
-from contextlib import nullcontext
 import torch
-import torch.utils.data
 import torch.multiprocessing as mp
-
-mp.set_start_method("spawn", force=True)
-
-matplotlib.use("agg")
-
+import torch.utils.data
+import wandb
+from glob import glob
 
 import eqnet
 import utils
@@ -27,8 +22,8 @@ from eqnet.utils import (
     plot_phasenet,
 )
 
-warnings.filterwarnings("ignore", ".*Length of IterableDataset.*")
-# logging.basicConfig(level=logging.INFO)
+# mp.set_start_method("spawn", force=True)
+matplotlib.use("agg")
 logger = logging.getLogger()
 
 
@@ -50,7 +45,8 @@ def pred_phasenet(args, model, data_loader, pick_path, figure_path, event_path=N
     model.eval()
     metric_logger = utils.MetricLogger(delimiter="  ")
     header = "Predicting:"
-    ctx = nullcontext() if args.device == "cpu" else torch.cuda.amp.autocast(enabled=args.amp)
+    # ctx = nullcontext() if args.device == "cpu" else torch.cuda.amp.autocast(enabled=args.amp)
+    ctx = nullcontext() if args.device == "cpu" else torch.amp.autocast(device_type=args.device, dtype=args.ptdtype)
     with torch.inference_mode():
         for meta in metric_logger.log_every(data_loader, 1, header):
             with ctx:
@@ -147,7 +143,8 @@ def pred_phasenet_das(args, model, data_loader, pick_path, figure_path):
     model.eval()
     metric_logger = utils.MetricLogger(delimiter="  ")
     header = "Predicting:"
-    ctx = nullcontext() if args.device == "cpu" else torch.cuda.amp.autocast(enabled=args.amp)
+    # ctx = nullcontext() if args.device == "cpu" else torch.cuda.amp.autocast(enabled=args.amp)
+    ctx = nullcontext() if args.device == "cpu" else torch.amp.autocast(device_type=args.device, dtype=args.ptdtype)
     with torch.inference_mode():
         for meta in metric_logger.log_every(data_loader, 1, header):
             with ctx:
@@ -240,6 +237,16 @@ def main(args):
     else:
         rank, world_size = 0, 1
     device = torch.device(args.device)
+    dtype = "bfloat16" if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else "float16"
+    ptdtype = {"float32": torch.float32, "bfloat16": torch.bfloat16, "float16": torch.float16}[dtype]
+    args.dtype, args.ptdtype = dtype, ptdtype
+    torch.backends.cuda.matmul.allow_tf32 = True  # allow tf32 on matmul
+    torch.backends.cudnn.allow_tf32 = True  # allow tf32 on cudnn
+    if args.use_deterministic_algorithms:
+        torch.backends.cudnn.benchmark = False
+        torch.use_deterministic_algorithms(True)
+    else:
+        torch.backends.cudnn.benchmark = True
 
     if args.model == "phasenet":
         dataset = SeismicTraceIterableDataset(
@@ -294,20 +301,15 @@ def main(args):
         add_polarity=args.add_polarity,
         add_event=args.add_event,
     )
-    # logger.info("Model:\n{}".format(model))
+    logger.info("Model:\n{}".format(model))
 
     model.to(device)
     if args.distributed:
         model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
 
-    model_without_ddp = model
-    if args.distributed:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
-        model_without_ddp = model.module
-
     if args.resume:
         checkpoint = torch.load(args.resume, map_location="cpu")
-        model_without_ddp.load_state_dict(checkpoint["model"], strict=True)
+        model.load_state_dict(checkpoint["model"], strict=True)
         print("Loaded checkpoint '{}' (epoch {})".format(args.resume, checkpoint["epoch"]))
     else:
         if args.model == "phasenet" and (not args.add_polarity):
@@ -316,7 +318,7 @@ def main(args):
             model_url = "https://github.com/AI4EPS/models/releases/download/PhaseNet-Polarity-v3/model_99.pth"
         elif args.model == "phasenet_das":
             if args.location is None:
-                model_url = "https://github.com/AI4EPS/models/releases/download/PhaseNet-DAS-v5/model_29.pth"
+                model_url = "ai4eps/model-registry/PhaseNet-DAS:latest"
             elif args.location == "forge":
                 model_url = (
                     "https://github.com/AI4EPS/models/releases/download/PhaseNet-DAS-ConvertedPhase/model_99.pth"
@@ -325,10 +327,25 @@ def main(args):
                 raise ("Missing pretrained model for this location")
         else:
             raise
-        state_dict = torch.hub.load_state_dict_from_url(
-            model_url, model_dir="./", progress=True, check_hash=True, map_location="cpu"
-        )
-        model_without_ddp.load_state_dict(state_dict["model"], strict=True)
+
+        ## load model from wandb
+        if utils.is_main_process():
+            with wandb.init() as run:
+                artifact = run.use_artifact(model_url, type="model")
+                artifact_dir = artifact.download()
+            checkpoint = torch.load(glob(os.path.join(artifact_dir, "*.pth"))[0], map_location="cpu")
+            model.load_state_dict(checkpoint["model"], strict=True)
+
+    model_without_ddp = model
+    if args.distributed:
+        torch.distributed.barrier()
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
+        model_without_ddp = model.module
+    ## load model from url
+    # state_dict = torch.hub.load_state_dict_from_url(
+    #     model_url, model_dir="./", progress=True, check_hash=True, map_location="cpu"
+    # )
+    # model_without_ddp.load_state_dict(state_dict["model"], strict=True)
 
     if args.model == "phasenet":
         pred_phasenet(args, model, data_loader, pick_path, figure_path, event_path)

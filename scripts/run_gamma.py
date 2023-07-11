@@ -23,25 +23,17 @@ def get_args_parser():
     parser = argparse.ArgumentParser(description="Run GaMMA")
     parser.add_argument("--bucket", type=str, default="gs://quakeflow_das")
     parser.add_argument("--folder", type=str, default="mammoth_north")
+    parser.add_argument("--picker", type=str, default="phasenet_das")
     parser.add_argument("--station_csv", type=str, default="das_info.csv")
     parser.add_argument("--catalog_csv", type=str, default="catalog_data.csv")
     parser.add_argument("--plot_figure", type=bool, default=True)
     parser.add_argument("--protocol", type=str, default="gs")
+    parser.add_argument("--overwrite", action="store_true", default=False)
 
     return parser
 
 
 def set_config(args):
-    # # %%
-    # bucket = "gs://quakeflow_das"
-    # folder = "mammoth_north"
-    # station_csv = "das_info.csv"
-    # catalog_csv = "catalog.csv"
-
-    # %%
-    # protocol = "gs"
-    fs = fsspec.filesystem(args.protocol)
-
     # %%
     stations = pd.read_csv(f"{args.bucket}/{args.folder}/{args.station_csv}")
     catalog = pd.read_csv(f"{args.bucket}/{args.folder}/{args.catalog_csv}", parse_dates=["event_time"])
@@ -90,10 +82,11 @@ def set_config(args):
     config["z(km)"] = (0, 30)
     # config["vel"] = {"p": 6.0, "s": 6.0 / 1.73}
     config["vel"] = {"p": 5.5, "s": 5.5 / 1.73}  ## Mammoth
-    # config["covariance_prior"] = [1000, 1000]
+    config["covariance_prior"] = [1000, 1000]  # Used for PhaseNet-DAS
     config["method"] = "BGMM"
     if config["method"] == "BGMM":
-        config["oversample_factor"] = 4
+        # config["oversample_factor"] = 4 # Used for PhaseNet
+        config["oversample_factor"] = 2  # Used for PhaseNet-DAS
     if config["method"] == "GMM":
         config["oversample_factor"] = 1
     config["bfgs_bounds"] = (
@@ -108,7 +101,8 @@ def set_config(args):
     config["min_picks_per_eq"] = 500  # len(stations) // 10
     # config["min_s_picks_per_eq"] = 10
     # config["min_p_picks_per_eq"] = 10
-    config["max_sigma11"] = 1.0
+    # config["max_sigma11"] = 1.0 # Used for PhaseNet
+    config["max_sigma11"] = 0.5  # Used for PhaseNet-DAS
 
     # cpu
     config["ncpu"] = 1
@@ -130,15 +124,16 @@ def associate(picks, stations, config):
     picks["timestamp"] = picks["phase_time"].apply(lambda x: datetime.fromisoformat(x))
 
     event_idx0 = 0
-    catalogs, assignments = association(picks, stations, config, event_idx0, config["method"])
+    events, assignments = association(picks, stations, config, event_idx0, config["method"])
 
     assignments = pd.DataFrame(assignments, columns=["pick_idx", "event_idx", "prob_gamma"])
     picks = picks.join(assignments.set_index("pick_idx")).fillna(-1).astype({"event_idx": int})
 
-    return catalogs, picks
+    return events, picks
 
 
-def run(files, event_list, config, stations, result_path):
+# def run(files, event_list, config, stations, result_path):
+def run(files, config, stations, result_path):
     for file in files:
         ## test init location
         # event_id = file.name.split("_")[-1].replace(".h5.csv", "")
@@ -154,24 +149,40 @@ def run(files, event_list, config, stations, result_path):
         #     (None, None),  # t
         # )
 
-        try:
-            picks = pd.read_csv(file)
-            picks = picks[picks["phase_score"] > 0.5]
-        except Exception as e:
-            print(e)
+        if os.path.exists(result_path / "picks" / file.name) and (not args.overwrite):
             continue
+
+        if os.path.getsize(file) == 0:
+            continue
+
+        picks = pd.read_csv(file)
+        # picks = picks[picks["phase_score"] > 0.5]  # used for PhaseNet
+        picks = picks[picks["phase_score"] > 0.8]  # used for PhaseNet-DAS
+        if len(picks) < config["min_picks_per_eq"]:
+            continue
+
+        if ("station_id" not in picks.columns) and ("channel_index" in picks.columns):
+            picks["station_id"] = picks["channel_index"]
 
         events, picks = associate(picks, stations, config)
         if (events is None) or (picks is None):
             continue
 
-        for e in events:
-            # e["event_id"] = file.name.split("_")[-1].replace(".h5.csv", "")
-            e["event_id"] = file.stem
-            event_list.append(e)
+        # for e in events:
+        #     # e["event_id"] = file.name.split("_")[-1].replace(".h5.csv", "")
+        #     e["event_id"] = file.stem
+        #     event_list.append(e)
 
         if len(picks[picks["event_idx"] != -1]) == 0:
             continue
+        else:
+            events = pd.DataFrame(events)
+            events[["longitude", "latitude"]] = events.apply(
+                lambda x: pd.Series(proj(longitude=x["x(km)"], latitude=x["y(km)"], inverse=True)), axis=1
+            )
+            events["depth_km"] = events["z(km)"]
+            events.drop(columns=["x(km)", "y(km)", "z(km)"], inplace=True)
+            events.to_csv(result_path / "events" / file.name, index=False, float_format="%.7f")
 
         if args.plot_figure:
             plot_picks(result_path, file, picks)
@@ -179,7 +190,6 @@ def run(files, event_list, config, stations, result_path):
         picks["event_index"] = picks["event_idx"]
         picks.sort_values(by=["station_id", "phase_index"], inplace=True)
         picks.to_csv(
-            # result_path / "picks" / (file.name.split("_")[-1].replace(".h5.csv", "") + ".csv"),
             result_path / "picks" / file.name,
             index=False,
             columns=["station_id", "phase_index", "phase_time", "phase_score", "phase_type", "event_index"],
@@ -224,7 +234,6 @@ def plot_picks(result_path, file, picks):
     )
     axs[0, 0].invert_yaxis()
     plt.savefig(
-        # result_path / "figures" / (file.name.split("_")[-1].replace(".h5.csv", "") + ".jpg"),
         result_path / "figures" / (file.stem + ".jpg"),
         bbox_inches="tight",
         dpi=300,
@@ -235,6 +244,7 @@ def plot_picks(result_path, file, picks):
 # %%
 if __name__ == "__main__":
     # # %%
+    # pick_path = Path(f"results/{args.picker}/{args.folder}/picks_{args.picker}")
     # files = sorted(list(picks_path.rglob('*.csv')))
     # event_list = []
     # run(files, event_list)
@@ -244,11 +254,17 @@ if __name__ == "__main__":
     # print(args)
 
     # %%
-    result_path = Path(f"results/gamma/{args.folder}")
+    pick_path = Path(f"results/{args.picker}/{args.folder}/picks_{args.picker}")
+    files = sorted(list(pick_path.rglob("*.csv")), key=lambda x: -os.path.getsize(x))
+
+    # %%
+    result_path = Path(f"results/gamma/{args.picker}/{args.folder}")
     if not result_path.exists():
         result_path.mkdir(parents=True)
     if not (result_path / "picks").exists():
         (result_path / "picks").mkdir(parents=True)
+    if not (result_path / "events").exists():
+        (result_path / "events").mkdir(parents=True)
     if not (result_path / "figures").exists():
         (result_path / "figures").mkdir(parents=True)
 
@@ -256,30 +272,38 @@ if __name__ == "__main__":
 
     # %%
     manager = Manager()
-    event_list = manager.list()
-    picks_path = Path(f"results/phasenet/{args.folder}/picks_phasenet")
-    files = sorted(list(picks_path.rglob("*.csv")))
-
     jobs = []
     num_cores = max(1, multiprocessing.cpu_count() // 2)
     # num_cores = 1
     with multiprocessing.Pool(num_cores) as pool:
-        pool.starmap(run, [(files[i::num_cores], event_list, config, stations, result_path) for i in range(num_cores)])
+        # pool.starmap(run, [(files[i::num_cores], event_list, config, stations, result_path) for i in range(num_cores)])
+        pool.starmap(run, [(files[i::num_cores], config, stations, result_path) for i in range(num_cores)])
 
-    print(f"Number of events: {len(event_list)}")
-    if len(event_list) > 0:
-        events = pd.DataFrame(list(event_list))
-        events[["longitude", "latitude"]] = events.apply(
-            lambda x: pd.Series(proj(longitude=x["x(km)"], latitude=x["y(km)"], inverse=True)), axis=1
-        )
-        events["depth_km"] = events["z(km)"]
-        events.drop(columns=["x(km)", "y(km)", "z(km)"], inplace=True)
-        events.to_csv(result_path / f"gamma_events.csv", index=False, float_format="%.6f")
-    else:
-        print("No events found!")
+    # print(f"Number of events: {len(event_list)}")
+    # if len(event_list) > 0:
+    #     events = pd.DataFrame(list(event_list))
+    #     events[["longitude", "latitude"]] = events.apply(
+    #         lambda x: pd.Series(proj(longitude=x["x(km)"], latitude=x["y(km)"], inverse=True)), axis=1
+    #     )
+    #     events["depth_km"] = events["z(km)"]
+    #     events.drop(columns=["x(km)", "y(km)", "z(km)"], inplace=True)
+    #     # events = pd.concat(event_list, ignore_index=True)
+    #     events.to_csv(result_path / f"gamma_events.csv", index=False, float_format="%.6f")
+    # else:
+    #     print("No events found!")
 
-    cmd = f"gsutil -m cp -r {result_path}/picks {args.bucket}/{args.folder}/gamma/picks"
-    cmd += f" && gsutil cp -r {result_path}/gamma_events.csv {args.bucket}/{args.folder}/gamma/gamma_events.csv"
-    cmd += f" && gsutil cp -r {result_path}/station_catalog.png {args.bucket}/{args.folder}/gamma/station_catalog.png"
+    events = []
+    for f in (result_path / "events").rglob("*.csv"):
+        e = pd.read_csv(f)
+        events.append(e)
+    if len(events) > 0:
+        events = pd.concat(events, ignore_index=True)
+        events.to_csv(result_path / f"gamma_events.csv", index=False, float_format="%.7f")
+
+    cmd = f"gsutil -m cp -r {result_path}/picks {args.bucket}/{args.folder}/gamma/{args.picker}/picks"
+    cmd += f" && gsutil cp -r {result_path}/gamma_events.csv {args.bucket}/{args.folder}/gamma/{args.picker}/gamma_events.csv"
+    cmd += f" && gsutil cp {result_path}/station_catalog.png {args.bucket}/{args.folder}/gamma/{args.picker}/station_catalog.png"
     print(cmd)
     os.system(cmd)
+
+# %%
