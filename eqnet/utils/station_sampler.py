@@ -111,7 +111,7 @@ def cut_reorder_keys(example, num_stations_list=[5, 10, 20], is_pad=False, is_tr
     num_stations = example["station_location"].shape[0]
     num_stations_list = np.array(sorted(num_stations_list))
     if is_train and num_stations < 5:
-        return reorder_keys(example)
+        return example
     if is_pad:
         if num_stations >= num_stations_list[-1]:
             group_id = num_stations_list[-1]
