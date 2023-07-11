@@ -1,6 +1,7 @@
 from functools import partial
 from typing import Any, Callable, List, Optional, Dict
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import nn, Tensor
@@ -252,10 +253,10 @@ def shifted_window_attention(
         attn = attn * logit_scale
     else:
         q = q * (C // num_heads) ** -0.5
-        attn = q.matmul(k.transpose(-2, -1))
+        attn = q.matmul(k.transpose(-2, -1)) # B*nW, nH, Ws*Ws, Ws*Ws
     # add relative position bias
     # TODO: check whether relative position bias is correctly implemented
-    relative_position_bias_shape = relative_position_bias.shape
+    relative_position_bias_shape = relative_position_bias.shape # B, nH, Ws*Ws, Ws*Ws
     relative_position_bias = relative_position_bias.unsqueeze(1).repeat(1, num_windows, 1, 1, 1).view(B * num_windows, *relative_position_bias_shape[1:])
     attn = attn + relative_position_bias
 
@@ -321,54 +322,54 @@ class ShiftedWindowAttention(nn.Module):
         self.num_heads = num_heads
         self.attention_dropout = attention_dropout
         self.dropout = dropout
+        self.degree2km = 111.32
 
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
         self.proj = nn.Linear(dim, dim, bias=proj_bias)
 
-        ## TODO: add if using station dimension into arguments
         ## we put Wh as the time dimension, Wn as the station dimension
-        use_station_location = False
-
         # define a parameter table of relative position bias
-        if use_station_location:
-            self.relative_position_bias_table = nn.Parameter(
-                torch.zeros((2 * window_size[0] - 1) * (2 * window_size[1] - 1), num_heads)
-            )  # 2*Wh-1 * 2*Ww-1, nH
-        else:
-            self.relative_position_bias_table = nn.Parameter(
-                torch.zeros((2 * window_size[0] - 1), num_heads)
-            )  # 2*Wh-1 * 1, nH
-
-        # get pair-wise relative position index for each token inside the window
-        coords_h = torch.arange(self.window_size[0])
-        coords_w = torch.arange(self.window_size[1])
-        coords = torch.stack(torch.meshgrid(coords_h, coords_w, indexing="ij"))  # 2, Wh, Ww
-        coords_flatten = torch.flatten(coords, 1)  # 2, Wh*Ww
-        relative_coords = coords_flatten[:, :, None] - coords_flatten[:, None, :]  # 2, Wh*Ww, Wh*Ww
-        relative_coords = relative_coords.permute(1, 2, 0).contiguous()  # Wh*Ww, Wh*Ww, 2
-        relative_coords[:, :, 0] += self.window_size[0] - 1  # shift to start from 0
-        if use_station_location:
-            relative_coords[:, :, 1] += self.window_size[1] - 1
-            relative_coords[:, :, 0] *= 2 * self.window_size[1] - 1
-        else:
-            relative_coords[:, :, 1] = 0
-        relative_position_index = relative_coords.sum(-1).view(-1)  # Wh*Ww*Wh*Ww
-        self.register_buffer("relative_position_index", relative_position_index)
-
+        self.relative_position_bias_table = nn.Parameter(
+            # torch.zeros((2 * self.window_size[0] - 1) * (2 * self.window_size[1] - 1), num_heads)
+            torch.zeros((2 * self.window_size[0] - 1) * (2 * self.window_size[1] - 1) * (2 * self.window_size[1] - 1), num_heads)
+        )  # 2*Wh-1 * 2*Ww-1 * 2*Ww-1, nH (TODO: before: 2*Wh-1 * 2*Ww-1, nH)
         nn.init.trunc_normal_(self.relative_position_bias_table, std=0.02)
+        
+        coords_t = torch.arange(self.window_size[0]).unsqueeze(-1).unsqueeze(-1).repeat(1, self.window_size[1], 1) # nt, nx 1
+        self.register_buffer("coords_t", coords_t)
 
-    def forward(self, x: Tensor):
+    def forward(self, x: Tensor, loc: Tensor):
         """
         Args:
             x (Tensor): Tensor with layout of [B, H, W, C]
+            loc (Tensor): Station location with layout of [B, W, 3]
         Returns:
             Tensor with same layout as input, i.e. [B, H, W, C]
         """
-
+        # get pair-wise relative position index for each token inside the window
+        coords_t = self.coords_t.repeat(loc.shape[0], 1, 1, 1) # B, nt, nx, 1
+        coords_x = loc.unsqueeze(-3).repeat(1, self.coords_t.shape[0], 1, 1)[:, :, :, :2] # B, nt, nx, 2
+        # coords_x -= coords_x.min(dim=-2, keepdim=True).values # B, nt, nx, 2
+        # coords_x = (coords_x*coords_x).sum(-1).sqrt() # B, nt, nx
+        # coords_x = (coords_x-coords_x.mean(dim=-1, keepdim=True))/self.degree2km # B, nt, nx
+        coords_x = (coords_x - coords_x.mean(dim=-2, keepdim=True)) / self.degree2km # B, nt, nx, 2
+        coords_x = torch.round(((coords_x+1.0)/2) * (self.window_size[1]-1)).long() # B, nt, nx, 2
+        coords_x = torch.clamp(coords_x, 0, self.window_size[1]-1) # B, nt, nx, 2
+        coords = torch.cat([coords_t, coords_x], dim=-1) # B, nt, nx, 3
+        coords_flatten = torch.flatten(coords, 1, 2) # B, nt*nx, 3
+        relative_coords = coords_flatten[:, :, None, :] - coords_flatten[:, None, :, :] # B, nt*nx, nt*nx, 3
+        # shift to start from 0
+        relative_coords[:, :, :, 0] += self.window_size[0] - 1
+        relative_coords[:, :, :, 1] += self.window_size[1] - 1
+        relative_coords[:, :, :, 2] += self.window_size[1] - 1
+        relative_coords[:, :, :, 0] *= (2 * self.window_size[1] - 1) * (2 * self.window_size[1] - 1)
+        relative_coords[:, :, :, 1] *= (2 * self.window_size[1] - 1)
+        relative_position_index = relative_coords.sum(-1).view(loc.shape[0], -1) # B, nt*nx*nt*nx
+            
         N = self.window_size[0] * self.window_size[1]
-        relative_position_bias = self.relative_position_bias_table[self.relative_position_index]  # type: ignore[index]
-        relative_position_bias = relative_position_bias.view(N, N, -1)
-        relative_position_bias = relative_position_bias.permute(2, 0, 1).contiguous().unsqueeze(0)
+        relative_position_bias = self.relative_position_bias_table[relative_position_index[:]] # B, nt*nx*nt*nx, nH
+        relative_position_bias = relative_position_bias.view(loc.shape[0], N, N, -1) # B, nt*nx, nt*nx, nH
+        relative_position_bias = relative_position_bias.permute(0, 3, 1, 2) # B, nH, nt*nx, nt*nx
 
         return shifted_window_attention(
             x,
