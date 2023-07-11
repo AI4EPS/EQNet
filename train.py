@@ -4,6 +4,7 @@ import os
 import random
 import time
 from contextlib import nullcontext
+from glob import glob
 
 import matplotlib
 import numpy as np
@@ -12,11 +13,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.data
 import wandb
-import datasets
 
+import datasets
 import eqnet
 import utils
-from eqnet.utils.station_sampler import StationSampler, cut_reorder_keys, create_groups
 from eqnet.data import (
     AutoEncoderIterableDataset,
     DASDataset,
@@ -25,6 +25,7 @@ from eqnet.data import (
     SeismicTraceIterableDataset,
 )
 from eqnet.models.unet import moving_normalize
+from eqnet.utils.station_sampler import StationSampler, create_groups, cut_reorder_keys
 
 matplotlib.use("agg")
 logger = logging.getLogger("EQNet")
@@ -354,6 +355,31 @@ def main(args):
     if args.distributed and args.sync_bn:
         model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
 
+    # logging
+    if args.wandb and utils.is_main_process():
+        wandb.init(
+            project=args.wandb_project, name=args.wandb_name, entity=args.wandb_group, dir=args.wandb_dir, config=args
+        )
+        if args.wandb_watch:
+            wandb.watch(model, log="all", log_freq=args.print_freq)
+
+    if args.resume:
+        if utils.is_main_process():
+            if args.model == "phasenet_das":
+                model_url = "ai4eps/model-registry/PhaseNet-DAS:latest"
+                artifact = wandb.use_artifact(model_url, type="model")
+                artifact_dir = artifact.download()
+                checkpoint = torch.load(glob(os.path.join(artifact_dir, "*.pth"))[0], map_location="cpu")
+                model.load_state_dict(checkpoint["model"], strict=True)
+                # if model_ema:
+                #     model_ema.load_state_dict(checkpoint["model_ema"])
+                # if not args.test_only:
+                #     optimizer.load_state_dict(checkpoint["optimizer"])
+                #     lr_scheduler.load_state_dict(checkpoint["lr_scheduler"])
+                # args.start_epoch = checkpoint["epoch"] + 1
+                # if scaler:
+                #     scaler.load_state_dict(checkpoint["scaler"])
+
     custom_keys_weight_decay = []
     if args.bias_weight_decay is not None:
         custom_keys_weight_decay.append(("bias", args.bias_weight_decay))
@@ -441,25 +467,17 @@ def main(args):
         alpha = min(1.0, alpha * adjust)
         model_ema = utils.ExponentialMovingAverage(model_without_ddp, device=device, decay=1.0 - alpha)
 
-    if args.resume:
-        checkpoint = torch.load(args.resume, map_location="cpu")
-        model_without_ddp.load_state_dict(checkpoint["model"])
-        if not args.test_only:
-            optimizer.load_state_dict(checkpoint["optimizer"])
-            lr_scheduler.load_state_dict(checkpoint["lr_scheduler"])
-        args.start_epoch = checkpoint["epoch"] + 1
-        if model_ema:
-            model_ema.load_state_dict(checkpoint["model_ema"])
-        if scaler:
-            scaler.load_state_dict(checkpoint["scaler"])
-
-    # logging
-    if args.wandb and utils.is_main_process():
-        wandb.init(
-            project=args.wandb_project, name=args.wandb_name, entity=args.wandb_group, dir=args.wandb_dir, config=args
-        )
-        if args.wandb_watch:
-            wandb.watch(model, log="all", log_freq=args.print_freq)
+    # if args.resume:
+    #     checkpoint = torch.load(args.resume, map_location="cpu")
+    #     model_without_ddp.load_state_dict(checkpoint["model"])
+    #     if not args.test_only:
+    #         optimizer.load_state_dict(checkpoint["optimizer"])
+    #         lr_scheduler.load_state_dict(checkpoint["lr_scheduler"])
+    #     args.start_epoch = checkpoint["epoch"] + 1
+    #     if model_ema:
+    #         model_ema.load_state_dict(checkpoint["model_ema"])
+    #     if scaler:
+    #         scaler.load_state_dict(checkpoint["scaler"])
 
     start_time = time.time()
     best_loss = float("inf")
