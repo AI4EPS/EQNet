@@ -371,9 +371,9 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                                 station_location[i, 1] = round(attrs["latitude"] * self.degree2km, 2)
                                 station_location[i, 2] =  round(-attrs["elevation_m"]/1e3, 2)
 
-                            std = np.std(waveforms, axis=1, keepdims=True)
+                            std = np.std(waveforms, axis=-1, keepdims=True)
                             std[std == 0] = 1.0
-                            waveforms = (waveforms - np.mean(waveforms, axis=1, keepdims=True)) / std
+                            waveforms = (waveforms - np.mean(waveforms, axis=-1, keepdims=True)) / std
                             waveforms = waveforms.astype(np.float32)
 
                             yield event_id, {
