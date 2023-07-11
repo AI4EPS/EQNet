@@ -34,16 +34,6 @@ def get_args_parser():
 
 
 def set_config(args):
-    # # %%
-    # bucket = "gs://quakeflow_das"
-    # folder = "mammoth_north"
-    # station_csv = "das_info.csv"
-    # catalog_csv = "catalog.csv"
-
-    # %%
-    # protocol = "gs"
-    fs = fsspec.filesystem(args.protocol)
-
     # %%
     stations = pd.read_csv(f"{args.bucket}/{args.folder}/{args.station_csv}")
     catalog = pd.read_csv(f"{args.bucket}/{args.folder}/{args.catalog_csv}", parse_dates=["event_time"])
@@ -95,8 +85,8 @@ def set_config(args):
     config["covariance_prior"] = [1000, 1000]  # Used for PhaseNet-DAS
     config["method"] = "BGMM"
     if config["method"] == "BGMM":
-        # config["oversample_factor"] = 4
-        config["oversample_factor"] = 1  # Used for PhaseNet-DAS
+        # config["oversample_factor"] = 4 # Used for PhaseNet
+        config["oversample_factor"] = 2  # Used for PhaseNet-DAS
     if config["method"] == "GMM":
         config["oversample_factor"] = 1
     config["bfgs_bounds"] = (
@@ -111,7 +101,8 @@ def set_config(args):
     config["min_picks_per_eq"] = 500  # len(stations) // 10
     # config["min_s_picks_per_eq"] = 10
     # config["min_p_picks_per_eq"] = 10
-    config["max_sigma11"] = 1.0
+    # config["max_sigma11"] = 1.0 # Used for PhaseNet
+    config["max_sigma11"] = 0.5  # Used for PhaseNet-DAS
 
     # cpu
     config["ncpu"] = 1
@@ -165,7 +156,8 @@ def run(files, config, stations, result_path):
             continue
 
         picks = pd.read_csv(file)
-        picks = picks[picks["phase_score"] > 0.5]
+        # picks = picks[picks["phase_score"] > 0.5]  # used for PhaseNet
+        picks = picks[picks["phase_score"] > 0.8]  # used for PhaseNet-DAS
         if len(picks) < config["min_picks_per_eq"]:
             continue
 
@@ -252,6 +244,7 @@ def plot_picks(result_path, file, picks):
 # %%
 if __name__ == "__main__":
     # # %%
+    # pick_path = Path(f"results/{args.picker}/{args.folder}/picks_{args.picker}")
     # files = sorted(list(picks_path.rglob('*.csv')))
     # event_list = []
     # run(files, event_list)
@@ -259,6 +252,10 @@ if __name__ == "__main__":
     # %%
     args = get_args_parser().parse_args()
     # print(args)
+
+    # %%
+    pick_path = Path(f"results/{args.picker}/{args.folder}/picks_{args.picker}")
+    files = sorted(list(pick_path.rglob("*.csv")), key=lambda x: -os.path.getsize(x))
 
     # %%
     result_path = Path(f"results/gamma/{args.picker}/{args.folder}")
@@ -275,8 +272,6 @@ if __name__ == "__main__":
 
     # %%
     manager = Manager()
-    files = sorted(list((result_path / "picks").rglob("*.csv")), key=lambda x: -os.path.getsize(x))
-
     jobs = []
     num_cores = max(1, multiprocessing.cpu_count() // 2)
     # num_cores = 1
@@ -301,8 +296,9 @@ if __name__ == "__main__":
     for f in (result_path / "events").rglob("*.csv"):
         e = pd.read_csv(f)
         events.append(e)
-    events = pd.concat(events, ignore_index=True)
-    events.to_csv(result_path / f"gamma_events.csv", index=False, float_format="%.7f")
+    if len(events) > 0:
+        events = pd.concat(events, ignore_index=True)
+        events.to_csv(result_path / f"gamma_events.csv", index=False, float_format="%.7f")
 
     cmd = f"gsutil -m cp -r {result_path}/picks {args.bucket}/{args.folder}/gamma/{args.picker}/picks"
     cmd += f" && gsutil cp -r {result_path}/gamma_events.csv {args.bucket}/{args.folder}/gamma/{args.picker}/gamma_events.csv"
