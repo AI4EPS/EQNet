@@ -84,7 +84,9 @@ def create_groups(dataset, num_stations_list=[5, 10, 20], is_pad=False):
     for data in dataset:
         num_stations = data["station_location"].shape[0]
         num_stations_list = np.array(sorted(num_stations_list))
-        if is_pad:
+        if num_stations < 5:
+            group_id = 0
+        elif is_pad:
             if num_stations >= num_stations_list[-1]:
                 group_id = num_stations_list[-1]
             else:
@@ -98,17 +100,18 @@ def create_groups(dataset, num_stations_list=[5, 10, 20], is_pad=False):
         group_ids.append(group_id)
     group_ids=np.array(group_ids)
     counts = np.unique(group_ids, return_counts=True)[1]
+    if len(counts) > len(num_stations_list):
+        counts = counts[1:]
     # print group and counts
-    if is_pad:
-        print(f"groups: {num_stations_list}, counts: {counts}, sum: {counts.sum()}")
-    else:
-        print(f"groups: {num_stations_list}, counts: {counts[1:]}, sum: {counts[1:].sum()}")
+    print(f"groups: {num_stations_list}, counts: {counts}, sum: {counts.sum()}")
     return group_ids
 
 
-def cut_reorder_keys(example, num_stations_list=[5, 10, 20], is_pad=False):
+def cut_reorder_keys(example, num_stations_list=[5, 10, 20], is_pad=False, is_train=True):
     num_stations = example["station_location"].shape[0]
     num_stations_list = np.array(sorted(num_stations_list))
+    if is_train and num_stations < 5:
+        return reorder_keys(example)
     if is_pad:
         if num_stations >= num_stations_list[-1]:
             group_id = num_stations_list[-1]
