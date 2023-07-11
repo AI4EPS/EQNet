@@ -414,8 +414,10 @@ class ShiftedWindowAttentionV2(ShiftedWindowAttention):
             dropout=dropout,
         )
 
+        self.relative_position_bias_table = None
         # give up us logit_scale because the length of time dimension won't be too far from the original length
-        self.logit_scale = None# nn.Parameter(torch.log(10 * torch.ones((num_heads, 1, 1))))
+        # self.logit_scale = None
+        self.logit_scale = nn.Parameter(torch.log(10 * torch.ones((num_heads, 1, 1))))
         ## https://github.com/microsoft/Swin-Transformer/blob/b720b4191588c19222ccf129860e905fb02373a7/models/swin_transformer_v2.py#L92
         # mlp to generate continuous relative position bias
         self.cpb_mlp = nn.Sequential(nn.Linear(4, 512, bias=True),
