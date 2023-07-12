@@ -82,12 +82,6 @@ def train_one_epoch(
     model.train()
     num_processed_samples = 0
     for i, meta in enumerate(metric_logger.log_every(data_loader, args.print_freq, header)):
-        # UserWarning: Detected call of `lr_scheduler.step()` before `optimizer.step()`. 
-        # In PyTorch 1.1.0 and later, you should call them in the opposite order: `optimizer.step()` before `lr_scheduler.step()`.  
-        # Failure to do this will result in PyTorch skipping the first value of the learning rate schedule. 
-        # See more details at https://pytorch.org/docs/stable/optim.html#how-to-adjust-learning-rate
-        # warnings.warn("Detected call of `lr_scheduler.step()` before `optimizer.step()`. "
-        lr_scheduler.step()
         with ctx:
             output = model(meta)
 
@@ -110,7 +104,7 @@ def train_one_epoch(
             if args.clip_grad_norm is not None:
                 nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad_norm)
             optimizer.step()
-        # lr_scheduler.step()
+        lr_scheduler.step()
 
         if model_ema and i % args.model_ema_steps == 0:
             model_ema.update_parameters(model)
