@@ -319,7 +319,10 @@ class ShiftedWindowAttention(nn.Module):
         self.num_heads = num_heads
         self.attention_dropout = attention_dropout
         self.dropout = dropout
+        # we set the limit of relative position coordinates is -1 degree to 1 degree
         self.degree2km = 111.32
+        # we separate -1 degree to 1 degree into 21 bins
+        self.bin = 21
 
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
         self.proj = nn.Linear(dim, dim, bias=proj_bias)
@@ -328,12 +331,14 @@ class ShiftedWindowAttention(nn.Module):
         # define a parameter table of relative position bias
         self.relative_position_bias_table = nn.Parameter(
             # torch.zeros((2 * self.window_size[0] - 1) * (2 * self.window_size[1] - 1), num_heads)
-            torch.zeros((2 * self.window_size[0] - 1) * (2 * self.window_size[1] - 1) * (2 * self.window_size[1] - 1), num_heads)
-        )  # 2*Wh-1 * 2*Ww-1 * 2*Ww-1, nH (TODO: before: 2*Wh-1 * 2*Ww-1, nH)
+            torch.zeros(3, (2 * self.window_size[0] - 1) * self.bin, num_heads)
+        )  # 3, 2*Wh-1 * bin, nH, now we are learning bias of dxdt, dydt, dzdt separately
         nn.init.trunc_normal_(self.relative_position_bias_table, std=0.02)
         
         coords_t = torch.arange(self.window_size[0]).unsqueeze(-1).unsqueeze(-1).repeat(1, self.window_size[1], 1) # nt, nx 1
-        self.register_buffer("coords_t", coords_t)
+        coords_t_flatten = torch.flatten(coords_t, 0, 1) # nt*nx, 1
+        relative_coords_t = coords_t_flatten[:, None, :] - coords_t_flatten[None, :, :] # nt*nx, nt*nx, 1
+        self.register_buffer("relative_coords_t", relative_coords_t)
 
     def forward(self, x: Tensor, loc: Tensor):
         """
@@ -344,27 +349,22 @@ class ShiftedWindowAttention(nn.Module):
             Tensor with same layout as input, i.e. [B, H, W, C]
         """
         # get pair-wise relative position index for each token inside the window
-        coords_t = self.coords_t.repeat(loc.shape[0], 1, 1, 1) # B, nt, nx, 1
-        coords_x = loc.unsqueeze(-3).repeat(1, self.coords_t.shape[0], 1, 1)[:, :, :, :2] # B, nt, nx, 2
-        # coords_x -= coords_x.min(dim=-2, keepdim=True).values # B, nt, nx, 2
-        # coords_x = (coords_x*coords_x).sum(-1).sqrt() # B, nt, nx
-        # coords_x = (coords_x-coords_x.mean(dim=-1, keepdim=True))/self.degree2km # B, nt, nx
-        coords_x = (coords_x - coords_x.mean(dim=-2, keepdim=True)) / self.degree2km # B, nt, nx, 2
-        coords_x = torch.round(((coords_x+1.0)/2) * (self.window_size[1]-1)).long() # B, nt, nx, 2
-        coords_x = torch.clamp(coords_x, 0, self.window_size[1]-1) # B, nt, nx, 2
-        coords = torch.cat([coords_t, coords_x], dim=-1) # B, nt, nx, 3
-        coords_flatten = torch.flatten(coords, 1, 2) # B, nt*nx, 3
-        relative_coords = coords_flatten[:, :, None, :] - coords_flatten[:, None, :, :] # B, nt*nx, nt*nx, 3
+        relative_coords_t = self.relative_coords_t.repeat(loc.shape[0], 1, 1, 1) # B, nt*nx, nt*nx, 1
+        relative_coords_sta = loc[:, :, None, :] - loc[:, None, :, :] # B, nx, nx, 3
+        relative_coords_sta = ((relative_coords_sta/self.degree2km)+1.0) * (self.bin-1)/2 # B, nx, nx, 3
+        relative_coords_sta = torch.clamp(torch.round(relative_coords_sta).long(), 0, self.bin-1) # B, nx, nx, 3
+        relative_coords_sta = relative_coords_sta.repeat(1, self.window_size[0], self.window_size[0], 1) # B, nt*nx, nt*nx, 3
         # shift to start from 0
-        relative_coords[:, :, :, 0] += self.window_size[0] - 1
-        relative_coords[:, :, :, 1] += self.window_size[1] - 1
-        relative_coords[:, :, :, 2] += self.window_size[1] - 1
-        relative_coords[:, :, :, 0] *= (2 * self.window_size[1] - 1) * (2 * self.window_size[1] - 1)
-        relative_coords[:, :, :, 1] *= (2 * self.window_size[1] - 1)
-        relative_position_index = relative_coords.sum(-1).view(loc.shape[0], -1) # B, nt*nx*nt*nx
+        relative_coords_t[:, :, :, 0] += self.window_size[0] - 1
+        relative_coords_t[:, :, :, 0] *= self.bin
+        relative_coords = (relative_coords_t + relative_coords_sta).permute(3, 0, 1, 2) # 3, B, nt*nx, nt*nx
+        relative_position_index = relative_coords.view(3, loc.shape[0], -1) # 3, B, nt*nx*nt*nx
             
         N = self.window_size[0] * self.window_size[1]
-        relative_position_bias = self.relative_position_bias_table[relative_position_index[:]] # B, nt*nx*nt*nx, nH
+        # B, nt*nx*nt*nx, nH 
+        relative_position_bias = self.relative_position_bias_table[0, relative_position_index[0], :] + \
+                                self.relative_position_bias_table[1, relative_position_index[1], :] + \
+                                self.relative_position_bias_table[2, relative_position_index[2], :]
         relative_position_bias = relative_position_bias.view(loc.shape[0], N, N, -1) # B, nt*nx, nt*nx, nH
         relative_position_bias = relative_position_bias.permute(0, 3, 1, 2) # B, nH, nt*nx, nt*nx
 
