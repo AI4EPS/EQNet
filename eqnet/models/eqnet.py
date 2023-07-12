@@ -170,20 +170,20 @@ class EQNet(nn.Module):
         elif backbone == "swin":
             self.backbone = SwinTransformer(
                 patch_size=[4, 1],
-                embed_dim=16,
+                embed_dim=96,
                 depths=[2, 2, 6, 2],
-                num_heads=[2, 4, 8, 8],
-                window_size=[8, 10],
+                num_heads=[3, 6, 12, 24],
+                window_size=[7, 10],
                 stochastic_depth_prob=0.2,
                 block_name="SwinTransformerBlock",
             )
         elif backbone == "swin2":
             self.backbone = SwinTransformer(
                 patch_size=[4, 1],
-                embed_dim=16,
+                embed_dim=96,
                 depths=[2, 2, 6, 2],
-                num_heads=[2, 4, 8, 8],
-                window_size=[8, 10],
+                num_heads=[3, 6, 12, 24],
+                window_size=[7, 10],
                 stochastic_depth_prob=0.2,
                 block_name="SwinTransformerBlockV2",
             )
