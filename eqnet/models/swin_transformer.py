@@ -10,12 +10,6 @@ from torch.fx import wrap
 
 __all__ = [
     "SwinTransformer",
-    "Swin_T_Weights",
-    "Swin_S_Weights",
-    "Swin_B_Weights",
-    "Swin_V2_T_Weights",
-    "Swin_V2_S_Weights",
-    "Swin_V2_B_Weights",
     "swin_t",
     "swin_s",
     "swin_b",
@@ -320,7 +314,8 @@ class ShiftedWindowAttention(nn.Module):
         self.attention_dropout = attention_dropout
         self.dropout = dropout
         # we set the limit of relative position coordinates is -1 degree to 1 degree
-        self.degree2km = 111.32
+        degree2km = 111.32
+        self.grid_size = degree2km / 10
         # we separate -1 degree to 1 degree into 21 bins
         self.bin = 21
 
@@ -331,8 +326,8 @@ class ShiftedWindowAttention(nn.Module):
         # define a parameter table of relative position bias
         self.relative_position_bias_table = nn.Parameter(
             # torch.zeros((2 * self.window_size[0] - 1) * (2 * self.window_size[1] - 1), num_heads)
-            torch.zeros(3, (2 * self.window_size[0] - 1) * self.bin, num_heads)
-        )  # 3, 2*Wh-1 * bin, nH, now we are learning bias of dxdt, dydt, dzdt separately
+            torch.zeros((2 * self.window_size[0] - 1) * self.bin * self.bin, num_heads)
+        )  # 2*Wh-1 * bin * bin, nH
         nn.init.trunc_normal_(self.relative_position_bias_table, std=0.02)
         
         coords_t = torch.arange(self.window_size[0]).unsqueeze(-1).unsqueeze(-1).repeat(1, self.window_size[1], 1) # nt, nx 1
@@ -350,21 +345,20 @@ class ShiftedWindowAttention(nn.Module):
         """
         # get pair-wise relative position index for each token inside the window
         relative_coords_t = self.relative_coords_t.repeat(loc.shape[0], 1, 1, 1) # B, nt*nx, nt*nx, 1
-        relative_coords_sta = loc[:, :, None, :] - loc[:, None, :, :] # B, nx, nx, 3
-        relative_coords_sta = ((relative_coords_sta/self.degree2km)+1.0) * (self.bin-1)/2 # B, nx, nx, 3
-        relative_coords_sta = torch.clamp(torch.round(relative_coords_sta).long(), 0, self.bin-1) # B, nx, nx, 3
-        relative_coords_sta = relative_coords_sta.repeat(1, self.window_size[0], self.window_size[0], 1) # B, nt*nx, nt*nx, 3
+        relative_coords_sta = (loc[:, :, None, :] - loc[:, None, :, :])[:,:,:,:2] # B, nx, nx, 2
+        relative_coords_sta = (relative_coords_sta/self.grid_size) + (self.bin-1)/2 # B, nx, nx, 2
+        relative_coords_sta = torch.clamp(torch.round(relative_coords_sta).long(), 0, self.bin-1) # B, nx, nx, 2
+        relative_coords_sta = relative_coords_sta.repeat(1, self.window_size[0], self.window_size[0], 1) # B, nt*nx, nt*nx, 2
+        relative_coords = torch.cat((relative_coords_t, relative_coords_sta), dim=-1) # B, nt*nx, nt*nx, 3
         # shift to start from 0
-        relative_coords_t[:, :, :, 0] += self.window_size[0] - 1
-        relative_coords_t[:, :, :, 0] *= self.bin
-        relative_coords = (relative_coords_t + relative_coords_sta).permute(3, 0, 1, 2) # 3, B, nt*nx, nt*nx
-        relative_position_index = relative_coords.view(3, loc.shape[0], -1) # 3, B, nt*nx*nt*nx
-            
+        relative_coords[:, :, :, 0] += self.window_size[0] - 1
+        relative_coords[:, :, :, 0] *= self.bin ** 2
+        relative_coords[:, :, :, 1] *= self.bin
+        relative_position_index = relative_coords.sum(dim=-1).view(loc.shape[0], -1) # B, nt*nx*nt*nx
+
         N = self.window_size[0] * self.window_size[1]
         # B, nt*nx*nt*nx, nH 
-        relative_position_bias = self.relative_position_bias_table[0, relative_position_index[0], :] + \
-                                self.relative_position_bias_table[1, relative_position_index[1], :] + \
-                                self.relative_position_bias_table[2, relative_position_index[2], :]
+        relative_position_bias = self.relative_position_bias_table[relative_position_index[:]]
         relative_position_bias = relative_position_bias.view(loc.shape[0], N, N, -1) # B, nt*nx, nt*nx, nH
         relative_position_bias = relative_position_bias.permute(0, 3, 1, 2) # B, nH, nt*nx, nt*nx
 
