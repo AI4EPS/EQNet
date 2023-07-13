@@ -19,6 +19,7 @@ def log_transform(x):
 
 
 class EventDetector(nn.Module):
+    # the first channel should be 8 * embedding_dim in swin transformer
     def __init__(
         self, channels=[128, 64, 32, 16, 8], bn=True, dilations=[1, 2, 4, 8, 16], kernel_size=5, nonlin=nn.ReLU()
     ):
@@ -88,6 +89,7 @@ class EventDetector(nn.Module):
 
 
 class PhasePicker(nn.Module):
+    # the first channel should be 8 * embedding_dim in swin transformer
     def __init__(
         self, channels=[128, 64, 32, 16, 8], bn=True, dilations=[1, 2, 4, 8, 16], kernel_size=5, nonlin=nn.ReLU()
     ):
@@ -170,11 +172,11 @@ class EQNet(nn.Module):
         elif backbone == "swin": # swin_t is too large for 2 RTX 4090
             self.backbone = SwinTransformer(
                 patch_size=[4, 1],
-                # embed_dim=96,
-                embed_dim=16,
+                embed_dim=96,
+                #embed_dim=16,
                 depths=[2, 2, 6, 2],
-                # num_heads=[3, 6, 12, 24],
-                num_heads=[2, 4, 8, 8],
+                num_heads=[3, 6, 12, 24],
+                #num_heads=[2, 4, 8, 8],
                 window_size=[7, 10],
                 stochastic_depth_prob=0.2,
                 block_name="SwinTransformerBlock",
@@ -182,12 +184,12 @@ class EQNet(nn.Module):
         elif backbone == "swin2":
             self.backbone = SwinTransformer(
                 patch_size=[4, 1],
-                # embed_dim=96,
-                embed_dim=16,
+                embed_dim=96,
+                #embed_dim=16,
                 depths=[2, 2, 6, 2],
-                # num_heads=[3, 6, 12, 24],
-                num_heads=[2, 4, 8, 8],
-                window_size=[7, 10],
+                num_heads=[3, 6, 12, 24],
+                #num_heads=[2, 4, 8, 8],
+                window_size=[8, 10],
                 stochastic_depth_prob=0.2,
                 block_name="SwinTransformerBlockV2",
             )
@@ -195,8 +197,18 @@ class EQNet(nn.Module):
             raise ValueError("backbone must be one of 'resnet' or 'swin'")
 
         if head == "simple":
-            self.event_detector = EventDetector()
-            self.phase_picker = PhasePicker()
+            # config for Swin_T
+            # the len of channels and dilations should be 5 when using other config
+            # or you need to change the structure of event_detector and phase_picker
+            if (backbone == "swin" or backbone == "swin2"):
+                channels=[768, 128, 32, 16, 8]
+                dilations=[1, 6, 24, 48, 96]
+            elif backbone[:6] == "resnet":
+                channels=[128, 64, 32, 16, 8]
+                dilations=[1, 2, 4, 8, 16]
+            
+            self.event_detector = EventDetector(channels=channels, bn=True, dilations=dilations)
+            self.phase_picker = PhasePicker(channels=channels, bn=True, dilations=dilations)
 
     @property
     def device(self):
@@ -231,12 +243,10 @@ class EQNet(nn.Module):
 
         if self.training:
             return {"loss": loss_phase + loss_event, "loss_phase": loss_phase, "loss_event": loss_event}
-            # return {"loss": loss_phase, "loss_phase": loss_phase}
         elif phase_pick is not None: # validation
             return {"phase": output_phase, "event": output_event, "loss": loss_phase + loss_event, "loss_phase": loss_phase, "loss_event": loss_event}
         else:
             return {"phase": output_phase, "event": output_event}
-            # return {"phase": output_phase}
 
 
 def build_model(backbone="resnet50", head="simple", **kargs) -> EQNet:
