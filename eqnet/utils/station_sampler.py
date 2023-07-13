@@ -29,7 +29,7 @@ class StationSampler(BatchSampler):
         self.sampler = sampler
         self.group_ids = group_ids
         self.batch_size = batch_size
-        self.drop_last = drop_last
+        # self.drop_last = drop_last
         self.count = np.unique(self.group_ids, return_counts=True)[1]
         if len(group_ids[group_ids==0]) > 0:
             self.count = self.count[1:]
@@ -39,39 +39,48 @@ class StationSampler(BatchSampler):
         buffer_per_group = defaultdict(list)
         samples_per_group = defaultdict(list)
 
+        expected_num_batches = len(self)
         num_batches = 0
         for idx in self.sampler:
-            group_id = self.group_ids[idx]
-            # group_id = 0 means that the sample does not belong to any group
-            if group_id != 0:
-                buffer_per_group[group_id].append(idx)
-                samples_per_group[group_id].append(idx)
-                if len(buffer_per_group[group_id]) == self.batch_size:
-                    yield buffer_per_group[group_id]
-                    num_batches += 1
-                    del buffer_per_group[group_id]
-            assert len(buffer_per_group[group_id]) < self.batch_size
+            if num_batches < expected_num_batches:
+                group_id = self.group_ids[idx]
+                # group_id = 0 means that the sample does not belong to any group
+                if group_id != 0:
+                    buffer_per_group[group_id].append(idx)
+                    samples_per_group[group_id].append(idx)
+                    if len(buffer_per_group[group_id]) == self.batch_size:
+                        yield buffer_per_group[group_id]
+                        num_batches += 1
+                        del buffer_per_group[group_id]
+                assert len(buffer_per_group[group_id]) < self.batch_size
 
-        if not self.drop_last:
-            # now we have run out of elements that satisfy
-            # the group criteria, let's return the remaining
-            # elements so that the size of the sampler is
-            # deterministic
-            expected_num_batches = len(self)
-            num_remaining = expected_num_batches - num_batches
-            if num_remaining > 0:
-                # for the remaining batches, take first the buffers with the largest number
-                # of elements
-                for group_id, _ in sorted(buffer_per_group.items(), key=lambda x: len(x[1]), reverse=True):
-                    remaining = self.batch_size - len(buffer_per_group[group_id])
-                    samples_from_group_id = _repeat_to_at_least(samples_per_group[group_id], remaining)
-                    buffer_per_group[group_id].extend(samples_from_group_id[:remaining])
-                    assert len(buffer_per_group[group_id]) == self.batch_size
-                    yield buffer_per_group[group_id]
-                    num_remaining -= 1
-                    if num_remaining == 0:
-                        break
-            assert num_remaining == 0
+        # if not self.drop_last:
+        # now we have run out of elements that satisfy
+        # the group criteria, let's return the remaining
+        # elements so that the size of the sampler is
+        # deterministic
+        # print(f"rank{int(os.environ['RANK'])}: num_batches: {num_batches}, len(self): {len(self)}")
+        num_remaining = expected_num_batches - num_batches
+        # use while instead of if to check num_remaining > 0
+        # so that we can pad gaps more than number of groups
+        # these gaps may appear when we drop some groups
+        while num_remaining > 0:
+            # for the remaining batches, take first the buffers with the largest number
+            # of elements
+            for group_id, _ in sorted(buffer_per_group.items(), key=lambda x: len(x[1]), reverse=True):
+                # group_id = 0 means that the sample does not belong to any group
+                # we don't want to return these samples
+                if group_id == 0:
+                    continue
+                remaining = self.batch_size - len(buffer_per_group[group_id])
+                samples_from_group_id = _repeat_to_at_least(samples_per_group[group_id], remaining)
+                buffer_per_group[group_id].extend(samples_from_group_id[:remaining])
+                assert len(buffer_per_group[group_id]) == self.batch_size
+                yield buffer_per_group[group_id]
+                num_remaining -= 1
+                if num_remaining == 0:
+                    break
+        assert num_remaining == 0
 
     def __len__(self):
         try:

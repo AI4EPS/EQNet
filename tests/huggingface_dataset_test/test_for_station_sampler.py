@@ -18,7 +18,7 @@ from eqnet.utils.station_sampler import StationSampler, cut_reorder_keys, create
 # args
 is_pad = True
 is_print = False
-num_stations_list = [10]
+num_stations_list = [5, 10, 20]
 
 
 time1 = time.time()
@@ -58,11 +58,11 @@ else:
     quakeflow_nc = quakeflow_nc.map(lambda x: cut_reorder_keys(x, num_stations_list=num_stations_list, is_pad=is_pad, is_train=True), num_proc=num_proc)
 
 if world_size is not None:
-    train_sampler = torch.utils.data.distributed.DistributedSampler(quakeflow_nc)
+    train_sampler = torch.utils.data.distributed.DistributedSampler(quakeflow_nc, seed=42)
 else:
     train_sampler = torch.utils.data.SequentialSampler(quakeflow_nc)
 
-train_batch_sampler = StationSampler(train_sampler, group_ids, 16, drop_last=True)
+train_batch_sampler = StationSampler(train_sampler, group_ids, 16)
 data_loader_stations = DataLoader(
     quakeflow_nc,
     batch_sampler=train_batch_sampler,
@@ -76,8 +76,9 @@ for batch in data_loader_stations:
     if iter_3 and iter_3%4==0:
         time_worker_1 = time.time()
         print(f"\n\nTime between workers: {time_worker_1-time_worker_2}\n")
+    #if is_print:
     print(f"\nDataloader test{iter_3}\n")
-    print(batch.keys())
+    #    print(batch.keys())
     for key in batch.keys():
         if is_print:
             print(key, batch[key].shape, batch[key].dtype)
