@@ -9,12 +9,14 @@ from glob import glob
 import matplotlib
 import numpy as np
 import torch
+import torch.distributed
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.data
 import wandb
 
 import datasets
+from datasets.distributed import split_dataset_by_node
 import eqnet
 import utils
 from eqnet.data import (
@@ -184,6 +186,7 @@ def main(args):
     if args.distributed:
         rank = utils.get_rank()
         world_size = utils.get_world_size()
+        print(f"Rank: {rank}, World size: {world_size}")
     else:
         rank, world_size = 0, 1
 
@@ -289,19 +292,32 @@ def main(args):
 
             dataset = dataset.with_format("torch")
             dataset_test = dataset_test.with_format("torch")
+            group_ids = create_groups(dataset, args.num_stations_list, is_pad=True)
+            if args.distributed and world_size > 1:
+                if args.gpu > 0:
+                    print(f"Rank {args.rank}: Gpu {args.gpu} waiting for main process to perform the mapping", force=True)
+                    torch.distributed.barrier()
+                dataset = dataset.map(lambda x: cut_reorder_keys(x, num_stations_list=args.num_stations_list, is_pad=True, is_train=True), num_proc=args.workers, desc="cut_reorder_keys")
+                dataset_test = dataset_test.map(lambda x: cut_reorder_keys(x, num_stations_list=args.num_stations_list, is_pad=True, is_train=False), num_proc=args.workers, desc="cut_reorder_keys")
+                if args.gpu == 0:
+                    print("Mapping finished, loading results from main process")
+                    torch.distributed.barrier()
+            else:
+                print("Mapping dataset")
+                dataset = dataset.map(lambda x: cut_reorder_keys(x, num_stations_list=args.num_stations_list, is_pad=True, is_train=True), desc="cut_reorder_keys")
+                dataset_test = dataset_test.map(lambda x: cut_reorder_keys(x, num_stations_list=args.num_stations_list, is_pad=True, is_train=False), desc="cut_reorder_keys")
 
             if args.distributed:
+                # dataset = split_dataset_by_node(dataset, rank, world_size)
+                # dataset_test = split_dataset_by_node(dataset_test, rank, world_size)
                 train_sampler = torch.utils.data.distributed.DistributedSampler(dataset)
                 test_sampler = torch.utils.data.distributed.DistributedSampler(dataset_test, shuffle=False)
             else:
                 train_sampler = torch.utils.data.RandomSampler(dataset)
                 test_sampler = torch.utils.data.SequentialSampler(dataset_test)
 
-            group_ids = create_groups(dataset, args.num_stations_list, is_pad=True)
-            dataset = dataset.map(lambda x: cut_reorder_keys(x, num_stations_list=args.num_stations_list, is_pad=True, is_train=True))
             train_batch_sampler = StationSampler(train_sampler, group_ids, args.batch_size, args.num_stations_list)
             # dataset_test = dataset_test.map(lambda x: reorder_keys(x))
-            dataset_test = dataset_test.map(lambda x: cut_reorder_keys(x, num_stations_list=args.num_stations_list, is_pad=True, is_train=False))
 
         else:
             dataset = SeismicNetworkIterableDataset(args.dataset)
@@ -469,6 +485,8 @@ def main(args):
         lr_scheduler = main_lr_scheduler
 
     model_without_ddp = model
+    # print parameter number
+    print("Number of parameters: ", sum(p.numel() for p in model_without_ddp.parameters() if p.requires_grad))
     if args.distributed:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=False)
         model_without_ddp = model.module
