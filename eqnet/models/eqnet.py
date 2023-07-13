@@ -167,12 +167,14 @@ class EQNet(nn.Module):
             # self.backbone = ResNet(BasicBlock, [3, 4, 6, 3]) #ResNet34
         elif backbone == "resnet50":
             self.backbone = ResNet(Bottleneck, [3, 4, 6, 3])  # ResNet50
-        elif backbone == "swin":
+        elif backbone == "swin": # swin_t is too large for 2 RTX 4090
             self.backbone = SwinTransformer(
                 patch_size=[4, 1],
-                embed_dim=96,
+                # embed_dim=96,
+                embed_dim=16,
                 depths=[2, 2, 6, 2],
-                num_heads=[3, 6, 12, 24],
+                # num_heads=[3, 6, 12, 24],
+                num_heads=[2, 4, 8, 8],
                 window_size=[7, 10],
                 stochastic_depth_prob=0.2,
                 block_name="SwinTransformerBlock",
@@ -180,9 +182,11 @@ class EQNet(nn.Module):
         elif backbone == "swin2":
             self.backbone = SwinTransformer(
                 patch_size=[4, 1],
-                embed_dim=96,
+                # embed_dim=96,
+                embed_dim=16,
                 depths=[2, 2, 6, 2],
-                num_heads=[3, 6, 12, 24],
+                # num_heads=[3, 6, 12, 24],
+                num_heads=[2, 4, 8, 8],
                 window_size=[7, 10],
                 stochastic_depth_prob=0.2,
                 block_name="SwinTransformerBlockV2",
