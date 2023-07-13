@@ -165,12 +165,11 @@ def plot_results(meta, model, output, args, epoch, prefix=""):
             del preds
 
         elif args.model == "eqnet":
-            output = model(meta)
             phase = F.softmax(output["phase"], dim=1).cpu().float()
             event = torch.sigmoid(output["event"]).cpu().float()
             print("Plotting...")
             eqnet.utils.visualize_eqnet_train(meta, phase, event, epoch=epoch, figure_dir=args.figure_dir, prefix=prefix)
-            del output, phase, event
+            del phase, event
 
 
 def main(args):
