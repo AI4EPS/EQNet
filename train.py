@@ -139,7 +139,7 @@ def plot_results(meta, model, output, args, epoch, prefix=""):
             meta["data"] = moving_normalize(meta["data"])
             print("Plotting...")
             eqnet.utils.visualize_phasenet_train(meta, phase, event, polarity, epoch=epoch, figure_dir=args.figure_dir)
-            del output, phase, event, polarity
+            del phase, event, polarity
 
         if args.model == "deepdenoiser":
             pass
@@ -149,7 +149,7 @@ def plot_results(meta, model, output, args, epoch, prefix=""):
             meta["data"] = moving_normalize(meta["data"], filter=2048, stride=256)
             print("Plotting...")
             eqnet.utils.visualize_das_train(meta, phase, epoch=epoch, figure_dir=args.figure_dir, prefix=prefix)
-            del output, phase
+            del phase
 
         elif args.model == "autoencoder":
             preds = model(meta)
@@ -158,12 +158,11 @@ def plot_results(meta, model, output, args, epoch, prefix=""):
             del preds
 
         elif args.model == "eqnet":
-            output = model(meta)
             phase = F.softmax(output["phase"], dim=1).cpu().float()
             event = torch.sigmoid(output["event"]).cpu().float()
             print("Plotting...")
             eqnet.utils.visualize_eqnet_train(meta, phase, event, epoch=epoch, figure_dir=args.figure_dir)
-            del output, phase, event
+            del phase, event
 
 
 def main(args):
@@ -485,6 +484,7 @@ def main(args):
         if args.distributed and (train_sampler is not None):
             train_sampler.set_epoch(epoch)
 
+        tmp_time = time.time()
         train_one_epoch(
             model,
             optimizer,
@@ -496,11 +496,15 @@ def main(args):
             epoch,
             len(dataset),
         )
+        print(f"Training time of epoch {epoch} of rank {args.rank}: {time.time() - tmp_time:.3f}")
 
+        tmp_time = time.time()
         metric = evaluate(model, data_loader_test, scaler, args, epoch, len(dataset_test))
         if model_ema:
             metric = evaluate(model_ema, data_loader_test, scaler, args, epoch, len(dataset_test))
+        print(f"Testing time of epoch {epoch} of rank {args.rank}: {time.time() - tmp_time:.3f}")
 
+        tmp_time = time.time()
         checkpoint = {
             "model": model_without_ddp.state_dict(),
             "optimizer": optimizer.state_dict(),
