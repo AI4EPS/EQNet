@@ -313,10 +313,9 @@ class ShiftedWindowAttention(nn.Module):
         self.num_heads = num_heads
         self.attention_dropout = attention_dropout
         self.dropout = dropout
-        # we set the limit of relative position coordinates is -1 degree to 1 degree
+        #  grid of relative spatial position
         degree2km = 111.32
         self.grid_size = degree2km / 10
-        # we separate -1 degree to 1 degree into 21 bins
         self.bin = 21
 
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
