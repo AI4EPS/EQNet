@@ -300,16 +300,22 @@ def masking(data, target, nt=256, nx=256):
     data_ = data
     target_ = target
 
+    max_tries = 10
+    tries = 0
+    while (torch.sum(target_[1:, nt0_ : nt0_ + nt_, :]).item() > 100.0) and (tries < max_tries):
+        tries += 1
+        nt0_ = random.randint(0, nt0 - nt_)
+
     data_[:, nt0_ : nt0_ + nt_, :] = 0.0
     target_[0, nt0_ : nt0_ + nt_, :] = 1.0
     target_[1:, nt0_ : nt0_ + nt_, :] = 0.0
 
-    if random.random() > 0.5:
-        nx_ = random.randint(32, nx)
-        nx0_ = random.randint(0, nx0 - nx_)
-        data_[:, :, nx0_ : nx0_ + nx_] = 0.0
-        target_[0, :, nx0_ : nx0_ + nx_] = 1.0
-        target_[1:, :, nx0_ : nx0_ + nx_] = 0.0
+    # if random.random() > 0.5:
+    #     nx_ = random.randint(32, nx)
+    #     nx0_ = random.randint(0, nx0 - nx_)
+    #     data_[:, :, nx0_ : nx0_ + nx_] = 0.0
+    #     target_[0, :, nx0_ : nx0_ + nx_] = 1.0
+    #     target_[1:, :, nx0_ : nx0_ + nx_] = 0.0
 
     return data_, target_
 
@@ -557,6 +563,8 @@ class DASIterableDataset(IterableDataset):
             else:
                 with open(label_list, "r") as f:
                     self.label_list = f.read().split("\n")
+            if training:
+                self.label_list = self.label_list[: len(self.label_list) // world_size * world_size]
             self.label_list = self.label_list[rank::world_size]
         else:
             # if type(label_path) is list:
@@ -590,6 +598,9 @@ class DASIterableDataset(IterableDataset):
 
         ## pre-calcuate length
         self._data_len = self._count()
+
+        with open("debug.txt", "a") as fp:
+            fp.write(f"rank: {rank}, world_size: {world_size}, _data_len: {self._data_len}\n")
 
     def __len__(self):
         return self._data_len
@@ -653,12 +664,16 @@ class DASIterableDataset(IterableDataset):
                     label_file.replace("labels", "data").replace(".csv", ".h5").split("/")[-3:]
                 )  # folder/data/event_id
 
-                with fsspec.open(self.data_path + "/" + data_file, "rb") as f:
-                    with h5py.File(f, "r") as fp:
-                        data = fp["data"][:, :].T
-                    data = data[np.newaxis, :, :]  # nchn, nt, nx
-                    data = data / np.std(data)
-                    data = torch.from_numpy(data.astype(np.float32))
+                try:
+                    with fsspec.open(self.data_path + "/" + data_file, "rb") as f:
+                        with h5py.File(f, "r") as fp:
+                            data = fp["data"][:, :].T
+                        data = data[np.newaxis, :, :]  # nchn, nt, nx
+                        data = data / np.std(data)
+                        data = torch.from_numpy(data.astype(np.float32))
+                except:
+                    print(f"Error reading {data_file}")
+                    continue
 
                 ## basic normalize
                 data = data - torch.mean(data, dim=1, keepdim=True)
@@ -732,7 +747,7 @@ class DASIterableDataset(IterableDataset):
                     #     data_, targets_ = add_moveout(data_, targets_)
 
                     ## augmentation
-                    if self.stack_noise and (not status_stack_event) and (np.random.rand() < 0.8):
+                    if self.stack_noise and (not status_stack_event) and (np.random.rand() < 0.5):
                         noise_ = cut_noise(noise, self.nt, self.nx)
                         data_ = stack_noise(data_, noise_, snr)
 
@@ -741,7 +756,7 @@ class DASIterableDataset(IterableDataset):
                         data_, targets_ = flip_lr(data_, targets_)
 
                     ## augmentation
-                    if self.masking and (np.random.rand() < 0.3):
+                    if self.masking and (np.random.rand() < 0.2):
                         data_, targets_ = masking(data_, targets_)
 
                     ## prevent edge effect on the right and bottom
