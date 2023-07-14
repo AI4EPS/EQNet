@@ -47,9 +47,9 @@ group_ids = create_groups(quakeflow_nc, num_stations_list=num_stations_list, is_
 
 if world_size is not None:
     if gpu > 0:
-        print("Waiting for main process to perform the mapping")
+        print(f"Rank {rank}: GPU {gpu} waiting for main process to perform mapping")
         torch.distributed.barrier()
-    quakeflow_nc = quakeflow_nc.map(lambda x: cut_reorder_keys(x, num_stations_list=num_stations_list, is_pad=is_pad, is_train=True), num_proc=num_proc)
+    quakeflow_nc = quakeflow_nc.map(lambda x: cut_reorder_keys(x, num_stations_list=num_stations_list, is_pad=is_pad, is_train=True), num_proc=num_proc, desc="cut_reorder_keys")
     if gpu == 0:
         print("Mapping finished, loading results from main process")
         torch.distributed.barrier()
@@ -58,7 +58,7 @@ else:
     quakeflow_nc = quakeflow_nc.map(lambda x: cut_reorder_keys(x, num_stations_list=num_stations_list, is_pad=is_pad, is_train=True), num_proc=num_proc)
 
 if world_size is not None:
-    train_sampler = torch.utils.data.distributed.DistributedSampler(quakeflow_nc, seed=42)
+    train_sampler = torch.utils.data.distributed.DistributedSampler(quakeflow_nc)
 else:
     train_sampler = torch.utils.data.SequentialSampler(quakeflow_nc)
 
