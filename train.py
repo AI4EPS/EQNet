@@ -196,7 +196,7 @@ def main(args):
 
     device = torch.device(args.device)
     dtype = "bfloat16" if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else "float16"
-    if args.model == "eqnet" and model.head_name == "simple":
+    if args.model == "eqnet":
         dtype = "float16"
     ptdtype = {"float32": torch.float32, "bfloat16": torch.bfloat16, "float16": torch.float16}[dtype]
     args.dtype, args.ptdtype = dtype, ptdtype

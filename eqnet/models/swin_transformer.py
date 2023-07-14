@@ -321,11 +321,15 @@ class ShiftedWindowAttention(nn.Module):
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
         self.proj = nn.Linear(dim, dim, bias=proj_bias)
 
+        self.define_relative_position_bias_table_and_index()
+
+
+    def define_relative_position_bias_table_and_index(self):
         ## we put Wh as the time dimension, Wn as the station dimension
         # define a parameter table of relative position bias
         self.relative_position_bias_table = nn.Parameter(
             # torch.zeros((2 * self.window_size[0] - 1) * (2 * self.window_size[1] - 1), num_heads)
-            torch.zeros((2 * self.window_size[0] - 1) * self.bin * self.bin, num_heads)
+            torch.zeros((2 * self.window_size[0] - 1) * self.bin * self.bin, self.num_heads)
         )  # 2*Wh-1 * bin * bin, nH
         nn.init.trunc_normal_(self.relative_position_bias_table, std=0.02)
         
@@ -334,14 +338,8 @@ class ShiftedWindowAttention(nn.Module):
         relative_coords_t = coords_t_flatten[:, None, :] - coords_t_flatten[None, :, :] # nt*nx, nt*nx, 1
         self.register_buffer("relative_coords_t", relative_coords_t)
 
-    def forward(self, x: Tensor, loc: Tensor):
-        """
-        Args:
-            x (Tensor): Tensor with layout of [B, H, W, C]
-            loc (Tensor): Station location with layout of [B, W, 3]
-        Returns:
-            Tensor with same layout as input, i.e. [B, H, W, C]
-        """
+    def get_relative_position_bias(self, loc: Tensor) -> Tensor:
+        
         # get pair-wise relative position index for each token inside the window
         relative_coords_t = self.relative_coords_t.repeat(loc.shape[0], 1, 1, 1) # B, nt*nx, nt*nx, 1
         relative_coords_sta = (loc[:, :, None, :] - loc[:, None, :, :])[:,:,:,:2] # B, nx, nx, 2
@@ -360,6 +358,19 @@ class ShiftedWindowAttention(nn.Module):
         relative_position_bias = self.relative_position_bias_table[relative_position_index[:]]
         relative_position_bias = relative_position_bias.view(loc.shape[0], N, N, -1) # B, nt*nx, nt*nx, nH
         relative_position_bias = relative_position_bias.permute(0, 3, 1, 2) # B, nH, nt*nx, nt*nx
+        
+        return relative_position_bias
+
+
+    def forward(self, x: Tensor, loc: Tensor):
+        """
+        Args:
+            x (Tensor): Tensor with layout of [B, H, W, C]
+            loc (Tensor): Station location with layout of [B, W, 3]
+        Returns:
+            Tensor with same layout as input, i.e. [B, H, W, C]
+        """
+        relative_position_bias = self.get_relative_position_bias(loc)
 
         return shifted_window_attention(
             x,
@@ -404,7 +415,6 @@ class ShiftedWindowAttentionV2(ShiftedWindowAttention):
             dropout=dropout,
         )
 
-        self.relative_position_bias_table = None
         # give up us logit_scale because the length of time dimension won't be too far from the original length
         # self.logit_scale = None
         self.logit_scale = nn.Parameter(torch.log(10 * torch.ones((num_heads, 1, 1))))
@@ -417,8 +427,23 @@ class ShiftedWindowAttentionV2(ShiftedWindowAttention):
             length = self.qkv.bias.numel() // 3
             self.qkv.bias[length : 2 * length].data.zero_()
 
+
+    def define_relative_position_bias_table_and_index(self):
         coords_t = torch.arange(self.window_size[0]).unsqueeze(-1).unsqueeze(-1).repeat(1, self.window_size[1], 1) # nt, nx 1
         self.register_buffer("coords_t", coords_t)
+
+    def get_relative_position_bias(self, loc: Tensor) -> Tensor:
+        
+        coords_t = self.coords_t.repeat(loc.shape[0], 1, 1, 1) #bt, nt, nx 1
+        coords_x = loc.unsqueeze(-3).repeat(1, self.coords_t.shape[0], 1, 1) #bt, nt, nx, 3
+        coords = torch.cat((coords_t, coords_x), dim=-1) #bt, nt, nx, 4
+        coords_flatten = torch.flatten(coords, 1, 2)  # bt, nt * nx, 4
+        relative_coords = coords_flatten[:, :, None, :] - coords_flatten[:, None, :, :]  # bt, Wh*Ww, Wh*Ww, 4
+        relative_position_bias = self.cpb_mlp(relative_coords) #bt, Wh*Ww, Wh*Ww, nH
+        relative_position_bias = relative_position_bias.permute(0, 3, 1, 2)
+        
+        return relative_position_bias
+    
 
     def forward(self, x: Tensor, loc: Tensor):
         """
@@ -428,13 +453,7 @@ class ShiftedWindowAttentionV2(ShiftedWindowAttention):
         Returns:
             Tensor with same layout as input, i.e. [B, H, W, C]
         """
-        coords_t = self.coords_t.repeat(loc.shape[0], 1, 1, 1) #bt, nt, nx 1
-        coords_x = loc.unsqueeze(-3).repeat(1, self.coords_t.shape[0], 1, 1) #bt, nt, nx, 3
-        coords = torch.cat((coords_t, coords_x), dim=-1) #bt, nt, nx, 4
-        coords_flatten = torch.flatten(coords, 1, 2)  # bt, nt * nx, 4
-        relative_coords = coords_flatten[:, :, None, :] - coords_flatten[:, None, :, :]  # bt, Wh*Ww, Wh*Ww, 4
-        relative_position_bias = self.cpb_mlp(relative_coords) #bt, Wh*Ww, Wh*Ww, nH
-        relative_position_bias = relative_position_bias.permute(0, 3, 1, 2)
+        relative_position_bias = self.get_relative_position_bias(loc)
         
         return shifted_window_attention(
             x,
