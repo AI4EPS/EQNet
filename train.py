@@ -165,11 +165,12 @@ def plot_results(meta, model, output, args, epoch, prefix=""):
             del preds
 
         elif args.model == "eqnet":
+            output = model(meta)
             phase = F.softmax(output["phase"], dim=1).cpu().float()
             event = torch.sigmoid(output["event"]).cpu().float()
             print("Plotting...")
-            eqnet.utils.visualize_eqnet_train(meta, phase, event, epoch=epoch, figure_dir=args.figure_dir)
-            del phase, event
+            eqnet.utils.visualize_eqnet_train(meta, phase, event, epoch=epoch, figure_dir=args.figure_dir, prefix=prefix)
+            del output, phase, event
 
 
 def main(args):
@@ -194,8 +195,9 @@ def main(args):
     np.random.seed(1337 + rank)
 
     device = torch.device(args.device)
-    # dtype = "bfloat16" if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else "float16"
-    dtype = "float16"
+    dtype = "bfloat16" if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else "float16"
+    if args.model == "eqnet" and model.head_name == "simple":
+        dtype = "float16"
     ptdtype = {"float32": torch.float32, "bfloat16": torch.bfloat16, "float16": torch.float16}[dtype]
     args.dtype, args.ptdtype = dtype, ptdtype
     torch.backends.cuda.matmul.allow_tf32 = True  # allow tf32 on matmul
