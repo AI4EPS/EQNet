@@ -168,7 +168,7 @@ def plot_results(meta, model, output, args, epoch, prefix=""):
             phase = F.softmax(output["phase"], dim=1).cpu().float()
             event = torch.sigmoid(output["event"]).cpu().float()
             print("Plotting...")
-            eqnet.utils.visualize_eqnet_train(meta, phase, event, epoch=epoch, figure_dir=args.figure_dir, prefix=prefix)
+            eqnet.utils.visualize_eqnet_train(meta, phase, event, epoch=epoch, figure_dir=args.figure_dir)
             del phase, event
 
 
