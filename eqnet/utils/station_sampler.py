@@ -1,8 +1,10 @@
 # sample a batch of data with different number of stations
+# inspired by GroupedBatchSampler from Torchvision https://github.com/pytorch/vision/blob/bb3aae7b2543637191ad9c810f082eae622534b8/references/detection/group_by_aspect_ratio.py
 
 import os
 import numpy as np
 import torch
+import torch.distributed as dist
 import math
 from torch.utils.data.sampler import Sampler, BatchSampler
 from glob import glob
@@ -84,7 +86,8 @@ class StationSampler(BatchSampler):
 
     def __len__(self):
         try:
-            world_size = os.environ["WORLD_SIZE"]
+            # world_size = os.environ["WORLD_SIZE"]
+            world_size = dist.get_world_size()
         except:
             world_size = 1
         return int((self.count/int(world_size)) // self.batch_size)
