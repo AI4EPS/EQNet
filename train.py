@@ -26,6 +26,7 @@ from eqnet.data import (
     SeismicNetworkIterableDataset,
     SeismicTraceIterableDataset,
 )
+from eqnet.data.utils import (random_shift)
 from eqnet.models.unet import moving_normalize
 from eqnet.utils.station_sampler import StationSampler, create_groups, cut_reorder_keys, reorder_keys
 
@@ -299,6 +300,7 @@ def main(args):
                     print(f"Rank {args.rank}: Gpu {args.gpu} waiting for main process to perform the mapping", force=True)
                     torch.distributed.barrier()
                 dataset = dataset.map(lambda x: cut_reorder_keys(x, num_stations_list=args.num_stations_list, is_pad=True, is_train=True), num_proc=args.workers, desc="cut_reorder_keys")
+                dataset = dataset.map(lambda x: random_shift(x, shift_range=(-32, 32), feature_scale=16), num_proc=args.workers, desc="random_shift")
                 dataset_test = dataset_test.map(lambda x: cut_reorder_keys(x, num_stations_list=args.num_stations_list, is_pad=True, is_train=False), num_proc=args.workers, desc="cut_reorder_keys")
                 if args.gpu == 0:
                     print("Mapping finished, loading results from main process")
@@ -306,6 +308,7 @@ def main(args):
             else:
                 print("Mapping dataset")
                 dataset = dataset.map(lambda x: cut_reorder_keys(x, num_stations_list=args.num_stations_list, is_pad=True, is_train=True), desc="cut_reorder_keys")
+                dataset = dataset.map(lambda x: random_shift(x, shift_range=(-160, 16), feature_scale=16), desc="random_shift")
                 dataset_test = dataset_test.map(lambda x: cut_reorder_keys(x, num_stations_list=args.num_stations_list, is_pad=True, is_train=False), desc="cut_reorder_keys")
 
             if args.distributed:
