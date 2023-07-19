@@ -373,6 +373,9 @@ def get_args_parser(add_help=True):
         "-b", "--batch_size", default=1, type=int, help="images per gpu, the total batch size is $NGPU x batch_size"
     )
     # Mixed precision training parameters
+    parser.add_argument(
+        "--use_deterministic_algorithms", action="store_true", help="Forces the use of deterministic algorithms only."
+    )
     parser.add_argument("--amp", action="store_true", help="Use torch.cuda.amp for mixed precision training")
 
     # distributed training parameters

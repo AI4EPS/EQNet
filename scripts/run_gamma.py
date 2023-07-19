@@ -254,7 +254,9 @@ if __name__ == "__main__":
     # print(args)
 
     # %%
-    pick_path = Path(f"results/{args.picker}/{args.folder}/picks_{args.picker}")
+    pick_path = Path(
+        f"results/{args.picker}/{args.folder}/picks_{args.picker.replace('_v0', '').replace('_v1', '').replace('_v2', '')}"
+    )
     files = sorted(list(pick_path.rglob("*.csv")), key=lambda x: -os.path.getsize(x))
 
     # %%

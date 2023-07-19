@@ -7,6 +7,7 @@ import torch
 # %%
 protocol = "gs://"
 bucket = "quakeflow_das"
+model = "phasenet_das_v1"
 
 # %%
 fs = fsspec.filesystem(protocol.replace("://", ""))
@@ -15,7 +16,7 @@ for folder in folders:
     h5_list = fs.glob(f"{bucket}/{folder}/data/*h5")
 
     # %%
-    result_path = Path(f"results/phasenet_das/{folder}")
+    result_path = Path(f"results/{model}/{folder}")
     if not result_path.exists():
         result_path.mkdir(parents=True)
 
@@ -37,6 +38,6 @@ for folder in folders:
     os.system(cmd)
 
     # %%
-    cmd = f"gsutil -m cp -r {result_path}/picks_phasenet_das {protocol}{bucket}/{folder}/phasenet_das/picks"
+    cmd = f"gsutil -m cp -r {result_path}/picks_phasenet_das {protocol}{bucket}/{folder}/{model}/picks"
     print(cmd)
     os.system(cmd)
