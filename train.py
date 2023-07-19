@@ -46,6 +46,11 @@ def evaluate(model, data_loader, scaler, args, epoch=0, total_sample=1):
             loss = output["loss"]
             batch_size = meta["data"].shape[0]
             metric_logger.meters["loss"].update(loss.item(), n=batch_size)
+            if args.model == "eqnet":
+                loss_phase = output["loss_phase"]
+                loss_event = output["loss_event"]
+                metric_logger.meters["loss_phase"].update(loss_phase.item(), n=batch_size)
+                metric_logger.meters["loss_event"].update(loss_event.item(), n=batch_size)
             num_processed_samples += batch_size
             if num_processed_samples > total_sample:
                 break
@@ -57,6 +62,13 @@ def evaluate(model, data_loader, scaler, args, epoch=0, total_sample=1):
     print(f"Test loss = {metric_logger.loss.global_avg:.3e}")
     if args.wandb and utils.is_main_process():
         wandb.log({"test/test_loss": metric_logger.loss.global_avg, "test/epoch": epoch})
+        if args.model == "eqnet":
+            wandb.log(
+                {
+                    "test/loss_phase": metric_logger.loss_phase.global_avg,
+                    "test/loss_event": metric_logger.loss_event.global_avg,
+                }
+            )
 
     return metric_logger
 
@@ -78,6 +90,9 @@ def train_one_epoch(
         metric_logger.add_meter("loss_phase", utils.SmoothedValue(window_size=1, fmt="{value}"))
         metric_logger.add_meter("loss_event", utils.SmoothedValue(window_size=1, fmt="{value}"))
         metric_logger.add_meter("loss_polarity", utils.SmoothedValue(window_size=1, fmt="{value}"))
+    if args.model == "eqnet":
+        metric_logger.add_meter("loss_phase", utils.SmoothedValue(window_size=1, fmt="{value}"))
+        metric_logger.add_meter("loss_event", utils.SmoothedValue(window_size=1, fmt="{value}"))
     header = f"Epoch: [{epoch}]"
 
     # ctx = nullcontext() if scaler is None else torch.amp.autocast(device_type=args.device, dtype=args.ptdtype)
@@ -89,6 +104,9 @@ def train_one_epoch(
             output = model(meta)
 
         loss = output["loss"]
+        if args.model == "eqnet":
+            loss_phase = output["loss_phase"]
+            loss_event = output["loss_event"]
         optimizer.zero_grad()
         if scaler is not None:
             scaler.scale(loss).backward()
@@ -121,6 +139,9 @@ def train_one_epoch(
         # break
 
         metric_logger.update(lr=optimizer.param_groups[0]["lr"], loss=loss.item())
+        if args.model == "eqnet":
+            metric_logger.meters["loss_phase"].update(loss_phase.item())
+            metric_logger.meters["loss_event"].update(loss_event.item())
 
         if args.wandb and utils.is_main_process():
             wandb.log(
@@ -131,6 +152,8 @@ def train_one_epoch(
                     "train/batch": i,
                 }
             )
+            if args.model == "eqnet":
+                wandb.log({"train/loss_phase": loss_phase.item(), "train/loss_event": loss_event.item()})
 
     model.eval()
     plot_results(meta, model, output, args, epoch, "train_")
@@ -289,6 +312,7 @@ def main(args):
                 dataset = dataset_dict["train"]
                 dataset_test = dataset_dict["test"]
             except:
+                print("Failed to load dataset from local")
                 dataset = datasets.load_dataset("AI4EPS/quakeflow_nc", split="train", name="event")
                 dataset_test = datasets.load_dataset("AI4EPS/quakeflow_nc", split="test", name="event")
 
@@ -308,7 +332,7 @@ def main(args):
             else:
                 print("Mapping dataset")
                 dataset = dataset.map(lambda x: cut_reorder_keys(x, num_stations_list=args.num_stations_list, is_pad=True, is_train=True), desc="cut_reorder_keys")
-                dataset = dataset.map(lambda x: random_shift(x, shift_range=(-160, 16), feature_scale=16), desc="random_shift")
+                dataset = dataset.map(lambda x: random_shift(x, shift_range=(-160, 0), feature_scale=16), desc="random_shift")
                 dataset_test = dataset_test.map(lambda x: cut_reorder_keys(x, num_stations_list=args.num_stations_list, is_pad=True, is_train=False), desc="cut_reorder_keys")
 
             if args.distributed:
