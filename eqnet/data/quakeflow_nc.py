@@ -171,7 +171,7 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                     "data": datasets.Array3D(shape=(None, 3, self.nt), dtype='float32'),
                     "phase_pick": datasets.Array3D(shape=(None, 3, self.nt), dtype='float32'),
                     "event_center" : datasets.Array2D(shape=(None, self.feature_nt), dtype='float32'),
-                    "event_location": datasets.Array3D(shape=(None, 4, self.feature_nt), dtype='float32'),
+                    "event_location": datasets.Array3D(shape=(None, 6, self.feature_nt), dtype='float32'),
                     "event_location_mask": datasets.Array2D(shape=(None, self.feature_nt), dtype='float32'),
                     "station_location": datasets.Array2D(shape=(None, 3), dtype="float32"),
                 }
@@ -296,6 +296,16 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                             is_sick = False
                             for sta_id in station_ids:
                                 attrs = event[sta_id].attrs
+                                '''
+                                p_picks = attrs["phase_index"][attrs["phase_type"] == "P"]
+                                s_picks = attrs["phase_index"][attrs["phase_type"] == "S"]
+                                if p_picks==s_picks:
+                                    is_sick = True
+                                    break
+                                if ((p_picks) + (s_picks))[0] > self.nt * 2:
+                                    is_sick = True
+                                    break
+                                '''
                                 if attrs["phase_index"][attrs["phase_type"] == "P"] == attrs["phase_index"][attrs["phase_type"] == "S"]:
                                     is_sick = True
                                     break
@@ -304,9 +314,9 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                             
                             waveforms = np.zeros([len(station_ids), 3, self.nt], dtype="float32")
                             phase_pick = np.zeros_like(waveforms)
-                            event_center = np.zeros([len(station_ids), self.nt])
-                            event_location = np.zeros([len(station_ids), 4, self.nt])
-                            event_location_mask = np.zeros([len(station_ids), self.nt])
+                            event_center = np.zeros([len(station_ids), self.feature_nt])
+                            event_location = np.zeros([len(station_ids), 6, self.feature_nt])
+                            event_location_mask = np.zeros([len(station_ids), self.feature_nt])
                             station_location = np.zeros([len(station_ids), 3])
 
                             for i, sta_id in enumerate(station_ids):
@@ -321,7 +331,7 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                                 # center = (attrs["phase_index"][::2] + attrs["phase_index"][1::2])/2.0
                                 ## assuming only one event with both P and S picks
                                 c0 = ((p_picks) + (s_picks)) / 2.0 # phase center
-                                c0_width = ((s_picks - p_picks) * self.sampling_rate / 200.0).max() if p_picks!=s_picks else 50
+                                c0_width = max(((s_picks - p_picks) * self.sampling_rate / 200.0).max(), 160)
                                 dx = round(
                                     (event_attrs["longitude"] - attrs["longitude"])
                                     * np.cos(np.radians(event_attrs["latitude"]))
@@ -338,10 +348,19 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                                     2,
                                 )
 
+                                #assert c0[0]<self.nt
+                                c0 = c0/self.feature_scale
+                                #assert c0[0]<self.feature_nt
+                                c0_width = c0_width/self.feature_scale
+                                #assert c0_width>=160/self.feature_scale
+                                c0_int = c0.astype(np.int32)
+                                #assert c0_int[0]<self.feature_nt
+                                #assert abs(c0-c0_int)[0]<1
+                                
                                 event_center[i, :] = generate_label(
                                     [
                                         # [c0 / self.feature_scale],
-                                        c0,
+                                        c0_int,
                                     ],
                                     label_width=[
                                         c0_width,
@@ -349,16 +368,16 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                                     # label_width=[
                                     #     10,
                                     # ],
-                                    # nt=self.feature_nt,
-                                    nt=self.nt,
+                                    nt=self.feature_nt,
+                                    # nt=self.nt,
                                 )[1, :]
                                 mask = event_center[i, :] >= 0.5
                                 event_location[i, 0, :] = (
-                                    np.arange(self.nt) - event_attrs["event_time_index"]
+                                    self.feature_scale * np.arange(self.feature_nt) - event_attrs["event_time_index"]
                                 ) / self.sampling_rate
                                 # event_location[0, :, i] = (np.arange(self.feature_nt) - 3000 / self.feature_scale) / self.sampling_rate
                                 # print(event_location[i, 1:, mask].shape, event_location.shape, event_location[i][1:, mask].shape)
-                                event_location[i][1:, mask] = np.array([dx, dy, dz])[:, np.newaxis]
+                                event_location[i][1:, mask] = np.array([dx, dy, dz, (c0-c0_int)[0], c0_width])[:, np.newaxis]
                                 event_location_mask[i, :] = mask
 
                                 ## station location
@@ -379,9 +398,9 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                             yield event_id, {
                                 "data": torch.from_numpy(waveforms).float(),
                                 "phase_pick": torch.from_numpy(phase_pick).float(),
-                                "event_center": torch.from_numpy(event_center[:, ::self.feature_scale]).float(),
-                                "event_location": torch.from_numpy(event_location[:, :, ::self.feature_scale]).float(),
-                                "event_location_mask": torch.from_numpy(event_location_mask[:, ::self.feature_scale]).float(),
+                                "event_center": torch.from_numpy(event_center).float(),
+                                "event_location": torch.from_numpy(event_location).float(),
+                                "event_location_mask": torch.from_numpy(event_location_mask).float(),
                                 "station_location": torch.from_numpy(station_location).float(),
                             }
 
