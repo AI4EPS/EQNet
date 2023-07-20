@@ -5,6 +5,7 @@ from torch import nn, Tensor
 from typing import Optional, Dict
 from .resnet1d import ResNet, BasicBlock, Bottleneck
 from .swin_transformer import SwinTransformer
+from .centernet import CenterNetHead
 
 
 def _log_transform(x):
@@ -29,10 +30,10 @@ class EventDetector(nn.Module):
         self.nonlin = nonlin
 
         if self.bn:
-            self.bn_layers = nn.ModuleList([nn.BatchNorm1d(c) for c in channels[1:]])
+            self.bn_layers = nn.ModuleList([nn.BatchNorm1d(c) for c in channels[1:-1]])
             conv_bias = False
         else:
-            self.bn_layers = [lambda x: x for c in channels[1:]]
+            self.bn_layers = [lambda x: x for c in channels[1:-1]]
             conv_bias = True
 
         self.conv_layers = nn.ModuleList(
@@ -46,16 +47,31 @@ class EventDetector(nn.Module):
                     padding_mode="reflect",
                     bias=conv_bias,
                 )
-                for i in range(len(channels) - 1)
+                for i in range(len(channels) - 2)
             ]
         )
-        self.conv_out = nn.Conv1d(
+        
+        # event center
+        self.heatmap = nn.Sequential(
+            nn.Conv1d(
+                channels[-2],
+                channels[-1],
+                kernel_size=kernel_size,
+                dilation=dilations[-2],
+                padding=((kernel_size - 1) * dilations[-2] + 1) // 2,
+                padding_mode="reflect",
+                bias=conv_bias,
+            ),
+            nn.BatchNorm1d(channels[-1]),
+            nn.ReLU(inplace=True),
+            nn.Conv1d(
             channels[-1],
             1,
             kernel_size=kernel_size,
             dilation=dilations[-1],
             padding=((kernel_size - 1) * dilations[-1] + 1) // 2,
             padding_mode="reflect",
+        )
         )
 
     def forward(self, features, targets=None, *args, **kwargs):
@@ -69,17 +85,19 @@ class EventDetector(nn.Module):
         # for conv, bn in zip(self.conv_layers, self.bn_layers[1:]):
         for conv, bn in zip(self.conv_layers, self.bn_layers):
             x = self.nonlin(bn(conv(x)))
-        x = self.conv_out(x)
+        x = self.heatmap(x)
         x = F.interpolate(x, scale_factor=2, mode="linear", align_corners=False)
         x = x.view(bt, st, x.shape[2])  # chn = 1
         x = x.permute(0, 2, 1)
 
         if self.training:
-            return None, self.losses(x, targets)
+            loss_event = self.losses(x, targets)
+            return None, {"loss": loss_event, "loss_event": loss_event}
         elif targets is not None:
-            return x, self.losses(x, targets)
+            loss_event = self.losses(x, targets)
+            return {"event": x}, {"loss": loss_event, "loss_event": loss_event}
         else:
-            return x, {}
+            return {"event": x}, {}
 
     def losses(self, inputs, targets):
         inputs = inputs.float()  # https://github.com/pytorch/pytorch/issues/48163
@@ -196,19 +214,22 @@ class EQNet(nn.Module):
         else:
             raise ValueError("backbone must be one of 'resnet' or 'swin'")
 
+        # config for Swin_T
+        # the len of channels and dilations should be 5 when using other config
+        # or you need to change the structure of event_detector and phase_picker
+        if (backbone == "swin" or backbone == "swin2"):
+            channels=[768, 128, 32, 16, 8]
+            dilations=[1, 6, 24, 48, 96]
+        elif backbone[:6] == "resnet":
+            channels=[128, 64, 32, 16, 8]
+            dilations=[1, 2, 4, 8, 16]
+
         if head == "simple":
-            # config for Swin_T
-            # the len of channels and dilations should be 5 when using other config
-            # or you need to change the structure of event_detector and phase_picker
-            if (backbone == "swin" or backbone == "swin2"):
-                channels=[768, 128, 32, 16, 8]
-                dilations=[1, 6, 24, 48, 96]
-            elif backbone[:6] == "resnet":
-                channels=[128, 64, 32, 16, 8]
-                dilations=[1, 2, 4, 8, 16]
-            
             self.event_detector = EventDetector(channels=channels, bn=True, dilations=dilations)
-            self.phase_picker = PhasePicker(channels=channels, bn=True, dilations=dilations)
+        elif head == "centernet":
+            self.event_detector = CenterNetHead(channels=[768, 256, 64])
+               
+        self.phase_picker = PhasePicker(channels=channels, bn=True, dilations=dilations)
 
     @property
     def device(self):
@@ -237,17 +258,18 @@ class EQNet(nn.Module):
         else:
             features = self.backbone(data)
 
-        if self.head_name == "simple":
-            output_phase, loss_phase = self.phase_picker(features, phase_pick)
-            output_event, loss_event = self.event_detector(features, event_center, event_location, event_location_mask)
+        output_phase, loss_phase = self.phase_picker(features, phase_pick)
+        outputs_event, losses_event = self.event_detector(features, event_center, event_location, event_location_mask)
 
         if self.training:
-            return {"loss": loss_phase + loss_event, "loss_phase": loss_phase, "loss_event": loss_event}
+            return {"loss": loss_phase + losses_event["loss"], "loss_phase": loss_phase, "loss_event": losses_event["loss_event"]}
         elif phase_pick is not None: # validation
-            return {"phase": output_phase, "event": output_event, "loss": loss_phase + loss_event, "loss_phase": loss_phase, "loss_event": loss_event}
+            #output_event = outputs_event["event"]
+            return {"phase": output_phase, "loss": loss_phase + losses_event["loss"], "loss_phase": loss_phase, "loss_event": losses_event["loss_event"], **outputs_event}
         else:
-            return {"phase": output_phase, "event": output_event}
+            #output_event = outputs_event["event"]
+            return {"phase": output_phase, **outputs_event}
 
 
-def build_model(backbone="resnet50", head="simple", **kargs) -> EQNet:
+def build_model(backbone="resnet50", head="centernet", **kargs) -> EQNet:
     return EQNet(backbone=backbone)
