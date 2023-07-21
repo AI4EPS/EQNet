@@ -47,10 +47,9 @@ def evaluate(model, data_loader, scaler, args, epoch=0, total_sample=1):
             batch_size = meta["data"].shape[0]
             metric_logger.meters["loss"].update(loss.item(), n=batch_size)
             if args.model == "eqnet":
-                loss_phase = output["loss_phase"]
-                loss_event = output["loss_event"]
-                metric_logger.meters["loss_phase"].update(loss_phase.item(), n=batch_size)
-                metric_logger.meters["loss_event"].update(loss_event.item(), n=batch_size)
+                for k, v in output.items():
+                    if "loss" in k and k != "loss":
+                        metric_logger.meters[k].update(v.item(), n=batch_size)
             num_processed_samples += batch_size
             if num_processed_samples > total_sample:
                 break
@@ -93,6 +92,12 @@ def train_one_epoch(
     if args.model == "eqnet":
         metric_logger.add_meter("loss_phase", utils.SmoothedValue(window_size=1, fmt="{value}"))
         metric_logger.add_meter("loss_event", utils.SmoothedValue(window_size=1, fmt="{value}"))
+        try:
+            if model.event_detector.__class__.__name__=="CenterNetHead":
+                metric_logger.add_meter("loss_offset", utils.SmoothedValue(window_size=1, fmt="{value}"))
+                metric_logger.add_meter("loss_hypocenter", utils.SmoothedValue(window_size=1, fmt="{value}"))
+        except:
+            pass
     header = f"Epoch: [{epoch}]"
 
     # ctx = nullcontext() if scaler is None else torch.amp.autocast(device_type=args.device, dtype=args.ptdtype)
@@ -140,9 +145,10 @@ def train_one_epoch(
 
         metric_logger.update(lr=optimizer.param_groups[0]["lr"], loss=loss.item())
         if args.model == "eqnet":
-            metric_logger.meters["loss_phase"].update(loss_phase.item())
-            metric_logger.meters["loss_event"].update(loss_event.item())
-
+            for k, v in output.items():
+                if "loss" in k and k != "loss":
+                    metric_logger.meters[k].update(v.item())
+                    
         if args.wandb and utils.is_main_process():
             wandb.log(
                 {
@@ -228,7 +234,7 @@ def main(args):
     torch.backends.cudnn.allow_tf32 = True  # allow tf32 on cudnn
     if args.use_deterministic_algorithms:
         torch.backends.cudnn.benchmark = False
-        torch.use_deterministic_algorithms(True)
+        torch.use_deterministic_algorithms(True, warn_only=True)
     else:
         torch.backends.cudnn.benchmark = True
 
