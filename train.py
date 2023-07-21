@@ -62,12 +62,9 @@ def evaluate(model, data_loader, scaler, args, epoch=0, total_sample=1):
     if args.wandb and utils.is_main_process():
         wandb.log({"test/test_loss": metric_logger.loss.global_avg, "test/epoch": epoch})
         if args.model == "eqnet":
-            wandb.log(
-                {
-                    "test/loss_phase": metric_logger.loss_phase.global_avg,
-                    "test/loss_event": metric_logger.loss_event.global_avg,
-                }
-            )
+            for k, v in metric_logger.meters.items():
+                if "loss" in k and k != "loss":
+                    wandb.log({"test/" + k: v.global_avg})
 
     return metric_logger
 
@@ -159,7 +156,9 @@ def train_one_epoch(
                 }
             )
             if args.model == "eqnet":
-                wandb.log({"train/loss_phase": loss_phase.item(), "train/loss_event": loss_event.item()})
+                for k, v in output.items():
+                    if "loss" in k and k != "loss":
+                        wandb.log({"train/" + k: v.item()})
 
     model.eval()
     plot_results(meta, model, output, args, epoch, "train_")
