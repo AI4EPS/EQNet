@@ -91,41 +91,38 @@ def smoothl1_reg_loss(output, target, mask):
         mask: B x Time x Station
     '''
     output = output.float()
+    num = mask.float().sum()
     mask = mask.unsqueeze(1).float()
     pred = output * mask
     ground_truth = target * mask
-    num = pred.shape[-1]
 
     regr_loss = F.smooth_l1_loss(pred, ground_truth, reduction='sum')
-    regr_loss = regr_loss / num
-    return regr_loss
+    return regr_loss / (num + 1e-4)
 
 
 def l1_reg_loss(output, target, mask):
     output = output.float()
+    num = mask.float().sum()
     mask = mask.unsqueeze(1).float()
     pred = output * mask
     ground_truth = target * mask
-    num = pred.shape[-1]
     
     regr_loss = F.l1_loss(pred, ground_truth, reduction='sum')
-    regr_loss = regr_loss / num
-    return regr_loss
+    return regr_loss / (num + 1e-4)
 
 
 def norml1_reg_loss(output, target, mask):
     output = output.float()
+    num = mask.float().sum()
     mask = mask.unsqueeze(1).float()
     pred = output * mask
     ground_truth = target * mask
-    num = pred.shape[-1]
     
     pred = pred / (ground_truth + 1e-4)
     ground_truth = ground_truth * 0 + 1
 
     regr_loss = F.l1_loss(pred, ground_truth, reduction='sum')
-    regr_loss = regr_loss / num
-    return regr_loss
+    return regr_loss / (num + 1e-4)
 
 
 class RegWeightedL1Loss(nn.Module):
@@ -142,7 +139,7 @@ class RegWeightedL1Loss(nn.Module):
 
 
 class CenterNetHead(nn.Module):
-    def __init__(self, channels=[768, 256, 64], bn=False, kernel_size=3, hm_loss="focal", reg_loss="sl1", weights=[1, 0.0002, 0.0002]):
+    def __init__(self, channels=[768, 256, 64], bn=False, kernel_size=3, hm_loss="focal", reg_loss="sl1", weights=[1, 0.02, 0.02]):
         super().__init__()
         self.curr_dim = channels[0]
         self.cnv_dim = channels[1]
@@ -204,8 +201,8 @@ class CenterNetHead(nn.Module):
     def losses(self, outputs, event_center, event_location, event_location_mask):
         hm_loss = self.hm_loss(outputs["event"], event_center)
         
-        outputs["offset"][:,0,:,:] = outputs["offset"][:,0,:,:] * 100 # emphasize the event_center offset loss
-        event_location[:,4,:,:] = event_location[:,4,:,:] * 100 # emphasize the event_center offset loss
+        outputs["offset"][:,0,:,:] = outputs["offset"][:,0,:,:] * 10 # emphasize the event_center offset loss
+        event_location[:,4,:,:] = event_location[:,4,:,:] * 10 # emphasize the event_center offset loss
         hw_loss = self.hw_loss(outputs["offset"], event_location[:, 4:, :, :], event_location_mask)
         
         reg_loss = self.reg_loss(outputs["hypocenter"], event_location[:, :4, :, :], event_location_mask)
