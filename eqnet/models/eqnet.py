@@ -262,10 +262,14 @@ class EQNet(nn.Module):
         outputs_event, losses_event = self.event_detector(features, event_center, event_location, event_location_mask)
 
         if self.training:
-            return {"loss": loss_phase + losses_event["loss"], "loss_phase": loss_phase, "loss_event": losses_event["loss_event"]}
+            loss = loss_phase + losses_event["loss"]
+            del losses_event["loss"]
+            return {"loss": loss, "loss_phase": loss_phase, **losses_event}
         elif phase_pick is not None: # validation
             #output_event = outputs_event["event"]
-            return {"phase": output_phase, "loss": loss_phase + losses_event["loss"], "loss_phase": loss_phase, "loss_event": losses_event["loss_event"], **outputs_event}
+            loss = loss_phase + losses_event["loss"]
+            del losses_event["loss"]
+            return {"phase": output_phase, "loss": loss, "loss_phase": loss_phase, **outputs_event, **losses_event}
         else:
             #output_event = outputs_event["event"]
             return {"phase": output_phase, **outputs_event}
