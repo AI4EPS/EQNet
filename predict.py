@@ -318,7 +318,8 @@ def main(args):
             model_url = "https://github.com/AI4EPS/models/releases/download/PhaseNet-Polarity-v3/model_99.pth"
         elif args.model == "phasenet_das":
             if args.location is None:
-                model_url = "ai4eps/model-registry/PhaseNet-DAS:latest"
+                # model_url = "ai4eps/model-registry/PhaseNet-DAS:latest"
+                model_url = "https://github.com/AI4EPS/models/releases/download/PhaseNet-DAS-v1/PhaseNet-DAS-v1.pth"
             elif args.location == "forge":
                 model_url = (
                     "https://github.com/AI4EPS/models/releases/download/PhaseNet-DAS-ConvertedPhase/model_99.pth"
@@ -329,12 +330,12 @@ def main(args):
             raise
 
         ## load model from wandb
-        if utils.is_main_process():
-            with wandb.init() as run:
-                artifact = run.use_artifact(model_url, type="model")
-                artifact_dir = artifact.download()
-            checkpoint = torch.load(glob(os.path.join(artifact_dir, "*.pth"))[0], map_location="cpu")
-            model.load_state_dict(checkpoint["model"], strict=True)
+        # if utils.is_main_process():
+        #     with wandb.init() as run:
+        #         artifact = run.use_artifact(model_url, type="model")
+        #         artifact_dir = artifact.download()
+        #     checkpoint = torch.load(glob(os.path.join(artifact_dir, "*.pth"))[0], map_location="cpu")
+        #     model.load_state_dict(checkpoint["model"], strict=True)
 
     model_without_ddp = model
     if args.distributed:
@@ -342,10 +343,10 @@ def main(args):
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
         model_without_ddp = model.module
     ## load model from url
-    # state_dict = torch.hub.load_state_dict_from_url(
-    #     model_url, model_dir="./", progress=True, check_hash=True, map_location="cpu"
-    # )
-    # model_without_ddp.load_state_dict(state_dict["model"], strict=True)
+    state_dict = torch.hub.load_state_dict_from_url(
+        model_url, model_dir="./", progress=True, check_hash=True, map_location="cpu"
+    )
+    model_without_ddp.load_state_dict(state_dict["model"], strict=True)
 
     if args.model == "phasenet":
         pred_phasenet(args, model, data_loader, pick_path, figure_path, event_path)
