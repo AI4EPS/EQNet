@@ -44,6 +44,13 @@ def _transpose_and_gather_feat(feat, ind):
     return feat
 
 
+def cross_entropy_loss(inputs, targets):
+    inputs = inputs.float()  # https://github.com/pytorch/pytorch/issues/48163
+    loss = F.binary_cross_entropy_with_logits(inputs, targets)
+
+    return loss
+
+
 def focal_loss(out, target):
     '''
     Arguments:
@@ -139,7 +146,7 @@ class RegWeightedL1Loss(nn.Module):
 
 
 class CenterNetHead(nn.Module):
-    def __init__(self, channels=[768, 256, 64], bn=False, kernel_size=3, hm_loss="focal", reg_loss="sl1", weights=[1, 0.02, 0.02]):
+    def __init__(self, channels=[768, 256, 64], bn=False, kernel_size=3, hm_loss="focal", reg_loss="sl1", weights=[1, 0.015, 0.01]):
         super().__init__()
         self.curr_dim = channels[0]
         self.cnv_dim = channels[1]
@@ -159,9 +166,10 @@ class CenterNetHead(nn.Module):
         # event_loaction
         self.reg = make_kp_layer(self.cnv_dim, self.hid_dim, out_dim=4, kernel_size=kernel_size)
         
-        self.hm_loss = F.mse_loss if hm_loss=="mse" else focal_loss
-        self.hw_loss = l1_reg_loss if reg_loss=="l1" else smoothl1_reg_loss
-        self.reg_loss = l1_reg_loss if reg_loss=="l1" else smoothl1_reg_loss
+        loss_dict = {"mse": F.mse_loss, "focal": focal_loss, "l1": l1_reg_loss, "sl1": smoothl1_reg_loss, "nl1": norml1_reg_loss, "cross_entropy": cross_entropy_loss}
+        self.hm_loss = loss_dict[hm_loss]
+        self.hw_loss = loss_dict[reg_loss]
+        self.reg_loss = loss_dict[reg_loss]
             
         
     def forward(self, features, event_center, event_location, event_location_mask):
@@ -176,7 +184,7 @@ class CenterNetHead(nn.Module):
         x = self.conv(x)
         
         heatmap = self.heatmap(x)
-        if self.hm_loss!="mse":
+        if self.hm_loss!=F.mse_loss:
             heatmap = torch.clamp(heatmap.sigmoid_(), min=1e-4, max=1-1e-4)
         heatmap = heatmap.view(bt, st, heatmap.shape[2])  # chn = 1
         heatmap = heatmap.permute(0, 2, 1) # batch, time, station
