@@ -24,9 +24,10 @@ class MLP(torch.nn.Sequential):
     Args:
         in_channels (int): Number of channels of the input
         hidden_channels (List[int]): List of the hidden channel dimensions
-        norm_layer (Callable[..., torch.nn.Module], optional): Norm layer that will be stacked on top of the convolution layer. If ``None`` this layer wont be used. Default: ``None``
-        activation_layer (Callable[..., torch.nn.Module], optional): Activation function which will be stacked on top of the normalization layer (if not None), otherwise on top of the conv layer. If ``None`` this layer wont be used. Default: ``torch.nn.ReLU``
-        inplace (bool): Parameter for the activation layer, which can optionally do the operation in-place. Default ``True``
+        norm_layer (Callable[..., torch.nn.Module], optional): Norm layer that will be stacked on top of the linear layer. If ``None`` this layer won't be used. Default: ``None``
+        activation_layer (Callable[..., torch.nn.Module], optional): Activation function which will be stacked on top of the normalization layer (if not None), otherwise on top of the linear layer. If ``None`` this layer won't be used. Default: ``torch.nn.ReLU``
+        inplace (bool, optional): Parameter for the activation layer, which can optionally do the operation in-place.
+            Default is ``None``, which uses the respective default values of the ``activation_layer`` and Dropout layer.
         bias (bool): Whether to use bias in the linear layer. Default ``True``
         dropout (float): The probability for the dropout layer. Default: 0.0
     """
@@ -37,7 +38,7 @@ class MLP(torch.nn.Sequential):
         hidden_channels: List[int],
         norm_layer: Optional[Callable[..., torch.nn.Module]] = None,
         activation_layer: Optional[Callable[..., torch.nn.Module]] = torch.nn.ReLU,
-        inplace: Optional[bool] = True,
+        inplace: Optional[bool] = None,
         bias: bool = True,
         dropout: float = 0.0,
     ):
@@ -340,6 +341,17 @@ class ShiftedWindowAttention(nn.Module):
 
     def get_relative_position_bias(self, loc: Tensor) -> Tensor:
         
+        # relative_coords_t = self.relative_coords_t.repeat(loc.shape[0], 1, 1, 1) # B, nt*nx, nt*nx, 1
+        # coords_x_flatten = loc.unsqueeze(-3).repeat(1, self.window_size[0], 1, 1).flatten(1,2)
+        # relative_coords_sta = (coords_x_flatten[:, :, None, :] - coords_x_flatten[:, None, :, :])[:,:,:,:2] # B, nt*nx, nt*nx, 2
+        # relative_coords_sta = (relative_coords_sta/self.grid_size) + (self.bin-1)/2 # B, nx, nx, 2
+        # relative_coords_sta = torch.clamp(torch.round(relative_coords_sta).long(), 0, self.bin-1) # B, nx, nx, 2
+        # relative_coords = torch.cat((relative_coords_t, relative_coords_sta), dim=-1) # B, nt*nx, nt*nx, 3
+        # # shift to start from 0
+        # relative_coords[:, :, :, 0] += self.window_size[0] - 1
+        # relative_coords[:, :, :, 0] *= self.bin ** 2
+        # relative_coords[:, :, :, 1] *= self.bin
+        # relative_position_index = relative_coords.sum(dim=-1).flatten(start_dim=1) # B, nt*nx*nt*nx
         # get pair-wise relative position index for each token inside the window
         relative_coords_t = self.relative_coords_t.repeat(loc.shape[0], 1, 1, 1) # B, nt*nx, nt*nx, 1
         relative_coords_sta = (loc[:, :, None, :] - loc[:, None, :, :])[:,:,:,:2] # B, nx, nx, 2
@@ -357,7 +369,7 @@ class ShiftedWindowAttention(nn.Module):
         # B, nt*nx*nt*nx, nH 
         relative_position_bias = self.relative_position_bias_table[relative_position_index[:]]
         relative_position_bias = relative_position_bias.view(loc.shape[0], N, N, -1) # B, nt*nx, nt*nx, nH
-        relative_position_bias = relative_position_bias.permute(0, 3, 1, 2) # B, nH, nt*nx, nt*nx
+        relative_position_bias = relative_position_bias.permute(0, 3, 1, 2).contiguous() # B, nH, nt*nx, nt*nx
         
         return relative_position_bias
 
@@ -523,8 +535,12 @@ class SwinTransformerBlock(nn.Module):
 
     def forward(self, meta: Dict[str, Tensor]):
         x, loc = meta["x"], meta["loc"]
-        x = x + self.stochastic_depth(self.attn(self.norm1(x), loc))
-        x = x + self.stochastic_depth(self.mlp(self.norm2(x)))
+        # is this a good idea to apply norm before the attention?
+        # x = x + self.stochastic_depth(self.attn(self.norm1(x), loc))
+        # x = x + self.stochastic_depth(self.attn(self.norm1(x), self.norm1(loc))) ???
+        # x = x + self.stochastic_depth(self.mlp(self.norm2(x)))
+        x = x + self.stochastic_depth(self.norm1(self.attn(x, loc)))
+        x = x + self.stochastic_depth(self.norm2(self.mlp(x)))
         return {"x": x, "loc": loc}
 
 
