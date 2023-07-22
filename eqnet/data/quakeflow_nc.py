@@ -296,17 +296,12 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                             is_sick = False
                             for sta_id in station_ids:
                                 attrs = event[sta_id].attrs
-                                '''
                                 p_picks = attrs["phase_index"][attrs["phase_type"] == "P"]
                                 s_picks = attrs["phase_index"][attrs["phase_type"] == "S"]
-                                if p_picks==s_picks:
+                                if p_picks>=s_picks:
                                     is_sick = True
                                     break
                                 if ((p_picks) + (s_picks))[0] > self.nt * 2:
-                                    is_sick = True
-                                    break
-                                '''
-                                if attrs["phase_index"][attrs["phase_type"] == "P"] == attrs["phase_index"][attrs["phase_type"] == "S"]:
                                     is_sick = True
                                     break
                             if is_sick:
@@ -331,7 +326,9 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                                 # center = (attrs["phase_index"][::2] + attrs["phase_index"][1::2])/2.0
                                 ## assuming only one event with both P and S picks
                                 c0 = ((p_picks) + (s_picks)) / 2.0 # phase center
-                                c0_width = max(((s_picks - p_picks) * self.sampling_rate / 200.0).max(), 160)
+                                # c0_width = max(((s_picks - p_picks) * self.sampling_rate / 200.0).max(), 160)
+                                c0_width = ((s_picks - p_picks) * self.sampling_rate / 200.0).max() # min=160
+                                assert c0_width>0
                                 dx = round(
                                     (event_attrs["longitude"] - attrs["longitude"])
                                     * np.cos(np.radians(event_attrs["latitude"]))
@@ -348,14 +345,14 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                                     2,
                                 )
 
-                                #assert c0[0]<self.nt
+                                assert c0[0]<self.nt
                                 c0 = c0/self.feature_scale
-                                #assert c0[0]<self.feature_nt
+                                assert c0[0]<self.feature_nt
                                 c0_width = c0_width/self.feature_scale
                                 #assert c0_width>=160/self.feature_scale
                                 c0_int = c0.astype(np.int32)
-                                #assert c0_int[0]<self.feature_nt
-                                #assert abs(c0-c0_int)[0]<1
+                                assert c0_int[0]<self.feature_nt
+                                assert abs(c0-c0_int)[0]<1
                                 
                                 event_center[i, :] = generate_label(
                                     [
