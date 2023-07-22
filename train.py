@@ -14,6 +14,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.data
 import wandb
+import multiprocessing as mp
 
 import datasets
 from datasets.distributed import split_dataset_by_node
@@ -106,9 +107,6 @@ def train_one_epoch(
             output = model(meta)
 
         loss = output["loss"]
-        if args.model == "eqnet":
-            loss_phase = output["loss_phase"]
-            loss_event = output["loss_event"]
         optimizer.zero_grad()
         if scaler is not None:
             scaler.scale(loss).backward()
@@ -203,6 +201,7 @@ def plot_results(meta, model, output, args, epoch, prefix=""):
 
 
 def main(args):
+    # mp.set_start_method('spawn', force=True)
     if args.output_dir:
         utils.mkdir(args.output_dir)
         figure_dir = os.path.join(args.output_dir, "figures")
@@ -325,6 +324,7 @@ def main(args):
             dataset_test = dataset_test.with_format("torch")
             group_ids = create_groups(dataset, args.num_stations_list, is_pad=True)
             if args.distributed and world_size > 1:
+                torch.set_num_threads(1) # fix the multi-processing bug
                 if args.gpu > 0:
                     print(f"Rank {args.rank}: Gpu {args.gpu} waiting for main process to perform the mapping", force=True)
                     torch.distributed.barrier()
