@@ -31,7 +31,7 @@ print("is_pad: ", is_pad)
 try:
     rank = int(os.environ["RANK"])
     world_size = int(os.environ["WORLD_SIZE"])
-    num_proc = 4
+    num_proc = 12
     gpu = int(os.environ["LOCAL_RANK"])
     torch.cuda.set_device(gpu)
     dist_backend = "nccl"

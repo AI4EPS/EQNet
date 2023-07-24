@@ -275,5 +275,5 @@ class EQNet(nn.Module):
             return {"phase": output_phase, **outputs_event}
 
 
-def build_model(backbone="resnet50", head="centernet", **kargs) -> EQNet:
-    return EQNet(backbone=backbone)
+def build_model(backbone="resnet50", head="simple", **kargs) -> EQNet:
+    return EQNet(backbone=backbone, head=head)
