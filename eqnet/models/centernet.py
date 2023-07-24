@@ -56,6 +56,7 @@ def focal_loss(out, target):
     Arguments:
       out, target: B x Time x Station
     '''
+    out = torch.clamp(torch.sigmoid(out), min=1e-4, max=1-1e-4)
     out = out.float()
     pos_inds = target.eq(1).float()
     neg_inds = target.lt(1).float()
@@ -132,21 +133,29 @@ def norml1_reg_loss(output, target, mask):
     return regr_loss / (num + 1e-4)
 
 
-class RegWeightedL1Loss(nn.Module):
-    def __init__(self):
-        super(RegWeightedL1Loss, self).__init__()
-  
-    def forward(self, output, mask, ind, target):
-        pred = _transpose_and_gather_feat(output, ind)
-        mask = mask.float()
-        # loss = F.l1_loss(pred * mask, target * mask,  reduction='elementwise_mean')
-        loss = F.l1_loss(pred * mask, target * mask, size_average=False)
-        loss = loss / (mask.sum() + 1e-4)
-        return loss
+def weighted_l1_reg_loss(output, target, mask, weights, type="sl1"):
+    '''
+    Arguments:
+        weights: channel
+    '''
+    output = output.float()
+    num = mask.float().sum()
+    mask = mask.unsqueeze(1).float()
+    pred = output * mask
+    ground_truth = target * mask
+    if weights is None:
+        weights = torch.ones(ground_truth.shape[1]).to(ground_truth.device)
+
+    if type == "l1":
+        regr_loss = F.l1_loss(pred, ground_truth, reduction='none')
+    elif type == "sl1":
+        regr_loss = F.smooth_l1_loss(pred, ground_truth, reduction='none')
+    regr_loss = (regr_loss * weights.unsqueeze(0).unsqueeze(-1).unsqueeze(-1)).sum()
+    return regr_loss / (num + 1e-4)
 
 
 class CenterNetHead(nn.Module):
-    def __init__(self, channels=[768, 256, 64], bn=False, kernel_size=3, hm_loss="focal", reg_loss="sl1", weights=[1, 0.015, 0.01]):
+    def __init__(self, channels=[768, 256, 64], bn=False, kernel_size=3, hm_loss="focal", hw_loss="wl1", reg_loss="sl1", weights=[1, 0.015, 0.01]):
         super().__init__()
         self.curr_dim = channels[0]
         self.cnv_dim = channels[1]
@@ -154,6 +163,7 @@ class CenterNetHead(nn.Module):
         self.bn = bn
         self.weights = weights
         self.hm_loss = hm_loss
+        self.hw_loss = hw_loss
         self.reg_loss = reg_loss
         
         self.upsample = nn.Conv1d(self.curr_dim, self.curr_dim, kernel_size=1, bias=False)
@@ -163,12 +173,22 @@ class CenterNetHead(nn.Module):
         self.heatmap[-1].bias.data.fill_(-2.19)
         # phase_pick and offset
         self.width = make_kp_layer(self.cnv_dim, self.hid_dim, out_dim=2, kernel_size=kernel_size)
+        # for m in self.width:
+        #     if isinstance(m, nn.Conv1d):
+        #         nn.init.xavier_normal_(m.weight)
+        #         if m.bias is not None:
+        #             nn.init.constant_(m.bias, 0)
         # event_loaction
         self.reg = make_kp_layer(self.cnv_dim, self.hid_dim, out_dim=4, kernel_size=kernel_size)
+        # for m in self.reg:
+        #     if isinstance(m, nn.Conv1d):
+        #         nn.init.xavier_normal_(m.weight)
+        #         if m.bias is not None:
+        #             nn.init.constant_(m.bias, 0)
         
-        loss_dict = {"mse": F.mse_loss, "focal": focal_loss, "l1": l1_reg_loss, "sl1": smoothl1_reg_loss, "nl1": norml1_reg_loss, "cross_entropy": cross_entropy_loss}
+        loss_dict = {"mse": F.mse_loss, "focal": focal_loss, "l1": l1_reg_loss, "sl1": smoothl1_reg_loss, "nl1": norml1_reg_loss, "wl1": weighted_l1_reg_loss, "cross_entropy": cross_entropy_loss}
         self.hm_loss = loss_dict[hm_loss]
-        self.hw_loss = loss_dict[reg_loss]
+        self.hw_loss = loss_dict[hw_loss]
         self.reg_loss = loss_dict[reg_loss]
             
         
@@ -184,8 +204,9 @@ class CenterNetHead(nn.Module):
         x = self.conv(x)
         
         heatmap = self.heatmap(x)
-        if self.hm_loss!=F.mse_loss:
-            heatmap = torch.clamp(heatmap.sigmoid_(), min=1e-4, max=1-1e-4)
+        # to keep continus, we move the sigmoid to the loss function
+        #if self.hm_loss==focal_loss:
+        #    heatmap = torch.clamp(heatmap.sigmoid_(), min=1e-4, max=1-1e-4)
         heatmap = heatmap.view(bt, st, heatmap.shape[2])  # chn = 1
         heatmap = heatmap.permute(0, 2, 1) # batch, time, station
         
@@ -209,9 +230,7 @@ class CenterNetHead(nn.Module):
     def losses(self, outputs, event_center, event_location, event_location_mask):
         hm_loss = self.hm_loss(outputs["event"], event_center)
         
-        outputs["offset"][:,0,:,:] = outputs["offset"][:,0,:,:] * 10 # emphasize the event_center offset loss
-        event_location[:,4,:,:] = event_location[:,4,:,:] * 10 # emphasize the event_center offset loss
-        hw_loss = self.hw_loss(outputs["offset"], event_location[:, 4:, :, :], event_location_mask)
+        hw_loss = self.hw_loss(outputs["offset"], event_location[:, 4:, :, :], event_location_mask, weights=torch.tensor([10, 1]).to(event_location.device))
         
         reg_loss = self.reg_loss(outputs["hypocenter"], event_location[:, :4, :, :], event_location_mask)
         
