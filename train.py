@@ -195,9 +195,15 @@ def plot_results(meta, model, output, args, epoch, prefix=""):
             output = model(meta)
             phase = F.softmax(output["phase"], dim=1).cpu().float()
             event = torch.sigmoid(output["event"]).cpu().float()
+            try:
+                offset = output["offset"].cpu().float()
+                hypocenter = output["hypocenter"].cpu().float()
+            except:
+                offset = None
+                hypocenter = None
             print("Plotting...")
-            eqnet.utils.visualize_eqnet_train(meta, phase, event, epoch=epoch, figure_dir=args.figure_dir, prefix=prefix)
-            del output, phase, event
+            eqnet.utils.visualize_eqnet_train(meta, phase, event, epoch=epoch, figure_dir=args.figure_dir, prefix=prefix, offset=offset, hypocenter=hypocenter)
+            del output, phase, event, offset, hypocenter
 
 
 def main(args):
@@ -335,10 +341,11 @@ def main(args):
                     print("Mapping finished, loading results from main process")
                     torch.distributed.barrier()
             else:
+                torch.set_num_threads(1) # fix the multi-processing bug
                 print("Mapping dataset")
-                dataset = dataset.map(lambda x: cut_reorder_keys(x, num_stations_list=args.num_stations_list, is_pad=True, is_train=True), desc="cut_reorder_keys")
-                dataset = dataset.map(lambda x: random_shift(x, shift_range=(-160, 0), feature_scale=16), desc="random_shift")
-                dataset_test = dataset_test.map(lambda x: cut_reorder_keys(x, num_stations_list=args.num_stations_list, is_pad=True, is_train=False), desc="cut_reorder_keys")
+                dataset = dataset.map(lambda x: cut_reorder_keys(x, num_stations_list=args.num_stations_list, is_pad=True, is_train=True), desc="cut_reorder_keys", num_proc=args.workers)
+                dataset = dataset.map(lambda x: random_shift(x, shift_range=(-160, 0), feature_scale=16), desc="random_shift", num_proc=args.workers)
+                dataset_test = dataset_test.map(lambda x: cut_reorder_keys(x, num_stations_list=args.num_stations_list, is_pad=True, is_train=False), desc="cut_reorder_keys", num_proc=args.workers)
 
             if args.distributed:
                 # dataset = split_dataset_by_node(dataset, rank, world_size)
@@ -404,6 +411,8 @@ def main(args):
         reg=args.reg,
         ## phasenet
         polarity_loss_weight=args.polarity_loss_weight,
+        ## eqnet
+        head=args.head,
     )
     logger.info("Model:\n{}".format(model))
 
@@ -621,6 +630,7 @@ def get_args_parser(add_help=True):
     parser.add_argument("--dataset", default="", type=str, help="dataset name")
     parser.add_argument("--model", default="phasenet_das", type=str, help="model name")
     parser.add_argument("--backbone", default="unet", type=str, help="model backbone")
+    parser.add_argument("--head", default="simple", type=str, help="model head")
     parser.add_argument(
         "--device",
         default="cuda",
