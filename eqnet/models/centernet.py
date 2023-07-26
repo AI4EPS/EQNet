@@ -15,12 +15,12 @@ class convolution(nn.Module):
         self.relu = nn.ReLU(inplace=True)
 
     def forward(self, x):
-        conv = self.conv(x)
-        bn   = self.bn(conv)
-        relu = self.relu(bn)
-        return relu
+        assert not torch.isnan(self.conv.weight).any(), f"conv.weight: {self.conv.weight} is nan"
+        assert not torch.isnan(self.bn.weight).any(), f"conv.bn.weight: {self.bn.weight} is nan"
+        x = self.relu(self.bn(self.conv(x)))
+        return x
 
-def make_kp_layer(cnv_dim, curr_dim, out_dim, kernel_size=3, stride=1, dilation=1, with_bn=False):
+def make_kp_layer(cnv_dim, curr_dim, out_dim, kernel_size=3, stride=1, dilation=1, with_bn=True):
     return nn.Sequential(
         convolution(kernel_size, cnv_dim, curr_dim, stride, dilation, with_bn=with_bn),
         nn.Conv1d(curr_dim, out_dim, 1)
@@ -45,8 +45,10 @@ def _transpose_and_gather_feat(feat, ind):
 
 
 def cross_entropy_loss(inputs, targets):
+    assert not torch.isnan(inputs).any(), f"cross entropy inputs: {inputs} is nan"
     inputs = inputs.float()  # https://github.com/pytorch/pytorch/issues/48163
     loss = F.binary_cross_entropy_with_logits(inputs, targets)
+    assert not torch.isnan(loss).any(), f"cross entropy loss: {loss} is nan"
 
     return loss
 
@@ -56,14 +58,16 @@ def focal_loss(out, target):
     Arguments:
       out, target: B x Time x Station
     '''
-    out = torch.clamp(torch.sigmoid(out), min=1e-4, max=1-1e-4)
     out = out.float()
+    out = torch.clamp(torch.sigmoid(out), min=1e-4, max=1-1e-4)
     pos_inds = target.eq(1).float()
     neg_inds = target.lt(1).float()
     
     neg_weights = torch.pow(1 - target, 4)
     pos_loss = torch.log(out) * torch.pow(1 - out, 2) * pos_inds
+    assert torch.isnan(pos_loss).sum() == 0, f"pos_loss {pos_loss}"
     neg_loss = torch.log(1 - out) * torch.pow(out, 2) * neg_weights * neg_inds
+    assert torch.isnan(neg_loss).sum() == 0, f"neg_loss {neg_loss}"
     
     num_pos  = pos_inds.float().sum()
     pos_loss = pos_loss.sum()
@@ -105,6 +109,7 @@ def smoothl1_reg_loss(output, target, mask):
     ground_truth = target * mask
 
     regr_loss = F.smooth_l1_loss(pred, ground_truth, reduction='sum')
+    assert torch.isnan(regr_loss).sum() == 0, f"regr_loss {regr_loss}"
     return regr_loss / (num + 1e-4)
 
 
@@ -151,6 +156,7 @@ def weighted_l1_reg_loss(output, target, mask, weights, type="sl1"):
     elif type == "sl1":
         regr_loss = F.smooth_l1_loss(pred, ground_truth, reduction='none')
     regr_loss = (regr_loss * weights.unsqueeze(0).unsqueeze(-1).unsqueeze(-1)).sum()
+    assert torch.isnan(regr_loss).sum() == 0, f"regr_loss {regr_loss}"
     return regr_loss / (num + 1e-4)
 
 
@@ -196,14 +202,20 @@ class CenterNetHead(nn.Module):
         """input shape [batch, in_channels, time_steps]
         output shape [batch, time_steps]"""
         x = features["out"]
+        assert not torch.isnan(x).any(), f"x: {x} is nan"
         bt, st, ch, nt = x.shape  # batch, station, channel, time
         x = x.view(bt * st, ch, nt)
         
-        x = F.interpolate(x, scale_factor=2, mode="linear", align_corners=False)    
+        x = F.interpolate(x, scale_factor=2, mode="linear", align_corners=False)
+        assert not torch.isnan(x).any(), f"interpolate: {x} is nan"  
+        assert not torch.isnan(self.upsample.weight).any(), f"upsample.weight: {self.upsample.weight} is nan"
         x = self.upsample(x)
+        assert not torch.isnan(x).any(), f"upsample: {x} is nan"
         x = self.conv(x)
+        assert not torch.isnan(x).any(), f"conv: {x} is nan"
         
         heatmap = self.heatmap(x)
+        assert not torch.isnan(heatmap).any(), f"heatmap: {heatmap} is nan"
         # to keep continus, we move the sigmoid to the loss function
         #if self.hm_loss==focal_loss:
         #    heatmap = torch.clamp(heatmap.sigmoid_(), min=1e-4, max=1-1e-4)
@@ -211,10 +223,12 @@ class CenterNetHead(nn.Module):
         heatmap = heatmap.permute(0, 2, 1) # batch, time, station
         
         width = self.width(x)
+        assert not torch.isnan(width).any(), f"offset: {width} is nan"
         width = width.view(bt, st, width.shape[1], width.shape[2]) # batch, station, 2, time
         width = width.permute(0, 2, 3, 1) # batch, 2, time, station
         
         reg = self.reg(x)
+        assert not torch.isnan(reg).any(), f"hypocenter: {reg} is nan"
         reg = reg.view(bt, st, reg.shape[1], reg.shape[2]) # batch, station, 4, time
         reg = reg.permute(0, 2, 3, 1) # batch, 4, time, station
         
@@ -233,6 +247,99 @@ class CenterNetHead(nn.Module):
         hw_loss = self.hw_loss(outputs["offset"], event_location[:, 4:, :, :], event_location_mask, weights=torch.tensor([10, 1]).to(event_location.device))
         
         reg_loss = self.reg_loss(outputs["hypocenter"], event_location[:, :4, :, :], event_location_mask)
+        
+        loss = hm_loss * self.weights[0] + hw_loss * self.weights[1] + reg_loss * self.weights[2]
+        # print(f"loss {loss}, hm_loss {hm_loss}, hw_loss {hw_loss}, reg_loss {reg_loss}", force=True)
+        return {"loss": loss, "loss_event": hm_loss, "loss_offset": hw_loss, "loss_hypocenter": reg_loss}
+    
+
+class CenterNetHeadV1(nn.Module):
+    def __init__(self, channels=[768, 256, 64], bn=False, kernel_size=3, hm_loss="focal", hw_loss="wl1", reg_loss="sl1", weights=[1, 0.015, 0.01]):
+        super().__init__()
+        self.curr_dim = channels[0]
+        self.cnv_dim = channels[1]
+        self.hid_dim = channels[2]
+        self.bn = bn
+        self.weights = weights
+        self.hm_loss = hm_loss
+        self.hw_loss = hw_loss
+        self.reg_loss = reg_loss
+        
+        self.upsample = nn.Conv1d(self.curr_dim, self.curr_dim, kernel_size=1, bias=False)
+        self.conv = convolution(k=5, inp_dim=self.curr_dim, out_dim=self.cnv_dim, with_bn=True)
+        # event_center
+        self.heatmap = make_kp_layer(self.cnv_dim, self.hid_dim, out_dim=1, kernel_size=kernel_size)
+        self.heatmap[-1].bias.data.fill_(-2.19)
+        # phase_pick and offset
+        self.width = make_kp_layer(self.cnv_dim, self.hid_dim, out_dim=2, kernel_size=kernel_size)
+        # for m in self.width:
+        #     if isinstance(m, nn.Conv1d):
+        #         nn.init.xavier_normal_(m.weight)
+        #         if m.bias is not None:
+        #             nn.init.constant_(m.bias, 0)
+        # event_loaction
+        self.reg = make_kp_layer(self.cnv_dim, self.hid_dim, out_dim=3, kernel_size=kernel_size)
+        # for m in self.reg:
+        #     if isinstance(m, nn.Conv1d):
+        #         nn.init.xavier_normal_(m.weight)
+        #         if m.bias is not None:
+        #             nn.init.constant_(m.bias, 0)
+        
+        loss_dict = {"mse": F.mse_loss, "focal": focal_loss, "l1": l1_reg_loss, "sl1": smoothl1_reg_loss, "nl1": norml1_reg_loss, "wl1": weighted_l1_reg_loss, "cross_entropy": cross_entropy_loss}
+        self.hm_loss = loss_dict[hm_loss]
+        self.hw_loss = loss_dict[hw_loss]
+        self.reg_loss = loss_dict[reg_loss]
+            
+        
+    def forward(self, features, event_center, event_location, event_location_mask):
+        """input shape [batch, in_channels, time_steps]
+        output shape [batch, time_steps]"""
+        x = features["out"]
+        assert not torch.isnan(x).any(), f"x: {x} is nan"
+        bt, st, ch, nt = x.shape  # batch, station, channel, time
+        x = x.view(bt * st, ch, nt)
+        
+        x = F.interpolate(x, scale_factor=2, mode="linear", align_corners=False)
+        assert not torch.isnan(x).any(), f"interpolate: {x} is nan"  
+        assert not torch.isnan(self.upsample.weight).any(), f"upsample.weight: {self.upsample.weight} is nan"
+        x = self.upsample(x)
+        assert not torch.isnan(x).any(), f"upsample: {x} is nan"
+        x = self.conv(x)
+        assert not torch.isnan(x).any(), f"conv: {x} is nan"
+        
+        heatmap = self.heatmap(x)
+        assert not torch.isnan(heatmap).any(), f"heatmap: {heatmap} is nan"
+        # to keep continus, we move the sigmoid to the loss function
+        #if self.hm_loss==focal_loss:
+        #    heatmap = torch.clamp(heatmap.sigmoid_(), min=1e-4, max=1-1e-4)
+        heatmap = heatmap.view(bt, st, heatmap.shape[2])  # chn = 1
+        heatmap = heatmap.permute(0, 2, 1) # batch, time, station
+        
+        width = self.width(x)
+        assert not torch.isnan(width).any(), f"offset: {width} is nan"
+        width = width.view(bt, st, width.shape[1], width.shape[2]) # batch, station, 2, time
+        width = width.permute(0, 2, 3, 1) # batch, 2, time, station
+        
+        reg = self.reg(x)
+        assert not torch.isnan(reg).any(), f"hypocenter: {reg} is nan"
+        reg = reg.view(bt, st, reg.shape[1], reg.shape[2]) # batch, station, 4, time
+        reg = reg.permute(0, 2, 3, 1) # batch, 4, time, station
+        
+        if self.training:            
+            return None, self.losses({"event": heatmap, "offset": width, "hypocenter": reg}, event_center, event_location, event_location_mask)
+        elif event_center is not None:
+            return {"event": heatmap, "offset": width, "hypocenter": reg}, \
+                self.losses({"event": heatmap, "offset": width, "hypocenter": reg}, event_center, event_location, event_location_mask)
+        else:
+            return {"event": heatmap, "offset": width, "hypocenter": reg}, {}
+        
+        
+    def losses(self, outputs, event_center, event_location, event_location_mask):
+        hm_loss = self.hm_loss(outputs["event"], event_center)
+        
+        hw_loss = self.hw_loss(outputs["offset"], event_location[:, 4:, :, :], event_location_mask, weights=torch.tensor([10, 1]).to(event_location.device))
+        
+        reg_loss = self.reg_loss(outputs["hypocenter"], event_location[:, :3, :, :], event_location_mask)
         
         loss = hm_loss * self.weights[0] + hw_loss * self.weights[1] + reg_loss * self.weights[2]
         # print(f"loss {loss}, hm_loss {hm_loss}, hw_loss {hw_loss}, reg_loss {reg_loss}", force=True)
