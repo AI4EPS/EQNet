@@ -5,7 +5,7 @@ from torch import nn, Tensor
 from typing import Optional, Dict
 from .resnet1d import ResNet, BasicBlock, Bottleneck
 from .swin_transformer import SwinTransformer
-from .centernet import CenterNetHead
+from .centernet import CenterNetHead, CenterNetHeadV1, smoothl1_reg_loss, weighted_l1_reg_loss, cross_entropy_loss, focal_loss
 
 
 def _log_transform(x):
@@ -22,12 +22,13 @@ def log_transform(x):
 class EventDetector(nn.Module):
     # the first channel should be 8 * embedding_dim in swin transformer
     def __init__(
-        self, channels=[128, 64, 32, 16, 8], bn=True, dilations=[1, 2, 4, 8, 16], kernel_size=5, nonlin=nn.ReLU()
+        self, channels=[128, 64, 32, 16, 8], bn=True, dilations=[1, 2, 4, 8, 16], kernel_size=5, nonlin=nn.ReLU(), weights=[1, 0.015, 0.01],
     ):
         super().__init__()
         self.channels = channels
         self.bn = bn
         self.nonlin = nonlin
+        self.weights = weights
 
         if self.bn:
             self.bn_layers = nn.ModuleList([nn.BatchNorm1d(c) for c in channels[1:-1]])
@@ -73,8 +74,54 @@ class EventDetector(nn.Module):
             padding_mode="reflect",
         )
         )
+        self.heatmap[-1].bias.data.fill_(-2.19) # if use the initial value, the loss from 200 to 5 (v2)
+        self.offset = nn.Sequential(
+            nn.Conv1d(
+                channels[-2],
+                channels[-1],
+                kernel_size=kernel_size,
+                dilation=dilations[-2],
+                padding=((kernel_size - 1) * dilations[-2] + 1) // 2,
+                padding_mode="reflect",
+                bias=conv_bias,
+            ),
+            nn.BatchNorm1d(channels[-1]),
+            nn.ReLU(inplace=True),
+            nn.Conv1d(
+            channels[-1],
+            2,
+            kernel_size=kernel_size,
+            dilation=dilations[-1],
+            padding=((kernel_size - 1) * dilations[-1] + 1) // 2,
+            padding_mode="reflect",
+        )
+        )
+        #'''
+        self.hypocenter = nn.Sequential(
+            nn.Conv1d(
+                channels[-2],
+                channels[-1],
+                kernel_size=kernel_size,
+                dilation=dilations[-2],
+                padding=((kernel_size - 1) * dilations[-2] + 1) // 2,
+                padding_mode="reflect",
+                bias=conv_bias,
+            ),
+            nn.BatchNorm1d(channels[-1]),
+            nn.ReLU(inplace=True),
+            nn.Conv1d(
+            channels[-1],
+            3,
+            #4,
+            kernel_size=kernel_size,
+            dilation=dilations[-1],
+            padding=((kernel_size - 1) * dilations[-1] + 1) // 2,
+            padding_mode="reflect",
+        )
+        )
+        #'''
 
-    def forward(self, features, targets=None, *args, **kwargs):
+    def forward(self, features, event_center, event_location, event_location_mask):
         """input shape [batch, in_channels, time_steps]
         output shape [batch, time_steps]"""
         x = features["out"]
@@ -85,25 +132,48 @@ class EventDetector(nn.Module):
         # for conv, bn in zip(self.conv_layers, self.bn_layers[1:]):
         for conv, bn in zip(self.conv_layers, self.bn_layers):
             x = self.nonlin(bn(conv(x)))
-        x = self.heatmap(x)
+        #x = self.heatmap(x)
         x = F.interpolate(x, scale_factor=2, mode="linear", align_corners=False)
-        x = x.view(bt, st, x.shape[2])  # chn = 1
-        x = x.permute(0, 2, 1)
+        heatmap = self.heatmap(x)
+        heatmap = heatmap.view(bt, st, heatmap.shape[2])  # chn = 1
+        heatmap = heatmap.permute(0, 2, 1)
+        
+        offset = self.offset(x)
+        offset = offset.view(bt, st, offset.shape[1], offset.shape[2])
+        offset = offset.permute(0, 2, 3, 1)
+        
+        hypocenter = self.hypocenter(x)
+        hypocenter = hypocenter.view(bt, st, hypocenter.shape[1], hypocenter.shape[2])
+        hypocenter = hypocenter.permute(0, 2, 3, 1)
 
-        if self.training:
-            loss_event = self.losses(x, targets)
-            return None, {"loss": loss_event, "loss_event": loss_event}
-        elif targets is not None:
-            loss_event = self.losses(x, targets)
-            return {"event": x}, {"loss": loss_event, "loss_event": loss_event}
+        if self.training:            
+            return None, self.losses({"event": heatmap, "offset": offset, "hypocenter": hypocenter}, event_center, event_location, event_location_mask)
+        elif event_center is not None:
+            return {"event": heatmap, "offset": offset, "hypocenter": hypocenter}, \
+                self.losses({"event": heatmap, "offset": offset, "hypocenter": hypocenter}, event_center, event_location, event_location_mask)
         else:
-            return {"event": x}, {}
+            return {"event": heatmap, "offset": offset, "hypocenter": hypocenter}, {}
+        
+        #if self.training:            
+        #    return None, self.losses({"event": heatmap, "offset": offset}, event_center, event_location, event_location_mask)
+        #elif event_center is not None:
+        #    return {"event": heatmap, "offset": offset}, \
+        #        self.losses({"event": heatmap, "offset": offset}, event_center, event_location, event_location_mask)
+        #else:
+        #    return {"event": heatmap, "offset": offset}, {}
 
-    def losses(self, inputs, targets):
-        inputs = inputs.float()  # https://github.com/pytorch/pytorch/issues/48163
-        loss = F.binary_cross_entropy_with_logits(inputs, targets)
 
-        return loss
+    def losses(self, outputs, event_center, event_location, event_location_mask):
+        #hm_loss = cross_entropy_loss(outputs["event"], event_center)
+        hm_loss = focal_loss(outputs["event"], event_center)
+        hw_loss = weighted_l1_reg_loss(outputs["offset"], event_location[:, 4:, :, :], event_location_mask, weights=torch.tensor([10, 1]).to(event_location.device))
+        
+        reg_loss = smoothl1_reg_loss(outputs["hypocenter"], event_location[:, :3, :, :], event_location_mask)
+        #reg_loss = smoothl1_reg_loss(outputs["hypocenter"], event_location[:, :4, :, :], event_location_mask)
+        
+        loss = hm_loss * self.weights[0] + hw_loss * self.weights[1] + reg_loss * self.weights[2]
+        # print(f"loss {loss}, hm_loss {hm_loss}, hw_loss {hw_loss}, reg_loss {reg_loss}", force=True)
+        return {"loss": loss, "loss_event": hm_loss, "loss_offset": hw_loss, "loss_hypocenter": reg_loss}
 
 
 class PhasePicker(nn.Module):
@@ -173,6 +243,7 @@ class PhasePicker(nn.Module):
     def losses(self, inputs, targets):
         inputs = inputs.float()  # https://github.com/pytorch/pytorch/issues/48163
         loss = torch.sum(-targets * F.log_softmax(inputs, dim=1), dim=1).mean()
+        # assert not torch.isnan(loss).any(), "loss is nan"
 
         return loss
 
@@ -218,8 +289,10 @@ class EQNet(nn.Module):
         # the len of channels and dilations should be 5 when using other config
         # or you need to change the structure of event_detector and phase_picker
         if (backbone == "swin" or backbone == "swin2"):
-            channels=[768, 128, 32, 16, 8]
-            dilations=[1, 6, 24, 48, 96]
+            channels=[768, 128, 32, 16, 8] 
+            #channels=[768, 256, 64, 16, 8]
+            dilations=[1, 6, 24, 48, 96] 
+            #dilations=[1, 4, 8, 16, 32]
         elif backbone[:6] == "resnet":
             channels=[128, 64, 32, 16, 8]
             dilations=[1, 2, 4, 8, 16]
@@ -227,7 +300,10 @@ class EQNet(nn.Module):
         if head == "simple":
             self.event_detector = EventDetector(channels=channels, bn=True, dilations=dilations)
         elif head == "centernet":
-            self.event_detector = CenterNetHead(channels=[768, 256, 64])
+            if backbone == "swin":
+                self.event_detector = CenterNetHeadV1(channels=[768, 256, 64])
+            elif backbone == "swin2":
+                self.event_detector = CenterNetHead(channels=[768, 256, 64])
                
         self.phase_picker = PhasePicker(channels=channels, bn=True, dilations=dilations)
 
