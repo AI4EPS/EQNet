@@ -4,6 +4,7 @@ import warnings
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import matplotlib
 import numpy as np
 import pandas as pd
 import pyproj
@@ -32,8 +33,18 @@ def run_proc(idx, residual, ii, ijk, tt, station_loc, phase_type, config, lock):
 # %%
 if __name__ == "__main__":
     # %%
-    xlim_degree = [-120.0, -117.5]
-    ylim_degree = [37.1, 38.7]
+    # xlim_degree = [-120.0, -117.5]
+    # ylim_degree = [37.1, 38.7]
+
+    min_longitude = -120
+    max_longitude = -117.5
+    min_latitude = 37.1
+    max_latitude = 38.7
+    min_depth = 0
+    max_depth = 25
+
+    xlim_degree = [min_longitude, max_longitude]
+    ylim_degree = [min_latitude, max_latitude]
 
     # %%
     stations = pd.read_csv(f"das_info.csv")
@@ -73,6 +84,7 @@ if __name__ == "__main__":
     for i in range(n_clusters_):
         centers.append(np.mean(X[labels == i, :], axis=0))
     centers = np.array(centers)
+    centers[:, 2] += 3.0
 
     # %%
     plt.figure(figsize=(8, 8))
@@ -86,7 +98,7 @@ if __name__ == "__main__":
     config = {}
     config["x(km)"] = xlim_km
     config["y(km)"] = ylim_km
-    config["z(km)"] = [0, 30]
+    config["z(km)"] = [min_depth, max_depth]
 
     zz = [0.0, 5.5, 16.0, 32.0]
     vp = [5.5, 6.3, 6.7, 7.8]
@@ -100,7 +112,7 @@ if __name__ == "__main__":
     config["eikonal"] = initialize_eikonal(config["eikonal"])
 
     # %%
-    for center in centers:
+    for ic, center in enumerate(centers):
         event_loc = center[np.newaxis, :].astype(np.float32)
         station_loc = stations[["x(km)", "y(km)", "z(km)"]].values.astype(np.float32)
         phase_type = ["p"] * len(station_loc) + ["s"] * len(station_loc)
@@ -108,10 +120,15 @@ if __name__ == "__main__":
             event_loc, np.concatenate([station_loc, station_loc], axis=0), np.array(phase_type), config["eikonal"]
         )
 
-        xgrid = np.arange(np.floor(config["x(km)"][0]), np.ceil(config["x(km)"][1]), 2)
-        ygrid = np.arange(np.floor(config["y(km)"][0]), np.ceil(config["y(km)"][1]), 2)
-        zgrid = np.arange(config["z(km)"][0], config["z(km)"][1], 2)
-        xgrid, ygrid, zgrid = np.meshgrid(xgrid, ygrid, zgrid, indexing="ij")
+        ngrid = 50
+        xgrid_ = np.linspace(np.floor(config["x(km)"][0]), np.ceil(config["x(km)"][1]), ngrid)
+        ygrid_ = np.linspace(np.floor(config["y(km)"][0]), np.ceil(config["y(km)"][1]), ngrid)
+        xgrid_degree_ = proj(xgrid_, np.zeros_like(xgrid_), inverse=True)[0]
+        ygrid_degree_ = proj(np.zeros_like(ygrid_), ygrid_, inverse=True)[1]
+        center_degree = proj(center[0], center[1], inverse=True)
+        zgrid_ = np.linspace(config["z(km)"][0], config["z(km)"][1], 10)
+        xgrid, ygrid, zgrid = np.meshgrid(xgrid_, ygrid_, zgrid_, indexing="ij")
+        xgrid_degree, ygrid_degree, zgrid_degree = np.meshgrid(xgrid_degree_, ygrid_degree_, zgrid_, indexing="ij")
 
         # residuals = []
         # for i, j, k in tqdm(zip(xgrid.flatten(), ygrid.flatten(), zgrid.flatten()), total=len(xgrid.flatten())):
@@ -154,34 +171,191 @@ if __name__ == "__main__":
         residual = residual[np.argsort(idx)]
         residual = residual.reshape(xgrid.shape)
 
-        # %%
-        fig, ax = plt.subplots(3, 1, squeeze=False, figsize=(8, 8))
-        im = ax[0, 0].pcolormesh(xgrid[:, :, 0], ygrid[:, :, 0], residual[:, :, 0], cmap="binary", shading="nearest")
-        fig.colorbar(im)
-        ax[0, 0].scatter(center[0], center[1], s=100, c="r")
+        # Save residual
+        np.savez(f"gridsearch_{ic}.npz", residual=residual, xgrid=xgrid, ygrid=ygrid, zgrid=zgrid, center=center)
 
-        cut_y = np.argmin(np.abs(ygrid[0, :, 0] - center[1]))
-        im = ax[1, 0].pcolormesh(
-            xgrid[:, cut_y, :], zgrid[:, cut_y, :], residual[:, cut_y, :], cmap="binary", shading="nearest"
+        #     # %%
+        #     fig, ax = plt.subplots(3, 1, squeeze=False, figsize=(8, 8))
+        #     # im = ax[0, 0].pcolormesh(xgrid[:, :, 0], ygrid[:, :, 0], residual[:, :, 0], cmap="binary", shading="nearest")
+        #     im = ax[0, 0].pcolormesh(
+        #         xgrid_degree[:, :, 0],
+        #         ygrid_degree[:, :, 0],
+        #         residual[:, :, 0],
+        #         cmap="binary",
+        #         shading="nearest",
+        #     )
+        #     fig.colorbar(im)
+        #     # ax[0, 0].scatter(center[0], center[1], s=100, c="r")
+        #     ax[0, 0].scatter(center_degree[0], center_degree[1], s=100, c="r")
+
+        #     cut_y = np.argmin(np.abs(ygrid[0, :, 0] - center[1]))
+        #     im = ax[1, 0].pcolormesh(
+        #         # xgrid[:, cut_y, :], zgrid[:, cut_y, :], residual[:, cut_y, :], cmap="binary", shading="nearest"
+        #         xgrid_degree[:, cut_y, :],
+        #         zgrid[:, cut_y, :],
+        #         residual[:, cut_y, :],
+        #         cmap="binary",
+        #         shading="nearest",
+        #     )
+        #     fig.colorbar(im)
+        #     # ax[1, 0].scatter(center[0], center[2], s=100, c="r")
+        #     ax[1, 0].scatter(center_degree[0], center[2], s=100, c="r")
+
+        #     cut_x = np.argmin(np.abs(xgrid[:, 0, 0] - center[0]))
+        #     im = ax[2, 0].pcolormesh(
+        #         # ygrid[cut_x, :, :], zgrid[cut_x, :, :], residual[cut_x, :, :], cmap="binary", shading="nearest"
+        #         ygrid_degree[cut_x, :, :],
+        #         zgrid[cut_x, :, :],
+        #         residual[cut_x, :, :],
+        #         cmap="binary",
+        #         shading="nearest",
+        #     )
+        #     fig.colorbar(im)
+        #     # ax[2, 0].scatter(center[1], center[2], s=100, c="r")
+        #     ax[2, 0].scatter(center_degree[1], center[2], s=100, c="r")
+
+        #     plt.savefig(f"gridsearch_{ic}.png")
+        #     plt.show()
+
+        #     # raise
+        #     #     plt.figure()
+        #     #     plt.plot(tt)
+        #     #     plt.plot(tt_)
+        #     #     plt.show()
+        #     #     raise
+        #     # raise
+
+        # %%
+        picker_name = {
+            "phasenet": "PhaseNet",
+            "phasenet_das": "PhaseNet-DAS v1",
+            "phasenet_das_v1": "PhaseNet-DAS v2",
+        }
+        protocol = "gs://"
+        bucket = "quakeflow_das"
+        das_mammoth_north = pd.read_csv(f"{protocol}{bucket}/mammoth_north/das_info.csv")
+        das_mammoth_south = pd.read_csv(f"{protocol}{bucket}/mammoth_south/das_info.csv")
+
+        figure_path = Path("paper_figures")
+        if not figure_path.exists():
+            figure_path.mkdir()
+
+        min_longitude = -120
+        max_longitude = -117.5
+        min_latitude = 37.1
+        max_latitude = 38.7
+        min_depth = 0
+        max_depth = 25
+        cmap = "viridis"
+        xlim = [min_longitude, max_longitude]
+        ylim = [min_latitude, max_latitude]
+        zlim = [min_depth, max_depth]
+
+        fig, axes = plt.subplots(
+            2,
+            2,
+            figsize=(
+                10,
+                10
+                * (max_latitude - min_latitude)
+                / ((max_longitude - min_longitude) * np.cos(np.deg2rad(min_latitude))),
+            ),
+            gridspec_kw={"width_ratios": [4, 1], "height_ratios": [4, 1], "wspace": 0.05, "hspace": 0.05},
+            # sharex=True,
+            # sharey=True,
         )
-        fig.colorbar(im)
-        ax[1, 0].scatter(center[0], center[2], s=100, c="r")
+
+        axes[0, 0].pcolormesh(
+            xgrid_degree[:, :, 0],
+            ygrid_degree[:, :, 0],
+            residual[:, :, 0],
+            cmap="binary",
+            shading="nearest",
+            rasterized=True,
+        )
+        axes[0, 0].scatter(center_degree[0], center_degree[1], s=100, c="r")
+        axes[0, 0].scatter(
+            das_mammoth_north["longitude"],
+            das_mammoth_north["latitude"],
+            s=1,
+            c="C0",
+            marker=".",
+            alpha=0.5,
+            rasterized=True,
+        )
+        axes[0, 0].scatter(
+            das_mammoth_south["longitude"],
+            das_mammoth_south["latitude"],
+            s=1,
+            c="C0",
+            marker=".",
+            alpha=0.5,
+            rasterized=True,
+            # label="DAS cable",
+        )
+        ## add legend
+        axes[0, 0].scatter([], [], s=3, c="r", label="Event")
+        axes[0, 0].scatter([], [], s=3, c="C0", label="DAS cable")
+        axes[0, 0].legend(markerscale=5, loc="center left")
+
+        axes[0, 0].set_aspect(1.0 / np.cos(np.deg2rad(min_latitude)))
+        axes[0, 0].set_xlim(xlim)
+        axes[0, 0].set_ylim(ylim)
+        axes[0, 0].set_ylabel("Latitude")
+        axes[0, 0].xaxis.set_label_position("top")
+        axes[0, 0].xaxis.tick_top()
+        axes[0, 0].set_xlabel("Longitude")
 
         cut_x = np.argmin(np.abs(xgrid[:, 0, 0] - center[0]))
-        im = ax[2, 0].pcolormesh(
-            ygrid[cut_x, :, :], zgrid[cut_x, :, :], residual[cut_x, :, :], cmap="binary", shading="nearest"
+        axes[0, 1].pcolormesh(
+            # ygrid[cut_x, :, :], zgrid[cut_x, :, :], residual[cut_x, :, :], cmap="binary", shading="nearest"
+            zgrid[cut_x, :, :],
+            ygrid_degree[cut_x, :, :],
+            residual[cut_x, :, :],
+            cmap="binary",
+            shading="nearest",
+            rasterized=True,
         )
-        fig.colorbar(im)
-        ax[2, 0].scatter(center[1], center[2], s=100, c="r")
+        axes[0, 1].scatter(center[2], center_degree[1], s=100, c="r")
+        axes[0, 1].autoscale(tight=True)
+        axes[0, 1].set_ylim(ylim)
+        axes[0, 1].set_xlim([0, 25])
+        # axes[0, 1].xaxis.set_label_position("top")
+        # axes[0, 1].xaxis.tick_top()
+        axes[0, 1].xaxis.set_major_formatter(matplotlib.ticker.FormatStrFormatter("%.1f"))
+        axes[0, 1].set_xlabel("Depth (km)")
 
-        plt.savefig(f"debug_{center[0]:.1f}.png")
+        axes[0, 1].yaxis.set_label_position("right")
+        axes[0, 1].yaxis.tick_right()
+        # axes[0, 1].set_ylabel("Latitude")
+
+        cut_y = np.argmin(np.abs(ygrid[0, :, 0] - center[1]))
+        axes[1, 0].pcolormesh(
+            # xgrid[:, cut_y, :], zgrid[:, cut_y, :], residual[:, cut_y, :], cmap="binary", shading="nearest"
+            xgrid_degree[:, cut_y, :],
+            zgrid[:, cut_y, :],
+            residual[:, cut_y, :],
+            cmap="binary",
+            shading="nearest",
+            rasterized=True,
+        )
+        axes[1, 0].scatter(center_degree[0], center[2], s=100, c="r")
+        axes[1, 0].autoscale(tight=True)
+        axes[1, 0].set_xlim(xlim)
+        axes[1, 0].set_ylim([0, 25])
+        axes[1, 0].invert_yaxis()
+        axes[1, 0].yaxis.set_major_formatter(matplotlib.ticker.FormatStrFormatter("%.1f"))
+        axes[1, 0].set_ylabel("Depth (km)")
+        # axes[1, 0].set_xlabel("Longitude")
+
+        axes[1, 1].axis("off")
+        # axes[1, 1].set_xlim([0,20])
+        # axes[1, 1].set_ylim([0,20])
+        # axes[1, 1].invert_yaxis()
+
+        # fig.tight_layout()
+        fig.savefig(figure_path / f"gridsearch_location_{ic}.pdf", dpi=300, bbox_inches="tight")
+        fig.savefig(figure_path / f"gridsearch_location_{ic}.png", dpi=300, bbox_inches="tight")
         plt.show()
 
-        #     plt.figure()
-        #     plt.plot(tt)
-        #     plt.plot(tt_)
-        #     plt.show()
-        #     raise
-        # raise
-
-    # %%
+# %%

@@ -300,7 +300,7 @@ for i, folder in enumerate(folders):
             s=2 ** (residual["magnitude"][index].values),
             # s=3,
             alpha=0.2,
-            label="P",
+            # label="P",
         )
         ax[j, 0].scatter(
             residual["dist_km"][index],
@@ -308,11 +308,15 @@ for i, folder in enumerate(folders):
             s=2 ** (residual["magnitude"][index].values),
             # s=3,
             alpha=0.2,
-            label="S",
+            # label="S",
         )
 
         ax[j, 0].set_ylim(ylim[folder])
         ax[j, 0].set_xlim(right=xlim_right[folder])
+        if j == 0:
+            ax[j, 0].scatter([], [], s=20, c="C0", label="P")
+            ax[j, 0].scatter([], [], s=20, c="C1", label="S")
+            ax[j, 0].legend(loc="upper right")
 
         ax[j, 0].grid(linestyle="--", linewidth=0.5)
         ax[j, 0].text(
@@ -386,6 +390,11 @@ for i, folder in enumerate(folders):
             fontsize=12,
             verticalalignment="top",
         )
+
+        if j == 0:
+            ax[j, 0].scatter([], [], s=20, c="gray", label="Dataset")
+            ax[j, 0].scatter([], [], s=20, c="C3", label="Detected")
+            ax[j, 0].legend(loc="upper right")
 
     fig.text(x=0.05, y=0.5, s="Magnitude", ha="center", va="center", rotation="vertical", fontsize=14)
     fig.text(x=0.5, y=0.05, s="Distance (km)", ha="center", va="center", fontsize=14)
