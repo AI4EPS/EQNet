@@ -322,7 +322,15 @@ def visualize_eqnet_train(meta, phase, event, epoch, figure_dir="figures", prefi
     for i in range(meta["data"].shape[0]):
         plt.close("all")
         if flag:
-            fig, axes = plt.subplots(8, 1, figsize=(10, 25))
+            #fig, axes = plt.subplots(5, 1, figsize=(10, 20), dpi=100)
+            fig = plt.figure(figsize=(10, 15), dpi=150)
+            axes=[]
+            axes.append(plt.subplot2grid((5, 4), (0, 0), colspan=4))
+            axes.append(plt.subplot2grid((5, 4), (1, 0), colspan=4))
+            axes.append(plt.subplot2grid((5, 4), (2, 0), colspan=4))
+            axes.append(plt.subplot2grid((5, 4), (3, 0), colspan=3))
+            axes.append(plt.subplot2grid((5, 4), (4, 0), colspan=3))
+            axes.append(plt.subplot2grid((5, 4), (3, 3), colspan=1))
         else:
             fig, axes = plt.subplots(3, 1, figsize=(10, 10))
         for j in range(phase.shape[-1]):
@@ -335,31 +343,6 @@ def visualize_eqnet_train(meta, phase, event, epoch, figure_dir="figures", prefi
 
             axes[2].plot(event[i, :, j] + j, "b")
             axes[2].plot(meta["event_center"][i, :, j] + j, "--C0")
-            if flag:
-                axes[3].plot(offset[i, 0, :, j] + j*3, "b")
-                axes[3].plot(offset[i, 0, :, j]*meta["event_location_mask"][i,:,j] + j*3, "--r")
-                axes[3].plot(meta["event_location"][i, 4, :, j] + j*3, "--C0")
-                axes[4].plot(offset[i, 1, :, j] + j*50, "b")
-                axes[4].plot(offset[i, 1, :, j]*meta["event_location_mask"][i,:,j] + j*50, "--r")
-                axes[4].plot(meta["event_location"][i, 5, :, j] + j*50, "--C0")
-                #axes[4].plot(offset[i, 1, :, j] + j*max(abs(intervals[5, j]),30), "b")
-                #axes[4].plot(meta["event_location"][i, 5, :, j] + j*max(abs(intervals[5, j]),30), "--C0")
-                
-                #axes[5].plot(hypocenter[i, 0, :, j] + j*40, "b")
-                #axes[5].plot(hypocenter[i, 0, :, j]*meta["event_location_mask"][i,:,j] + j*40, "--r")
-                #axes[5].plot(meta["event_location"][i, 0, :, j]*meta["event_location_mask"][i,:,j] + j*40, "--C0")
-                #axes[6].plot(hypocenter[i, 1, :, j] + j*70, "b")
-                #axes[6].plot(hypocenter[i, 1, :, j]*meta["event_location_mask"][i,:,j] + j*70, "--r")
-                #axes[6].plot(meta["event_location"][i, 1, :, j] + j*70, "--C0")
-                #axes[7].plot(hypocenter[i, 2, :, j] + j*70, "b")
-                #axes[7].plot(hypocenter[i, 2, :, j]*meta["event_location_mask"][i,:,j] + j*70, "--r")
-                #axes[7].plot(meta["event_location"][i, 2, :, j] + j*70, "--C0")
-                #try:
-                #    axes[8].plot(hypocenter[i, 3, :, j] + j*10, "b")
-                #    axes[8].plot(hypocenter[i, 3, :, j]*meta["event_location_mask"][i,:,j] + j*10, "--r")
-                #    axes[8].plot(meta["event_location"][i, 3, :, j] + j*10, "--C0")
-                #except:
-                #    pass
                 
         # draw t, xy and xz scatter, show the station location, and the event location
         if flag:
@@ -380,11 +363,27 @@ def visualize_eqnet_train(meta, phase, event, epoch, figure_dir="figures", prefi
             offset_ground_truth = offset_ground_truth.sum(axis=-2)/mask.sum(axis=-2)
             dt_ground_truth = dt_ground_truth + offset_ground_truth*feature_scale
             
-            axes[5].scatter(feature_scale*(event_center+offset_ground_truth), np.arange(event_center.shape[-1]), c=np.arange(event_center.shape[-1]), s=50, marker=".")
-            axes[5].scatter(feature_scale*(event_center+offset_pred)-dt, np.arange(event_center.shape[-1]), c=np.arange(event_center.shape[-1]), s=50, marker="^")
-            axes[5].scatter(feature_scale*(event_center+offset_ground_truth)-dt_ground_truth, np.arange(event_center.shape[-1]), c=np.arange(event_center.shape[-1]), s=50, marker="*")
-            axes[5].scatter((feature_scale*(event_center+offset_pred)-dt).mean(), event_center.shape[-1], c="C1", s=100, marker="^")
-            axes[5].scatter((feature_scale*(event_center+offset_ground_truth)-dt_ground_truth).mean(), event_center.shape[-1], c="C0", s=100, marker="*")
+            #axes[2].scatter((feature_scale*(event_center+offset_ground_truth))/feature_scale, np.arange(event_center.shape[-1]), c=np.arange(event_center.shape[-1]), s=50, marker=".")
+            axes[2].scatter((feature_scale*(event_center+offset_pred)-dt)/feature_scale, np.arange(event_center.shape[-1]), c=np.arange(event_center.shape[-1]), s=50, marker="^")
+            axes[2].scatter((feature_scale*(event_center+offset_ground_truth)-dt_ground_truth)/feature_scale, np.arange(event_center.shape[-1]), c=np.arange(event_center.shape[-1]), s=50, marker="*")
+            axes[2].scatter(((feature_scale*(event_center+offset_pred)-dt).mean())/feature_scale, event_center.shape[-1], c="C1", s=100, marker="^")
+            axes[2].scatter(((feature_scale*(event_center+offset_ground_truth)-dt_ground_truth).mean())/feature_scale, event_center.shape[-1], c="C0", s=100, marker="*")
+            
+            width_pred = (offset[i, 1,:,:]*mask)
+            width_pred = width_pred.sum(axis=-2)/mask.sum(axis=-2)
+            width_ground_truth = (meta["event_location"][i, 5,:,:]*mask)
+            width_ground_truth = width_ground_truth.sum(axis=-2)/mask.sum(axis=-2)
+            
+            for k in range(len(event_center)):
+                # use arrow to show the prediction
+                axes[2].annotate("", xy=(event_center[k], k), xytext=(event_center[k]-width_pred[k], k), arrowprops=dict(color='red', arrowstyle='<-', mutation_scale=0.7))
+                axes[2].annotate("", xy=(event_center[k], k), xytext=(event_center[k]+width_pred[k], k), arrowprops=dict(color='blue', arrowstyle='<-', mutation_scale=0.7))
+                axes[2].annotate("", xy=(event_center[k], k), xytext=(event_center[k]+offset_pred[k], k), arrowprops=dict(color='green', arrowstyle='<-', mutation_scale=0.7))
+                
+                # use vertical line to show the ground truth
+                axes[2].vlines(event_center[k]-width_ground_truth[k], k-0.2, k+0.2, color="C3", linestyle="--")
+                axes[2].vlines(event_center[k]+width_ground_truth[k], k-0.2, k+0.2, color="C0", linestyle="--")
+                axes[2].vlines(event_center[k]+offset_ground_truth[k], k-0.2, k+0.2, color="C2", linestyle="--")
             
             distance = (hypocenter[i, 1:,:,:]*mask[None, :, :])
             distance = distance.sum(axis=-2)/mask[None, :, :].sum(axis=-2)
@@ -395,27 +394,36 @@ def visualize_eqnet_train(meta, phase, event, epoch, figure_dir="figures", prefi
             distance_ground_truth = distance_ground_truth.sum(axis=-2)/mask[None, :, :].sum(axis=-2)
             station_location = meta["station_location"][i]
             
-            axes[6].scatter(station_location[:, 0], station_location[:, 1], c=np.arange(station_location.shape[0]), s=50, marker=".")
-            axes[6].scatter(distance[0]+station_location[:, 0], distance[1]+station_location[:, 1], c=np.arange(station_location.shape[0]), s=50, marker="^", alpha=0.5)
-            axes[6].scatter(distance_ground_truth[0]+station_location[:, 0], distance_ground_truth[1]+station_location[:, 1], c=np.arange(station_location.shape[0]), s=50, marker="*", alpha=0.5)
-            axes[6].scatter((distance[0]+station_location[:, 0]).mean(), (distance[1]+station_location[:, 1]).mean(), c="C1", s=100, marker="^", alpha=0.7)
-            axes[6].scatter((distance_ground_truth[0]+station_location[:, 0]).mean(), (distance_ground_truth[1]+station_location[:, 1]).mean(), c="C0", s=100, marker="*", alpha=0.7)
+            axes[3].scatter(station_location[:, 0], station_location[:, 1], c=np.arange(station_location.shape[0]), s=50, marker=".")
+            axes[3].scatter(distance[0]+station_location[:, 0], distance[1]+station_location[:, 1], c=np.arange(station_location.shape[0]), s=50, marker="^", alpha=0.5)
+            axes[3].scatter(distance_ground_truth[0]+station_location[:, 0], distance_ground_truth[1]+station_location[:, 1], c=np.arange(station_location.shape[0]), s=50, marker="*", alpha=0.5)
+            axes[3].scatter((distance[0]+station_location[:, 0]).mean(), (distance[1]+station_location[:, 1]).mean(), c="C1", s=150, marker="^", alpha=0.7)
+            axes[3].scatter((distance_ground_truth[0]+station_location[:, 0]).mean(), (distance_ground_truth[1]+station_location[:, 1]).mean(), c="C0", s=150, marker="*", alpha=0.7)
             
-            axes[7].scatter(station_location[:, 0], station_location[:, 2], c=np.arange(station_location.shape[0]), s=50, marker=".")
-            axes[7].scatter(distance[0]+station_location[:, 0], distance[2]+station_location[:, 2], c=np.arange(station_location.shape[0]), s=50, marker="^", alpha=0.5)
-            axes[7].scatter(distance_ground_truth[0]+station_location[:, 0], distance_ground_truth[2]+station_location[:, 2], c=np.arange(station_location.shape[0]), s=50, marker="*", alpha=0.5)
-            axes[7].scatter((distance[0]+station_location[:, 0]).mean(), (distance[2]+station_location[:, 2]).mean(), c="C1", s=100, marker="^", alpha=0.7)
-            axes[7].scatter((distance_ground_truth[0]+station_location[:, 0]).mean(), (distance_ground_truth[2]+station_location[:, 2]).mean(), c="C0", s=100, marker="*", alpha=0.7)
+            axes[4].scatter(station_location[:, 0], station_location[:, 2], c=np.arange(station_location.shape[0]), s=50, marker=".")
+            axes[4].scatter(distance[0]+station_location[:, 0], distance[2]+station_location[:, 2], c=np.arange(station_location.shape[0]), s=50, marker="^", alpha=0.5)
+            axes[4].scatter(distance_ground_truth[0]+station_location[:, 0], distance_ground_truth[2]+station_location[:, 2], c=np.arange(station_location.shape[0]), s=50, marker="*", alpha=0.5)
+            axes[4].scatter((distance[0]+station_location[:, 0]).mean(), (distance[2]+station_location[:, 2]).mean(), c="C1", s=150, marker="^", alpha=0.7)
+            axes[4].scatter((distance_ground_truth[0]+station_location[:, 0]).mean(), (distance_ground_truth[2]+station_location[:, 2]).mean(), c="C0", s=150, marker="*", alpha=0.7)
+            
+            axes[5].scatter(station_location[:, 2], station_location[:, 1], c=np.arange(station_location.shape[0]), s=50, marker=".")
+            axes[5].scatter(distance[2]+station_location[:, 2], distance[1]+station_location[:, 1], c=np.arange(station_location.shape[0]), s=50, marker="^", alpha=0.5)
+            axes[5].scatter(distance_ground_truth[2]+station_location[:, 2], distance_ground_truth[1]+station_location[:, 1], c=np.arange(station_location.shape[0]), s=50, marker="*", alpha=0.5)
+            axes[5].scatter((distance[2]+station_location[:, 2]).mean(), (distance[1]+station_location[:, 1]).mean(), c="C1", s=150, marker="^", alpha=0.7)
+            axes[5].scatter((distance_ground_truth[2]+station_location[:, 2]).mean(), (distance_ground_truth[1]+station_location[:, 1]).mean(), c="C0", s=150, marker="*", alpha=0.7)
 
         axes[0].set_title("data")
         axes[1].set_title("phase_pick")
         axes[2].set_title("event_center")
         if flag:
-            axes[3].set_title("event center offset")
-            axes[4].set_title("event width")
-            axes[5].set_title("hypocenter dt")
-            axes[6].set_title("hypocenter xy")
-            axes[7].set_title("hypocenter xz")
+            axes[3].set_title("hypocenter xy")
+            axes[4].set_title("hypocenter xz")
+            axes[5].set_title("hypocenter yz")
+            #axes[3].set_aspect("equal")
+            #axes[4].set_aspect("equal")
+            #axes[5].set_aspect("equal")
+            axes[4].sharex(axes[3])
+            axes[5].sharey(axes[3])
             #axes[8].set_title("hypocenter dz")
         fig.subplots_adjust(hspace=0.5, bottom=0.05, top=0.95)
         if "LOCAL_RANK" in os.environ:
