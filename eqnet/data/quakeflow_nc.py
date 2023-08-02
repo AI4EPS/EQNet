@@ -307,6 +307,11 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                             if is_sick:
                                 continue
                             
+                            reference_latitude = 0
+                            for sta_id in station_ids:
+                                reference_latitude += event[sta_id].attrs["latitude"]
+                            reference_latitude/=len(station_ids)
+                            
                             waveforms = np.zeros([len(station_ids), 3, self.nt], dtype="float32")
                             phase_pick = np.zeros_like(waveforms)
                             event_center = np.zeros([len(station_ids), self.feature_nt])
@@ -326,12 +331,12 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                                 # center = (attrs["phase_index"][::2] + attrs["phase_index"][1::2])/2.0
                                 ## assuming only one event with both P and S picks
                                 c0 = ((p_picks) + (s_picks)) / 2.0 # phase center
-                                # c0_width = max(((s_picks - p_picks) * self.sampling_rate / 200.0).max(), 160)
-                                c0_width = ((s_picks - p_picks) * self.sampling_rate / 200.0).max() # min=160
+                                c0_width = max(((s_picks - p_picks) * self.sampling_rate / 200.0).max(), 80)
+                                # c0_width = ((s_picks - p_picks) * self.sampling_rate / 200.0).max() # min=160
                                 assert c0_width>0
                                 dx = round(
                                     (event_attrs["longitude"] - attrs["longitude"])
-                                    * np.cos(np.radians(event_attrs["latitude"]))
+                                    * np.cos(np.radians(reference_latitude))
                                     * self.degree2km,
                                     2,
                                 )
@@ -380,7 +385,7 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                                 ## station location
                                 station_location[i, 0] = round(
                                     attrs["longitude"]
-                                    * np.cos(np.radians(attrs["latitude"]))
+                                    * np.cos(np.radians(reference_latitude))
                                     * self.degree2km,
                                     2,
                                 )
