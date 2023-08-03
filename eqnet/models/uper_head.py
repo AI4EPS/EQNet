@@ -12,6 +12,17 @@ from .centernet import convolution, \
     cross_entropy_loss, focal_loss, smoothl1_reg_loss, weighted_l1_reg_loss, l1_reg_loss
 
 
+class Sample(nn.Module):
+    def __init__(self, scale_factor=2, mode='linear', align_corners=False):
+        super().__init__()
+        self.scale_factor = scale_factor
+        self.mode = mode
+        self.align_corners = align_corners
+        
+    def forward(self, x):
+        return F.interpolate(x, scale_factor=self.scale_factor, mode=self.mode, align_corners=self.align_corners)
+
+
 class PPM(nn.ModuleList):
     """Pooling Pyramid Module used in PSPNet.
 
@@ -32,7 +43,7 @@ class PPM(nn.ModuleList):
         for pool_scale in pool_scales:
             self.append(
                 nn.Sequential(
-                    nn.AdaptiveAvgPool2d(pool_scale),
+                    nn.AdaptiveAvgPool1d(pool_scale),
                     convolution(
                         inp_dim=self.in_channels,
                         out_dim=self.channels,
@@ -76,44 +87,37 @@ class UPerHead(nn.Module, metaclass=ABCMeta):
                 a list and passed into decode head.
             None: Only one select feature map is allowed.
             Default: None.
-        loss_decode (dict | Sequence[dict]): Config of decode loss.
-            The `loss_name` is property of corresponding loss function which
-            could be shown in training log. If you want this loss
-            item to be included into the backward graph, `loss_` must be the
-            prefix of the name. Defaults to 'loss_ce'.
-             e.g. dict(type='CrossEntropyLoss'),
-             [dict(type='CrossEntropyLoss', loss_name='loss_ce'),
-              dict(type='DiceLoss', loss_name='loss_dice')]
-            Default: dict(type='CrossEntropyLoss').
+        loss_dict (dict): Config of decode loss.
+        weights (list[float]): The loss weight of each branch.
         align_corners (bool): align_corners argument of F.interpolate.
             Default: False.
     """
 
     def __init__(self,
-                 in_channels,
-                 channels,
-                 out_channels=None,
+                 in_channels=[96, 192, 384, 768],
+                 channels=512,
+                 hidden_channels=[256, 128, 64, 32],
                  pool_scales=(1, 2, 3, 6),
                  dropout_ratio=0.1,
-                 in_index=-1,
+                 in_index=[0, 1, 2, 3],
                  input_transform="multiple_select",
                  align_corners=False,
-                 loss_dict: dict = {},
-                 weights=[1, 0.1, 0.1],
+                 loss_dict: dict = {"hm_loss": "focal", "hw_loss": "wl1", "reg_loss": "sl1"},
+                 weights=[1, 0.015, 0.01],
+                 kernel_size = 3,
                  ):
         super().__init__()
         self._init_inputs(in_channels, in_index, input_transform)
         self.channels = channels
+        self.weights = weights
         self.dropout_ratio = dropout_ratio
         self.in_index = in_index
 
         self.align_corners = align_corners
-        self.out_channels = out_channels
 
-        self.conv_seg = nn.Conv2d(channels, self.out_channels, kernel_size=1)
         if dropout_ratio > 0:
             self.dropout = nn.Dropout(dropout_ratio)
-            # or nn.Dropout1d?
+            #TODO: or nn.Dropout1d?
         else:
             self.dropout = None
         
@@ -144,11 +148,84 @@ class UPerHead(nn.Module, metaclass=ABCMeta):
             self.lateral_convs.append(l_conv)
             self.fpn_convs.append(fpn_conv)
 
+        # FPN Fused Module
         self.fpn_bottleneck = convolution(
             inp_dim=len(self.in_channels) * self.channels,
             out_dim=self.channels,
             k=3,)
         
+        #TODO: subhead layers? dilation?
+        self.heatmap = nn.Sequential(
+            nn.Conv1d(
+                self.channels,
+                hidden_channels[2],
+                kernel_size=kernel_size,
+                dilation=16,
+                padding=((kernel_size - 1) * 16 + 1) // 2,
+                padding_mode="reflect",
+                bias=False,
+            ),
+            nn.BatchNorm1d(hidden_channels[2]),
+            nn.ReLU(inplace=True),
+            Sample(scale_factor=0.25, mode='linear', align_corners=False),
+            nn.Conv1d(
+                hidden_channels[2],
+                1,
+                kernel_size=kernel_size,
+                dilation=1,
+                padding=((kernel_size - 1) * 1 + 1) // 2,
+                padding_mode="reflect",
+            )
+        )
+        self.heatmap[-1].bias.data.fill_(-2.19) # if use the initial value, the loss from 200 to 5 (v2)
+        self.offset = nn.Sequential(
+            nn.Conv1d(
+                self.channels,
+                hidden_channels[2],
+                kernel_size=kernel_size,
+                dilation=2,
+                padding=((kernel_size - 1) * 2 + 1) // 2,
+                padding_mode="reflect",
+                bias=False,
+            ),
+            nn.BatchNorm1d(hidden_channels[2]),
+            nn.ReLU(inplace=True),
+            Sample(scale_factor=2, mode='linear', align_corners=False),
+            nn.Conv1d(
+                hidden_channels[2],
+                2,
+                kernel_size=kernel_size,
+                dilation=1,
+                padding=((kernel_size - 1) * 1 + 1) // 2,
+                padding_mode="reflect",
+            )
+        )
+        
+        self.hypocenter = nn.Sequential(
+            nn.Conv1d(
+                self.channels,
+                hidden_channels[2],
+                kernel_size=kernel_size,
+                dilation=16,
+                padding=((kernel_size - 1) * 16 + 1) // 2,
+                padding_mode="reflect",
+                bias=False,
+            ),
+            nn.BatchNorm1d(hidden_channels[2]),
+            nn.ReLU(inplace=True),
+            Sample(scale_factor=0.25, mode='linear', align_corners=False),
+            nn.Conv1d(
+                hidden_channels[2],
+                #3,
+                4,
+                kernel_size=kernel_size,
+                dilation=1,
+                padding=((kernel_size - 1) * 1 + 1) // 2,
+                padding_mode="reflect",
+            )
+        )
+
+
         loss_factory = {"mse": F.mse_loss, "focal": focal_loss, "l1": l1_reg_loss, "sl1": smoothl1_reg_loss, "wl1": weighted_l1_reg_loss, "cross_entropy": cross_entropy_loss}
         self.weights = weights
         self.hm_loss = loss_factory[loss_dict["hm_loss"]]
@@ -166,17 +243,21 @@ class UPerHead(nn.Module, metaclass=ABCMeta):
         return output
 
     def _forward_feature(self, inputs):
-        """Forward function for feature maps before classifying each pixel with
-        ``self.cls_seg`` fc.
-
+        """Forward function for feature maps 
         Args:
-            inputs (list[Tensor]): List of multi-level img features.
+            inputs (list[Tensor]): Listc of multi-level img features.
 
         Returns:
-            feats (Tensor): A tensor of shape (batch_size, self.channels,
-                H, W) which is feature map for last layer of decoder head.
+            [offset, heatmap, hypocenter]: List of multi-level features.
+            offset: PPM output (Tensor): A tensor of shape (batch_size * nstations,
+            self.channels, nt=1/32 raw nt) which is feature by PPM Module
+            heatmap: FPN output[0] (Tensor): A tensor of shape (batch_size * nstations, 
+            self.channels, nt=1/4 raw nt) which is feature by the last layer of FPN
+            hypocenter: feats (Tensor): A tensor of shape (batch_size * nstations, 
+            self.channels, nt=1/4 raw nt) which is feature map by Fusion Module
         """
         inputs = self._transform_inputs(inputs)
+        outputs = []
 
         # build laterals
         laterals = [
@@ -203,6 +284,8 @@ class UPerHead(nn.Module, metaclass=ABCMeta):
         ]
         # append psp feature
         fpn_outs.append(laterals[-1])
+        outputs.append(fpn_outs[-1])
+        outputs.append(fpn_outs[0])
 
         for i in range(used_backbone_levels - 1, 0, -1):
             fpn_outs[i] = F.interpolate(
@@ -212,16 +295,63 @@ class UPerHead(nn.Module, metaclass=ABCMeta):
                 align_corners=self.align_corners)
         fpn_outs = torch.cat(fpn_outs, dim=1)
         feats = self.fpn_bottleneck(fpn_outs)
-        return feats
+        outputs.append(feats)
+        
+        return outputs # [psp, fpn[0], feats] dim: bt, sta, chn, nt
 
-    def forward(self, inputs):
-        """Forward function."""
-        output = self._forward_feature(inputs)
-        output = self.cls_seg(output)
-        return output
+    def forward(self, features, event_center, event_location, event_location_mask):
+        """Forward function.
+        Args:
+            features (list[Tensor]): List of multi-level features. Shape of each: bt, sta, chn, nt
+        """
+        for i in range(len(features)):
+            bt, st, ch, nt = features[i].shape
+            features[i] = features[i].view(bt*st, ch, nt)   
+        #assert len(features[0].shape)==3, "features should be a list of 3d tensor"
+        
+        [offset, heatmap, hypocenter] = self._forward_feature(features)
+        
+        # offset
+        #bt, st, ch, nt = offset.shape
+        #offset = offset.view(bt*st, ch, nt)
+        offset = self.offset(offset)
+        offset = offset.view(bt, st, offset.shape[1], offset.shape[2])
+        offset = offset.permute(0, 2, 3, 1) # bt, ch, nt, sta
+        
+        # heatmap
+        #bt, st, ch, nt = heatmap.shape
+        #heatmap = heatmap.view(bt*st, ch, nt)
+        heatmap = self.heatmap(heatmap)
+        heatmap = heatmap.view(bt, st, heatmap.shape[2])  # chn = 1
+        heatmap = heatmap.permute(0, 2, 1)
+        
+        # hypocenter
+        #bt, st, ch, nt = hypocenter.shape
+        #hypocenter = hypocenter.view(bt*st, ch, nt)
+        hypocenter = self.hypocenter(hypocenter)
+        hypocenter = hypocenter.view(bt, st, hypocenter.shape[1], hypocenter.shape[2])
+        hypocenter = hypocenter.permute(0, 2, 3, 1)
+        
+        if self.training:            
+            return None, self.losses({"event": heatmap, "offset": offset, "hypocenter": hypocenter}, event_center, event_location, event_location_mask)
+        elif event_center is not None:
+            return {"event": heatmap, "offset": offset, "hypocenter": hypocenter}, \
+                self.losses({"event": heatmap, "offset": offset, "hypocenter": hypocenter}, event_center, event_location, event_location_mask)
+        else:
+            return {"event": heatmap, "offset": offset, "hypocenter": hypocenter}, {}
     
     def losses(self, outputs, event_center, event_location, event_location_mask):
-        pass
+        #hm_loss = cross_entropy_loss(outputs["event"], event_center)
+        hm_loss = self.hm_loss(outputs["event"], event_center)
+        hw_loss = self.hw_loss(outputs["offset"], event_location[:, 4:, :, :], event_location_mask, weights=torch.tensor([10, 1]).to(event_location.device))
+        
+        #reg_loss = smoothl1_reg_loss(outputs["hypocenter"], event_location[:, :3, :, :], event_location_mask)
+        reg_loss = self.reg_loss(outputs["hypocenter"], event_location[:, :4, :, :], event_location_mask)
+        
+        loss = hm_loss * self.weights[0] + hw_loss * self.weights[1] + reg_loss * self.weights[2]
+        # print(f"loss {loss}, hm_loss {hm_loss}, hw_loss {hw_loss}, reg_loss {reg_loss}", force=True)
+        return {"loss": loss, "loss_event": hm_loss, "loss_offset": hw_loss, "loss_hypocenter": reg_loss}
+    
     
     
     def _init_inputs(self, in_channels, in_index, input_transform):
@@ -288,281 +418,3 @@ class UPerHead(nn.Module, metaclass=ABCMeta):
             inputs = inputs[self.in_index]
 
         return inputs
-    
-    def cls_seg(self, feat):
-        """Classify each pixel."""
-        if self.dropout is not None:
-            feat = self.dropout(feat)
-        output = self.conv_seg(feat)
-        return output
-
-
-
-
-
-class BaseDecodeHead(nn.Module, metaclass=ABCMeta):
-    """Base class for BaseDecodeHead.
-
-    2. The ``loss`` method is used to calculate the loss of decode_head,
-    which includes two steps: (1) the decode_head model performs forward
-    propagation to obtain the feature maps (2) The ``loss_by_feat`` method
-    is called based on the feature maps to calculate the loss.
-
-    .. code:: text
-
-    loss(): forward() -> loss_by_feat()
-
-    3. The ``predict`` method is used to predict segmentation results,
-    which includes two steps: (1) the decode_head model performs forward
-    propagation to obtain the feature maps (2) The ``predict_by_feat`` method
-    is called based on the feature maps to predict segmentation results
-    including post-processing.
-
-    .. code:: text
-
-    predict(): forward() -> predict_by_feat()
-
-    Args:
-        in_channels (int|Sequence[int]): Input channels.
-        channels (int): Channels after modules, before conv_seg.
-        out_channels (int): Output channels of conv_seg. Default: None.
-        dropout_ratio (float): Ratio of dropout layer. Default: 0.1.
-        in_index (int|Sequence[int]): Input feature index. Default: -1
-        input_transform (str|None): Transformation type of input features.
-            Options: 'resize_concat', 'multiple_select', None.
-            'resize_concat': Multiple feature maps will be resize to the
-                same size as first one and than concat together.
-                Usually used in FCN head of HRNet.
-            'multiple_select': Multiple feature maps will be bundle into
-                a list and passed into decode head.
-            None: Only one select feature map is allowed.
-            Default: None.
-        loss_decode (dict | Sequence[dict]): Config of decode loss.
-            The `loss_name` is property of corresponding loss function which
-            could be shown in training log. If you want this loss
-            item to be included into the backward graph, `loss_` must be the
-            prefix of the name. Defaults to 'loss_ce'.
-             e.g. dict(type='CrossEntropyLoss'),
-             [dict(type='CrossEntropyLoss', loss_name='loss_ce'),
-              dict(type='DiceLoss', loss_name='loss_dice')]
-            Default: dict(type='CrossEntropyLoss').
-        align_corners (bool): align_corners argument of F.interpolate.
-            Default: False.
-    """
-
-    def __init__(self,
-                 in_channels,
-                 channels,
-                 *,
-                 out_channels=None,
-                 dropout_ratio=0.1,
-                 in_index=-1,
-                 input_transform=None,
-                 align_corners=False,
-                 ):
-        super().__init__()
-        self._init_inputs(in_channels, in_index, input_transform)
-        self.channels = channels
-        self.dropout_ratio = dropout_ratio
-        self.in_index = in_index
-
-        self.align_corners = align_corners
-        self.out_channels = out_channels
-
-        self.conv_seg = nn.Conv2d(channels, self.out_channels, kernel_size=1)
-        if dropout_ratio > 0:
-            self.dropout = nn.Dropout(dropout_ratio)
-            # or nn.Dropout1d?
-        else:
-            self.dropout = None
-
-    def _init_inputs(self, in_channels, in_index, input_transform):
-        """Check and initialize input transforms.
-
-        The in_channels, in_index and input_transform must match.
-        Specifically, when input_transform is None, only single feature map
-        will be selected. So in_channels and in_index must be of type int.
-        When input_transform
-
-        Args:
-            in_channels (int|Sequence[int]): Input channels.
-            in_index (int|Sequence[int]): Input feature index.
-            input_transform (str|None): Transformation type of input features.
-                Options: 'resize_concat', 'multiple_select', None.
-                'resize_concat': Multiple feature maps will be resize to the
-                    same size as first one and than concat together.
-                    Usually used in FCN head of HRNet.
-                'multiple_select': Multiple feature maps will be bundle into
-                    a list and passed into decode head.
-                None: Only one select feature map is allowed.
-        """
-
-        if input_transform is not None:
-            assert input_transform in ['resize_concat', 'multiple_select']
-        self.input_transform = input_transform
-        self.in_index = in_index
-        if input_transform is not None:
-            assert isinstance(in_channels, (list, tuple))
-            assert isinstance(in_index, (list, tuple))
-            assert len(in_channels) == len(in_index)
-            if input_transform == 'resize_concat':
-                self.in_channels = sum(in_channels)
-            else:
-                self.in_channels = in_channels
-        else:
-            assert isinstance(in_channels, int)
-            assert isinstance(in_index, int)
-            self.in_channels = in_channels
-
-    def _transform_inputs(self, inputs):
-        """Transform inputs for decoder.
-
-        Args:
-            inputs (list[Tensor]): List of multi-level img features.
-
-        Returns:
-            Tensor: The transformed inputs
-        """
-
-        if self.input_transform == 'resize_concat':
-            inputs = [inputs[i] for i in self.in_index]
-            upsampled_inputs = [
-                F.interpolate(
-                    input=x,
-                    size=inputs[0].shape[-1],
-                    mode='linear',
-                    align_corners=self.align_corners) for x in inputs
-                ]
-            inputs = torch.cat(upsampled_inputs, dim=1)
-        elif self.input_transform == 'multiple_select':
-            inputs = [inputs[i] for i in self.in_index]
-        else:
-            inputs = inputs[self.in_index]
-
-        return inputs
-
-    @abstractmethod
-    def forward(self, inputs):
-        """Placeholder of forward function."""
-        pass
-
-    def cls_seg(self, feat):
-        """Classify each pixel."""
-        if self.dropout is not None:
-            feat = self.dropout(feat)
-        output = self.conv_seg(feat)
-        return output
-
-    def loss(self, inputs: Tuple[Tensor], batch_data_samples,
-             train_cfg) -> dict:
-        """Forward function for training.
-
-        Args:
-            inputs (Tuple[Tensor]): List of multi-level img features.
-            batch_data_samples (list[:obj:`SegDataSample`]): The seg
-                data samples. It usually includes information such
-                as `img_metas` or `gt_semantic_seg`.
-            train_cfg (dict): The training config.
-
-        Returns:
-            dict[str, Tensor]: a dictionary of loss components
-        """
-        seg_logits = self.forward(inputs)
-        losses = self.loss_by_feat(seg_logits, batch_data_samples)
-        return losses
-
-    def predict(self, inputs: Tuple[Tensor], batch_img_metas: List[dict],
-                test_cfg) -> Tensor:
-        """Forward function for prediction.
-
-        Args:
-            inputs (Tuple[Tensor]): List of multi-level img features.
-            batch_img_metas (dict): List Image info where each dict may also
-                contain: 'img_shape', 'scale_factor', 'flip', 'img_path',
-                'ori_shape', and 'pad_shape'.
-                For details on the values of these keys see
-                `mmseg/datasets/pipelines/formatting.py:PackSegInputs`.
-            test_cfg (dict): The testing config.
-
-        Returns:
-            Tensor: Outputs segmentation logits map.
-        """
-        seg_logits = self.forward(inputs)
-
-        return self.predict_by_feat(seg_logits, batch_img_metas)
-
-    def _stack_batch_gt(self, batch_data_samples) -> Tensor:
-        gt_semantic_segs = [
-            data_sample.gt_sem_seg.data for data_sample in batch_data_samples
-        ]
-        return torch.stack(gt_semantic_segs, dim=0)
-
-    def loss_by_feat(self, seg_logits: Tensor,
-                     batch_data_samples) -> dict:
-        """Compute segmentation loss.
-
-        Args:
-            seg_logits (Tensor): The output from decode head forward function.
-            batch_data_samples (List[:obj:`SegDataSample`]): The seg
-                data samples. It usually includes information such
-                as `metainfo` and `gt_sem_seg`.
-
-        Returns:
-            dict[str, Tensor]: a dictionary of loss components
-        """
-
-        seg_label = self._stack_batch_gt(batch_data_samples)
-        loss = dict()
-        # seg_logits = resize(
-        #     input=seg_logits,
-        #     size=seg_label.shape[2:],
-        #     mode='bilinear',
-        #     align_corners=self.align_corners)
-        seg_logits = F.interpolate(
-            seg_logits,
-            size=seg_label.shape[-1],
-            mode='linear',
-            align_corners=self.align_corners)
-        if self.sampler is not None:
-            seg_weight = self.sampler.sample(seg_logits, seg_label)
-        else:
-            seg_weight = None
-        seg_label = seg_label.squeeze(1)
-
-        if not isinstance(self.loss_decode, nn.ModuleList):
-            losses_decode = [self.loss_decode]
-        else:
-            losses_decode = self.loss_decode
-        for loss_decode in losses_decode:
-            if loss_decode.loss_name not in loss:
-                loss[loss_decode.loss_name] = loss_decode(
-                    seg_logits,
-                    seg_label,
-                    weight=seg_weight,)
-            else:
-                loss[loss_decode.loss_name] += loss_decode(
-                    seg_logits,
-                    seg_label,
-                    weight=seg_weight,)
-
-        return loss
-
-    def predict_by_feat(self, seg_logits: Tensor,
-                        batch_metas: List[dict]) -> Tensor:
-        """Transform a batch of output seg_logits to the input shape.
-
-        Args:
-            seg_logits (Tensor): The output from decode head forward function.
-            batch_img_metas (list[dict]): Meta information of each image, e.g.,
-                image size, scaling factor, etc.
-
-        Returns:
-            Tensor: Outputs segmentation logits map.
-        """
-
-        seg_logits = F.interpolate(
-            input=seg_logits,
-            size=batch_metas[0]['data'].shape[-2],
-            mode='linear',
-            align_corners=self.align_corners)
-        return seg_logits
