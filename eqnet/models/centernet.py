@@ -6,13 +6,13 @@ from typing import Optional, Dict
 
 
 class convolution(nn.Module):
-    def __init__(self, k, inp_dim, out_dim, stride=1, dilation=1, with_bn=True):
+    def __init__(self, inp_dim, out_dim, k, stride=1, dilation=1, with_bn=True, padding_mode='zeros', inplace=True):
         super(convolution, self).__init__()
 
-        pad = (k - 1) // 2
-        self.conv = nn.Conv1d(inp_dim, out_dim, kernel_size=k, padding=pad, stride=stride, dilation=dilation, bias=not with_bn)
+        pad = ((k - 1)*dilation) // 2
+        self.conv = nn.Conv1d(inp_dim, out_dim, kernel_size=k, padding=pad, stride=stride, dilation=dilation, bias=not with_bn, padding_mode=padding_mode)
         self.bn   = nn.BatchNorm1d(out_dim) if with_bn else nn.Sequential()
-        self.relu = nn.ReLU(inplace=True)
+        self.relu = nn.ReLU(inplace=inplace)
 
     def forward(self, x):
         x = self.relu(self.bn(self.conv(x)))
@@ -20,7 +20,7 @@ class convolution(nn.Module):
 
 def make_kp_layer(cnv_dim, curr_dim, out_dim, kernel_size=3, stride=1, dilation=1, with_bn=True):
     return nn.Sequential(
-        convolution(kernel_size, cnv_dim, curr_dim, stride, dilation, with_bn=with_bn),
+        convolution(cnv_dim, curr_dim, kernel_size, stride, dilation, with_bn=with_bn),
         nn.Conv1d(curr_dim, out_dim, 1)
     )
 
@@ -166,7 +166,7 @@ class CenterNetHead(nn.Module):
         self.reg_loss = reg_loss
         
         self.upsample = nn.Conv1d(self.curr_dim, self.curr_dim, kernel_size=1, bias=False)
-        self.conv = convolution(k=5, inp_dim=self.curr_dim, out_dim=self.cnv_dim, with_bn=True)
+        self.conv = convolution(inp_dim=self.curr_dim, out_dim=self.cnv_dim, k=5, with_bn=True)
         # event_center
         self.heatmap = make_kp_layer(self.cnv_dim, self.hid_dim, out_dim=1, kernel_size=kernel_size)
         self.heatmap[-1].bias.data.fill_(-2.19)
@@ -194,7 +194,7 @@ class CenterNetHead(nn.Module):
     def forward(self, features, event_center, event_location, event_location_mask):
         """input shape [batch, in_channels, time_steps]
         output shape [batch, time_steps]"""
-        x = features["out"]
+        x = features[-1]
         bt, st, ch, nt = x.shape  # batch, station, channel, time
         x = x.view(bt * st, ch, nt)
         
@@ -251,7 +251,7 @@ class CenterNetHeadV1(nn.Module):
         self.reg_loss = reg_loss
         
         self.upsample = nn.Conv1d(self.curr_dim, self.curr_dim, kernel_size=1, bias=False)
-        self.conv = convolution(k=5, inp_dim=self.curr_dim, out_dim=self.cnv_dim, with_bn=True)
+        self.conv = convolution(inp_dim=self.curr_dim, out_dim=self.cnv_dim, k=5, with_bn=True)
         # event_center
         self.heatmap = make_kp_layer(self.cnv_dim, self.hid_dim, out_dim=1, kernel_size=kernel_size)
         #self.heatmap[-1].bias.data.fill_(-2.19)
@@ -279,7 +279,7 @@ class CenterNetHeadV1(nn.Module):
     def forward(self, features, event_center, event_location, event_location_mask):
         """input shape [batch, in_channels, time_steps]
         output shape [batch, time_steps]"""
-        x = features["out"]
+        x = features[-1]
         bt, st, ch, nt = x.shape  # batch, station, channel, time
         x = x.view(bt * st, ch, nt)
         

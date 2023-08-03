@@ -111,8 +111,8 @@ class EventDetector(nn.Module):
             nn.ReLU(inplace=True),
             nn.Conv1d(
             channels[-1],
-            3,
-            #4,
+            #3,
+            4,
             kernel_size=kernel_size,
             dilation=dilations[-1],
             padding=((kernel_size - 1) * dilations[-1] + 1) // 2,
@@ -124,7 +124,7 @@ class EventDetector(nn.Module):
     def forward(self, features, event_center, event_location, event_location_mask):
         """input shape [batch, in_channels, time_steps]
         output shape [batch, time_steps]"""
-        x = features["out"]
+        x = features[-1]
         bt, st, ch, nt = x.shape  # batch, station, channel, time
         x = x.view(bt * st, ch, nt)
         # x = self.nonlin(self.bn_layers[0](x))
@@ -168,8 +168,8 @@ class EventDetector(nn.Module):
         hm_loss = focal_loss(outputs["event"], event_center)
         hw_loss = weighted_l1_reg_loss(outputs["offset"], event_location[:, 4:, :, :], event_location_mask, weights=torch.tensor([10, 1]).to(event_location.device))
         
-        reg_loss = smoothl1_reg_loss(outputs["hypocenter"], event_location[:, :3, :, :], event_location_mask)
-        #reg_loss = smoothl1_reg_loss(outputs["hypocenter"], event_location[:, :4, :, :], event_location_mask)
+        #reg_loss = smoothl1_reg_loss(outputs["hypocenter"], event_location[:, :3, :, :], event_location_mask)
+        reg_loss = smoothl1_reg_loss(outputs["hypocenter"], event_location[:, :4, :, :], event_location_mask)
         
         loss = hm_loss * self.weights[0] + hw_loss * self.weights[1] + reg_loss * self.weights[2]
         # print(f"loss {loss}, hm_loss {hm_loss}, hw_loss {hw_loss}, reg_loss {reg_loss}", force=True)
@@ -219,7 +219,7 @@ class PhasePicker(nn.Module):
     def forward(self, features, targets=None):
         """input shape [batch, in_channels, time_steps]
         output shape [batch, time_steps]"""
-        x = features["out"]
+        x = features[-1]
         bt, st, ch, nt = x.shape  # batch, station, channel, time
         x = x.view(bt * st, ch, nt)
         # x = self.nonlin(self.bn_layers[0](x))
@@ -258,7 +258,8 @@ class EQNet(nn.Module):
             # self.backbone = ResNet(BasicBlock, [3, 4, 6, 3]) #ResNet34
         elif backbone == "resnet50":
             self.backbone = ResNet(Bottleneck, [3, 4, 6, 3])  # ResNet50
-        elif backbone == "swin": # swin_t is too large for 2 RTX 4090
+        elif backbone == "swin": 
+            out_indices = [0, 1, 2, 3] if head == "uper_head" else [3]
             self.backbone = SwinTransformer(
                 patch_size=[4, 1],
                 embed_dim=96,
@@ -269,8 +270,10 @@ class EQNet(nn.Module):
                 window_size=[7, 10],
                 stochastic_depth_prob=0.2,
                 block_name="SwinTransformerBlock",
+                out_indices=out_indices,
             )
         elif backbone == "swin2":
+            out_indices = [0, 1, 2, 3] if head == "uper_head" else [3]
             self.backbone = SwinTransformer(
                 patch_size=[4, 1],
                 embed_dim=96,
@@ -281,6 +284,7 @@ class EQNet(nn.Module):
                 window_size=[8, 10],
                 stochastic_depth_prob=0.2,
                 block_name="SwinTransformerBlockV2",
+                out_indices=out_indices,
             )
         else:
             raise ValueError("backbone must be one of 'resnet' or 'swin'")
@@ -289,10 +293,10 @@ class EQNet(nn.Module):
         # the len of channels and dilations should be 5 when using other config
         # or you need to change the structure of event_detector and phase_picker
         if (backbone == "swin" or backbone == "swin2"):
-            channels=[768, 128, 32, 16, 8] 
-            #channels=[768, 256, 64, 16, 8]
-            dilations=[1, 6, 24, 48, 96] 
-            #dilations=[1, 4, 8, 16, 32]
+            #channels=[768, 128, 32, 16, 8] 
+            channels=[768, 256, 64, 16, 8]
+            #dilations=[1, 6, 24, 48, 96] 
+            dilations=[1, 4, 8, 32, 64]
         elif backbone[:6] == "resnet":
             channels=[128, 64, 32, 16, 8]
             dilations=[1, 2, 4, 8, 16]
