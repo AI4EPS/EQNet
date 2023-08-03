@@ -185,10 +185,10 @@ class CenterNetHead(nn.Module):
         #         if m.bias is not None:
         #             nn.init.constant_(m.bias, 0)
         
-        loss_dict = {"mse": F.mse_loss, "focal": focal_loss, "l1": l1_reg_loss, "sl1": smoothl1_reg_loss, "nl1": norml1_reg_loss, "wl1": weighted_l1_reg_loss, "cross_entropy": cross_entropy_loss}
-        self.hm_loss = loss_dict[hm_loss]
-        self.hw_loss = loss_dict[hw_loss]
-        self.reg_loss = loss_dict[reg_loss]
+        loss_factory = {"mse": F.mse_loss, "focal": focal_loss, "l1": l1_reg_loss, "sl1": smoothl1_reg_loss, "nl1": norml1_reg_loss, "wl1": weighted_l1_reg_loss, "cross_entropy": cross_entropy_loss}
+        self.hm_loss = loss_factory[hm_loss]
+        self.hw_loss = loss_factory[hw_loss]
+        self.reg_loss = loss_factory[reg_loss]
             
         
     def forward(self, features, event_center, event_location, event_location_mask):
