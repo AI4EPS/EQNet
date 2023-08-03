@@ -66,13 +66,13 @@ class EventDetector(nn.Module):
             nn.BatchNorm1d(channels[-1]),
             nn.ReLU(inplace=True),
             nn.Conv1d(
-            channels[-1],
-            1,
-            kernel_size=kernel_size,
-            dilation=dilations[-1],
-            padding=((kernel_size - 1) * dilations[-1] + 1) // 2,
-            padding_mode="reflect",
-        )
+                channels[-1],
+                1,
+                kernel_size=kernel_size,
+                dilation=dilations[-1],
+                padding=((kernel_size - 1) * dilations[-1] + 1) // 2,
+                padding_mode="reflect",
+            )
         )
         self.heatmap[-1].bias.data.fill_(-2.19) # if use the initial value, the loss from 200 to 5 (v2)
         self.offset = nn.Sequential(
@@ -88,13 +88,13 @@ class EventDetector(nn.Module):
             nn.BatchNorm1d(channels[-1]),
             nn.ReLU(inplace=True),
             nn.Conv1d(
-            channels[-1],
-            2,
-            kernel_size=kernel_size,
-            dilation=dilations[-1],
-            padding=((kernel_size - 1) * dilations[-1] + 1) // 2,
-            padding_mode="reflect",
-        )
+                channels[-1],
+                2,
+                kernel_size=kernel_size,
+                dilation=dilations[-1],
+                padding=((kernel_size - 1) * dilations[-1] + 1) // 2,
+                padding_mode="reflect",
+            )
         )
         #'''
         self.hypocenter = nn.Sequential(
@@ -110,14 +110,14 @@ class EventDetector(nn.Module):
             nn.BatchNorm1d(channels[-1]),
             nn.ReLU(inplace=True),
             nn.Conv1d(
-            channels[-1],
-            #3,
-            4,
-            kernel_size=kernel_size,
-            dilation=dilations[-1],
-            padding=((kernel_size - 1) * dilations[-1] + 1) // 2,
-            padding_mode="reflect",
-        )
+                channels[-1],
+                #3,
+                4,
+                kernel_size=kernel_size,
+                dilation=dilations[-1],
+                padding=((kernel_size - 1) * dilations[-1] + 1) // 2,
+                padding_mode="reflect",
+            )
         )
         #'''
 
