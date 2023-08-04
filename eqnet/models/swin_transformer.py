@@ -1,5 +1,6 @@
 from functools import partial
 from typing import Any, Callable, List, Optional, Dict
+from collections import OrderedDict
 
 import numpy as np
 import torch
@@ -830,7 +831,7 @@ class SwinTransformer(nn.Module):
         x = self.split_patch(x)
         meta={"x": x, "loc": loc}
         
-        outs = []
+        outs = OrderedDict()
         for i, feature in enumerate(self.features):
             meta = feature(meta)
             if i in self.out_indices:
@@ -838,11 +839,9 @@ class SwinTransformer(nn.Module):
                 out = norm(meta["x"])
                 ## for seismic time series
                 out = out.permute(0, 2, 3, 1).contiguous() ## bt, st, chn, nt
-                outs.append(out)
-        assert len(outs) == len(self.out_indices)
-        # x = self.norm(meta["x"])
-        ## for seismic time series
-        # x = x.permute(0, 2, 3, 1).contiguous() ## bt, st, chn, nt
+                outs[f"out{i//2}"] = out
+        assert len(outs.keys()) == len(self.out_indices)
+        
         return outs
 
 
