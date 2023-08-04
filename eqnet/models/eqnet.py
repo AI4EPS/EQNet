@@ -6,7 +6,7 @@ from typing import Optional, Dict
 from .resnet1d import ResNet, BasicBlock, Bottleneck
 from .swin_transformer import SwinTransformer
 from .centernet import CenterNetHead, CenterNetHeadV1, smoothl1_reg_loss, weighted_l1_reg_loss, cross_entropy_loss, focal_loss
-from .uper_head import UPerHead
+from .uper_head import UPerNeck, EventHead, PhaseHead
 
 
 def _log_transform(x):
@@ -125,7 +125,7 @@ class EventDetector(nn.Module):
     def forward(self, features, event_center, event_location, event_location_mask):
         """input shape [batch, in_channels, time_steps]
         output shape [batch, time_steps]"""
-        x = features[-1]
+        x = features["out3"]
         bt, st, ch, nt = x.shape  # batch, station, channel, time
         x = x.view(bt * st, ch, nt)
         # x = self.nonlin(self.bn_layers[0](x))
@@ -220,7 +220,7 @@ class PhasePicker(nn.Module):
     def forward(self, features, targets=None):
         """input shape [batch, in_channels, time_steps]
         output shape [batch, time_steps]"""
-        x = features[-1]
+        x = features["out3"]
         bt, st, ch, nt = x.shape  # batch, station, channel, time
         x = x.view(bt * st, ch, nt)
         # x = self.nonlin(self.bn_layers[0](x))
@@ -301,6 +301,8 @@ class EQNet(nn.Module):
         elif backbone[:6] == "resnet":
             channels=[128, 64, 32, 16, 8]
             dilations=[1, 2, 4, 8, 16]
+            
+        self.neck = UPerNeck(channels=512) if head == "upernet" else nn.Sequential()
 
         if head == "simple":
             self.event_detector = EventDetector(channels=channels, bn=True, dilations=dilations)
@@ -310,9 +312,10 @@ class EQNet(nn.Module):
             elif backbone == "swin2":
                 self.event_detector = CenterNetHead(channels=[768, 256, 64])
         elif head == "upernet":
-            self.event_detector = UPerHead()
+            self.event_detector = EventHead(channels=512)
                
-        self.phase_picker = PhasePicker(channels=channels, bn=True, dilations=dilations)
+        self.phase_picker = PhaseHead(channels=512) if head == "upernet" else \
+            PhasePicker(channels=channels, bn=True, dilations=dilations)
 
     @property
     def device(self):
@@ -340,6 +343,8 @@ class EQNet(nn.Module):
             features = self.backbone(data, station_location)
         else:
             features = self.backbone(data)
+            
+        features = self.neck(features)
 
         output_phase, loss_phase = self.phase_picker(features, phase_pick)
         outputs_event, losses_event = self.event_detector(features, event_center, event_location, event_location_mask)

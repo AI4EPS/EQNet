@@ -7,7 +7,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
-#from mmcv.cnn import ConvModule
 from .centernet import convolution, \
     cross_entropy_loss, focal_loss, smoothl1_reg_loss, weighted_l1_reg_loss, l1_reg_loss
 
@@ -64,7 +63,7 @@ class PPM(nn.ModuleList):
         return ppm_outs
 
 
-class UPerHead(nn.Module, metaclass=ABCMeta):
+class UPerNeck(nn.Module, metaclass=ABCMeta):
     """Unified Perceptual Parsing for Scene Understanding.
 
     This head is the implementation of `UPerNet
@@ -73,7 +72,6 @@ class UPerHead(nn.Module, metaclass=ABCMeta):
     Args:
         in_channels (int|Sequence[int]): Input channels.
         channels (int): Channels after modules, before conv_seg.
-        out_channels (int): Output channels of conv_seg. Default: None.
         pool_scales (tuple[int]): Pooling scales used in Pooling Pyramid
             Module applied on the last feature. Default: (1, 2, 3, 6).
         dropout_ratio (float): Ratio of dropout layer. Default: 0.1.
@@ -87,8 +85,6 @@ class UPerHead(nn.Module, metaclass=ABCMeta):
                 a list and passed into decode head.
             None: Only one select feature map is allowed.
             Default: None.
-        loss_dict (dict): Config of decode loss.
-        weights (list[float]): The loss weight of each branch.
         align_corners (bool): align_corners argument of F.interpolate.
             Default: False.
     """
@@ -96,20 +92,15 @@ class UPerHead(nn.Module, metaclass=ABCMeta):
     def __init__(self,
                  in_channels=[96, 192, 384, 768],
                  channels=512,
-                 hidden_channels=[256, 128, 64, 32],
                  pool_scales=(1, 2, 3, 6),
                  dropout_ratio=0.1,
                  in_index=[0, 1, 2, 3],
                  input_transform="multiple_select",
                  align_corners=False,
-                 loss_dict: dict = {"hm_loss": "focal", "hw_loss": "wl1", "reg_loss": "sl1"},
-                 weights=[1, 0.015, 0.01],
-                 kernel_size = 3,
                  ):
         super().__init__()
         self._init_inputs(in_channels, in_index, input_transform)
         self.channels = channels
-        self.weights = weights
         self.dropout_ratio = dropout_ratio
         self.in_index = in_index
 
@@ -154,83 +145,6 @@ class UPerHead(nn.Module, metaclass=ABCMeta):
             out_dim=self.channels,
             k=3,)
         
-        #TODO: subhead layers? dilation?
-        self.heatmap = nn.Sequential(
-            nn.Conv1d(
-                self.channels,
-                hidden_channels[2],
-                kernel_size=kernel_size,
-                dilation=16,
-                padding=((kernel_size - 1) * 16 + 1) // 2,
-                padding_mode="reflect",
-                bias=False,
-            ),
-            nn.BatchNorm1d(hidden_channels[2]),
-            nn.ReLU(inplace=True),
-            Sample(scale_factor=0.25, mode='linear', align_corners=False),
-            nn.Conv1d(
-                hidden_channels[2],
-                1,
-                kernel_size=kernel_size,
-                dilation=1,
-                padding=((kernel_size - 1) * 1 + 1) // 2,
-                padding_mode="reflect",
-            )
-        )
-        self.heatmap[-1].bias.data.fill_(-2.19) # if use the initial value, the loss from 200 to 5 (v2)
-        self.offset = nn.Sequential(
-            nn.Conv1d(
-                self.channels,
-                hidden_channels[2],
-                kernel_size=kernel_size,
-                dilation=2,
-                padding=((kernel_size - 1) * 2 + 1) // 2,
-                padding_mode="reflect",
-                bias=False,
-            ),
-            nn.BatchNorm1d(hidden_channels[2]),
-            nn.ReLU(inplace=True),
-            Sample(scale_factor=2, mode='linear', align_corners=False),
-            nn.Conv1d(
-                hidden_channels[2],
-                2,
-                kernel_size=kernel_size,
-                dilation=1,
-                padding=((kernel_size - 1) * 1 + 1) // 2,
-                padding_mode="reflect",
-            )
-        )
-        
-        self.hypocenter = nn.Sequential(
-            nn.Conv1d(
-                self.channels,
-                hidden_channels[2],
-                kernel_size=kernel_size,
-                dilation=16,
-                padding=((kernel_size - 1) * 16 + 1) // 2,
-                padding_mode="reflect",
-                bias=False,
-            ),
-            nn.BatchNorm1d(hidden_channels[2]),
-            nn.ReLU(inplace=True),
-            Sample(scale_factor=0.25, mode='linear', align_corners=False),
-            nn.Conv1d(
-                hidden_channels[2],
-                #3,
-                4,
-                kernel_size=kernel_size,
-                dilation=1,
-                padding=((kernel_size - 1) * 1 + 1) // 2,
-                padding_mode="reflect",
-            )
-        )
-
-
-        loss_factory = {"mse": F.mse_loss, "focal": focal_loss, "l1": l1_reg_loss, "sl1": smoothl1_reg_loss, "wl1": weighted_l1_reg_loss, "cross_entropy": cross_entropy_loss}
-        self.weights = weights
-        self.hm_loss = loss_factory[loss_dict["hm_loss"]]
-        self.hw_loss = loss_factory[loss_dict["hw_loss"]]
-        self.reg_loss = loss_factory[loss_dict["reg_loss"]]
 
     def psp_forward(self, inputs):
         """Forward function of PSP module."""
@@ -257,7 +171,7 @@ class UPerHead(nn.Module, metaclass=ABCMeta):
             self.channels, nt=1/4 raw nt) which is feature map by Fusion Module
         """
         inputs = self._transform_inputs(inputs)
-        outputs = []
+        outputs = {}
 
         # build laterals
         laterals = [
@@ -284,8 +198,8 @@ class UPerHead(nn.Module, metaclass=ABCMeta):
         ]
         # append psp feature
         fpn_outs.append(laterals[-1])
-        outputs.append(fpn_outs[-1])
-        outputs.append(fpn_outs[0])
+        outputs["ppm"] = fpn_outs[-1]
+        #outputs["fpn"] = fpn_outs[0]
 
         for i in range(used_backbone_levels - 1, 0, -1):
             fpn_outs[i] = F.interpolate(
@@ -295,63 +209,27 @@ class UPerHead(nn.Module, metaclass=ABCMeta):
                 align_corners=self.align_corners)
         fpn_outs = torch.cat(fpn_outs, dim=1)
         feats = self.fpn_bottleneck(fpn_outs)
-        outputs.append(feats)
+        outputs["fusion"] = feats
         
-        return outputs # [psp, fpn[0], feats] dim: bt, sta, chn, nt
+        return outputs # [psp, feats] dim: bt*sta, chn, nt
 
-    def forward(self, features, event_center, event_location, event_location_mask):
+    def forward(self, features):
         """Forward function.
         Args:
             features (list[Tensor]): List of multi-level features. Shape of each: bt, sta, chn, nt
         """
+        features = [features[f"out{i}"] for i in range(len(features.keys()))]
         for i in range(len(features)):
             bt, st, ch, nt = features[i].shape
             features[i] = features[i].view(bt*st, ch, nt)   
         #assert len(features[0].shape)==3, "features should be a list of 3d tensor"
         
-        [offset, heatmap, hypocenter] = self._forward_feature(features)
+        features = self._forward_feature(features)
         
-        # offset
-        #bt, st, ch, nt = offset.shape
-        #offset = offset.view(bt*st, ch, nt)
-        offset = self.offset(offset)
-        offset = offset.view(bt, st, offset.shape[1], offset.shape[2])
-        offset = offset.permute(0, 2, 3, 1) # bt, ch, nt, sta
-        
-        # heatmap
-        #bt, st, ch, nt = heatmap.shape
-        #heatmap = heatmap.view(bt*st, ch, nt)
-        heatmap = self.heatmap(heatmap)
-        heatmap = heatmap.view(bt, st, heatmap.shape[2])  # chn = 1
-        heatmap = heatmap.permute(0, 2, 1)
-        
-        # hypocenter
-        #bt, st, ch, nt = hypocenter.shape
-        #hypocenter = hypocenter.view(bt*st, ch, nt)
-        hypocenter = self.hypocenter(hypocenter)
-        hypocenter = hypocenter.view(bt, st, hypocenter.shape[1], hypocenter.shape[2])
-        hypocenter = hypocenter.permute(0, 2, 3, 1)
-        
-        if self.training:            
-            return None, self.losses({"event": heatmap, "offset": offset, "hypocenter": hypocenter}, event_center, event_location, event_location_mask)
-        elif event_center is not None:
-            return {"event": heatmap, "offset": offset, "hypocenter": hypocenter}, \
-                self.losses({"event": heatmap, "offset": offset, "hypocenter": hypocenter}, event_center, event_location, event_location_mask)
-        else:
-            return {"event": heatmap, "offset": offset, "hypocenter": hypocenter}, {}
-    
-    def losses(self, outputs, event_center, event_location, event_location_mask):
-        #hm_loss = cross_entropy_loss(outputs["event"], event_center)
-        hm_loss = self.hm_loss(outputs["event"], event_center)
-        hw_loss = self.hw_loss(outputs["offset"], event_location[:, 4:, :, :], event_location_mask, weights=torch.tensor([10, 1]).to(event_location.device))
-        
-        #reg_loss = smoothl1_reg_loss(outputs["hypocenter"], event_location[:, :3, :, :], event_location_mask)
-        reg_loss = self.reg_loss(outputs["hypocenter"], event_location[:, :4, :, :], event_location_mask)
-        
-        loss = hm_loss * self.weights[0] + hw_loss * self.weights[1] + reg_loss * self.weights[2]
-        # print(f"loss {loss}, hm_loss {hm_loss}, hw_loss {hw_loss}, reg_loss {reg_loss}", force=True)
-        return {"loss": loss, "loss_event": hm_loss, "loss_offset": hw_loss, "loss_hypocenter": reg_loss}
-    
+        for k in features.keys():
+            features[k] = features[k].view(bt, st, features[k].shape[1], features[k].shape[2])
+            
+        return features
     
     
     def _init_inputs(self, in_channels, in_index, input_transform):
@@ -418,3 +296,211 @@ class UPerHead(nn.Module, metaclass=ABCMeta):
             inputs = inputs[self.in_index]
 
         return inputs
+
+
+class EventHead(nn.Module):
+    def __init__(self, 
+                 channels=512,
+                 hidden_channels=[256, 128, 64, 32],
+                 dilations=[1, 4, 8, 16],
+                 loss_dict: dict = {"hm_loss": "focal", "hw_loss": "wl1", "reg_loss": "sl1"},
+                 weights=[1, 0.015, 0.01],
+                 kernel_size = 3,
+                 ):
+        super().__init__()
+        
+        self.channels = channels
+        self.weights = weights
+        
+        #TODO: subhead layers? dilation?
+        self.heatmap = nn.Sequential(
+            nn.Conv1d(
+                self.channels,
+                hidden_channels[2],
+                kernel_size=kernel_size,
+                dilation=dilations[3],
+                padding=((kernel_size - 1) * dilations[3] + 1) // 2,
+                padding_mode="reflect",
+                bias=False,
+            ),
+            nn.BatchNorm1d(hidden_channels[2]),
+            nn.ReLU(inplace=True),
+            nn.Conv1d(
+                hidden_channels[2],
+                1,
+                kernel_size=kernel_size,
+                dilation=dilations[0],
+                padding=((kernel_size - 1) * dilations[0] + 1) // 2,
+                padding_mode="reflect",
+            )
+        )
+        self.heatmap[-1].bias.data.fill_(-2.19) # if use the initial value, the loss from 200 to 5 (v2)
+        self.offset = nn.Sequential(
+            nn.Conv1d(
+                self.channels,
+                hidden_channels[2],
+                kernel_size=kernel_size,
+                dilation=dilations[3],
+                padding=((kernel_size - 1) * dilations[3] + 1) // 2,
+                padding_mode="reflect",
+                bias=False,
+            ),
+            nn.BatchNorm1d(hidden_channels[2]),
+            nn.ReLU(inplace=True),
+            nn.Conv1d(
+                hidden_channels[2],
+                2,
+                kernel_size=kernel_size,
+                dilation=dilations[0],
+                padding=((kernel_size - 1) * dilations[0] + 1) // 2,
+                padding_mode="reflect",
+            )
+        )
+        
+        self.hypocenter = nn.Sequential(
+            nn.Conv1d(
+                self.channels,
+                hidden_channels[2],
+                kernel_size=kernel_size,
+                dilation=dilations[3],
+                padding=((kernel_size - 1) * dilations[3] + 1) // 2,
+                padding_mode="reflect",
+                bias=False,
+            ),
+            nn.BatchNorm1d(hidden_channels[2]),
+            nn.ReLU(inplace=True),
+            nn.Conv1d(
+                hidden_channels[2],
+                #3,
+                4,
+                kernel_size=kernel_size,
+                dilation=dilations[0],
+                padding=((kernel_size - 1) * dilations[0] + 1) // 2,
+                padding_mode="reflect",
+            )
+        )
+
+
+        loss_factory = {"mse": F.mse_loss, "focal": focal_loss, "l1": l1_reg_loss, "sl1": smoothl1_reg_loss, "wl1": weighted_l1_reg_loss, "cross_entropy": cross_entropy_loss}
+        self.weights = weights
+        self.hm_loss = loss_factory[loss_dict["hm_loss"]]
+        self.hw_loss = loss_factory[loss_dict["hw_loss"]]
+        self.reg_loss = loss_factory[loss_dict["reg_loss"]]
+        
+    def forward(self, features, event_center, event_location, event_location_mask):
+        x = features['ppm']
+        bt, st, ch, nt = x.shape
+        x = x.view(bt*st, ch, nt)
+        x = F.interpolate(x, scale_factor=2, mode='linear', align_corners=False)
+        
+        # offset
+        offset = self.offset(x)
+        offset = offset.view(bt, st, offset.shape[1], offset.shape[2])
+        offset = offset.permute(0, 2, 3, 1) # bt, ch, nt, sta
+        
+        # heatmap
+        heatmap = self.heatmap(x)
+        heatmap = heatmap.view(bt, st, heatmap.shape[2])  # chn = 1
+        heatmap = heatmap.permute(0, 2, 1)
+        
+        # hypocenter
+        hypocenter = self.hypocenter(x)
+        hypocenter = hypocenter.view(bt, st, hypocenter.shape[1], hypocenter.shape[2])
+        hypocenter = hypocenter.permute(0, 2, 3, 1)
+        
+        if self.training:            
+            return None, self.losses({"event": heatmap, "offset": offset, "hypocenter": hypocenter}, event_center, event_location, event_location_mask)
+        elif event_center is not None:
+            return {"event": heatmap, "offset": offset, "hypocenter": hypocenter}, \
+                self.losses({"event": heatmap, "offset": offset, "hypocenter": hypocenter}, event_center, event_location, event_location_mask)
+        else:
+            return {"event": heatmap, "offset": offset, "hypocenter": hypocenter}, {}
+    
+    def losses(self, outputs, event_center, event_location, event_location_mask):
+        #hm_loss = cross_entropy_loss(outputs["event"], event_center)
+        hm_loss = self.hm_loss(outputs["event"], event_center)
+        hw_loss = self.hw_loss(outputs["offset"], event_location[:, 4:, :, :], event_location_mask, weights=torch.tensor([10, 1]).to(event_location.device))
+        
+        #reg_loss = smoothl1_reg_loss(outputs["hypocenter"], event_location[:, :3, :, :], event_location_mask)
+        reg_loss = self.reg_loss(outputs["hypocenter"], event_location[:, :4, :, :], event_location_mask)
+        
+        loss = hm_loss * self.weights[0] + hw_loss * self.weights[1] + reg_loss * self.weights[2]
+        # print(f"loss {loss}, hm_loss {hm_loss}, hw_loss {hw_loss}, reg_loss {reg_loss}", force=True)
+        return {"loss": loss, "loss_event": hm_loss, "loss_offset": hw_loss, "loss_hypocenter": reg_loss}
+    
+    
+class PhaseHead(nn.Module):
+    def __init__(self, 
+                 channels=512,
+                 hidden_channels=[256, 128, 64, 32],
+                 dilations=[1, 4, 8, 16],
+                 kernel_size = 3,
+                 ):
+        super().__init__()
+        
+        self.channels = channels
+        
+        self.phase_1 = nn.Sequential(
+            nn.Conv1d(
+                self.channels,
+                hidden_channels[1],
+                kernel_size=kernel_size,
+                dilation=dilations[0],
+                padding=((kernel_size - 1) * dilations[0] + 1) // 2,
+                padding_mode="reflect",
+                bias=False,
+            ),
+            nn.BatchNorm1d(hidden_channels[1]),
+            nn.ReLU(inplace=True),
+        )
+        
+        self.phase_2 = nn.Sequential(
+            nn.Conv1d(
+                hidden_channels[1],
+                hidden_channels[3],
+                kernel_size=kernel_size,
+                dilation=dilations[2],
+                padding=((kernel_size - 1) * dilations[2] + 1) // 2,
+                padding_mode="reflect",
+                bias=False,
+            ),
+            nn.BatchNorm1d(hidden_channels[3]),
+            nn.ReLU(inplace=True),
+        )
+        
+        self.conv_out = nn.Conv1d(
+            hidden_channels[3],
+            3,
+            kernel_size=kernel_size,
+            dilation=dilations[3],
+            padding=((kernel_size - 1) * dilations[3] + 1) // 2,
+            padding_mode="reflect",
+        )
+        
+    def forward(self, features, targets=None):
+        """input shape [batch, in_channels, time_steps]
+        output shape [batch, time_steps]"""
+        x = features["fusion"]
+        bt, st, ch, nt = x.shape  # batch, station, channel, time
+        x = x.view(bt * st, ch, nt)
+        
+        x = self.phase_1(x)
+        x = F.interpolate(x, scale_factor=2, mode="linear", align_corners=False)
+        x = self.phase_2(x)
+        x = F.interpolate(x, scale_factor=2, mode="linear", align_corners=False)
+        x = self.conv_out(x)
+        x = x.view(bt, st, x.shape[1], x.shape[2])
+        x = x.permute(0, 2, 3, 1)
+
+        if self.training:
+            return None, self.losses(x, targets)
+        elif targets is not None:
+            return x, self.losses(x, targets)
+        else:
+            return x, {}
+
+    def losses(self, inputs, targets):
+        inputs = inputs.float()  # https://github.com/pytorch/pytorch/issues/48163
+        loss = torch.sum(-targets * F.log_softmax(inputs, dim=1), dim=1).mean()
+
+        return loss

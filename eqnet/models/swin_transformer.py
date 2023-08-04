@@ -840,7 +840,7 @@ class SwinTransformer(nn.Module):
                 ## for seismic time series
                 out = out.permute(0, 2, 3, 1).contiguous() ## bt, st, chn, nt
                 outs[f"out{i//2}"] = out
-        assert len(outs.keys()) == len(self.out_indices)
+        #assert len(outs.keys()) == len(self.out_indices)
         
         return outs
 
