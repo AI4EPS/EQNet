@@ -256,6 +256,8 @@ xlim_right = {
     "ridgecrest_north": 120,
     "ridgecrest_south": 350,
 }
+
+# %%
 for i, folder in enumerate(folders):
     fig, ax = plt.subplots(3, 1, squeeze=False, figsize=(8, 6), sharex=True, gridspec_kw={"hspace": 0.05})
     for j, picker in enumerate(pickers[::-1]):
@@ -401,6 +403,72 @@ for i, folder in enumerate(folders):
     fig.savefig(figure_path / f"mag_dist_{folder}.png", dpi=300, bbox_inches="tight")
     fig.savefig(figure_path / f"mag_dist_{folder}.pdf", dpi=300, bbox_inches="tight")
     plt.show()
+
+# %%
+folder = "mammoth"
+fig, ax = plt.subplots(3, 1, squeeze=False, figsize=(8, 8), sharex=True, gridspec_kw={"hspace": 0.05})
+for j, picker in enumerate(pickers):
+    # events = pd.read_csv(f"results/stats/{folder}/{picker}/time_residual.csv")
+    events = pd.read_csv(f"{protocol}{bucket}/{folder}/gamma/{picker}/gamma_events.csv", parse_dates=["time"])
+    # add timezone info
+    events["time"] = events["time"].dt.tz_localize("UTC")
+
+    das_info = pd.read_csv(f"{protocol}{bucket}/{folder}/das_info.csv")
+    lat_0 = das_info["latitude"].mean()
+    lon_0 = das_info["longitude"].mean()
+    proj = pyproj.Proj(f"+proj=sterea +lon_0={lon_0} +lat_0={lat_0} +units=km")
+
+    catalog = pd.read_csv(f"{protocol}{bucket}/{folder}/catalog_data.csv", parse_dates=["event_time"])
+    catalog["x_km"], catalog["y_km"] = proj(catalog["longitude"].values, catalog["latitude"].values)
+    catalog["z_km"] = catalog["depth_km"]
+    catalog["dist_km"] = catalog.apply(lambda x: np.sqrt(x["x_km"] ** 2 + x["y_km"] ** 2 + x["z_km"] ** 2), axis=1)
+
+    # get timestamp in seconds
+    min_time = min(events.time.min(), catalog.event_time.min())
+    events_time = (events.time - min_time).astype("timedelta64[s]").to_numpy()
+    catalog_time = (catalog.event_time - min_time).astype("timedelta64[s]").to_numpy()
+    matrix = np.abs(events_time[:, None] - catalog_time[None, :])
+    matrix = (matrix > ylim["mammoth_south"][0]) & (matrix < ylim["mammoth_south"][1])
+    recall = np.any(matrix, axis=0)
+
+    # detected_catalog = pd.merge(events, catalog, on="event_id", how="left", suffixes=("_detected", ""))
+
+    ax[j, 0].scatter(
+        catalog["dist_km"],
+        catalog["magnitude"],
+        s=2 ** catalog["magnitude"],
+        c="gray",
+        alpha=0.2,
+    )
+    ax[j, 0].scatter(
+        catalog[recall]["dist_km"],
+        catalog[recall]["magnitude"],
+        s=2 ** catalog[recall]["magnitude"],
+        c="C3",
+        alpha=0.5,
+    )
+
+    ax[j, 0].set_xlim(right=xlim_right["mammoth_south"])
+    ax[j, 0].grid(linestyle="--", linewidth=0.5)
+    ax[j, 0].text(
+        0.02,
+        0.95,
+        f"({chr(ord('a') + j)}) {picker_name[picker]}",
+        transform=ax[j, 0].transAxes,
+        fontsize=12,
+        verticalalignment="top",
+    )
+
+    if j == 0:
+        ax[j, 0].scatter([], [], s=20, c="gray", label="Dataset")
+        ax[j, 0].scatter([], [], s=20, c="C3", label="Detected")
+        ax[j, 0].legend(loc="upper right")
+
+fig.text(x=0.05, y=0.5, s="Magnitude", ha="center", va="center", rotation="vertical", fontsize=14)
+fig.text(x=0.5, y=0.05, s="Distance (km)", ha="center", va="center", fontsize=14)
+fig.savefig(figure_path / f"mag_dist_{folder}.png", dpi=300, bbox_inches="tight")
+fig.savefig(figure_path / f"mag_dist_{folder}.pdf", dpi=300, bbox_inches="tight")
+plt.show()
 
 # %%
 fig, ax = plt.subplots(2, 2, squeeze=False, figsize=(8, 8))
