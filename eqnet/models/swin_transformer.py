@@ -213,6 +213,8 @@ def shifted_window_attention(
     pad_r = (window_size[1] - W % window_size[1]) % window_size[1]
     pad_b = (window_size[0] - H % window_size[0]) % window_size[0]
     x = F.pad(input, (0, 0, 0, pad_r, 0, pad_b))
+    # use bias shape B, nH, Wh, nsta, Wh, nsta
+    relative_position_bias = F.pad(relative_position_bias, (0, pad_r, 0, pad_r))
     _, pad_H, pad_W, _ = x.shape
 
     shift_size = shift_size.copy()
@@ -225,10 +227,17 @@ def shifted_window_attention(
     # cyclic shift
     if sum(shift_size) > 0:
         x = torch.roll(x, shifts=(-shift_size[0], -shift_size[1]), dims=(1, 2))
+        relative_position_bias = torch.roll(relative_position_bias,
+                                    shifts=(-shift_size[1], -shift_size[1]), dims=(3, 5))
 
     # partition windows
     num_windows = (pad_H // window_size[0]) * (pad_W // window_size[1])
     x = x.view(B, pad_H // window_size[0], window_size[0], pad_W // window_size[1], window_size[1], C)
+    relative_position_bias = relative_position_bias.view(B, num_heads, 
+                                                         window_size[0], pad_W // window_size[1], window_size[1], 
+                                                         window_size[0], pad_W // window_size[1], window_size[1]).unsqueeze(1)
+    relative_position_bias = torch.cat([relative_position_bias[:,:,:,:,i,:,:,i,:] for i in range(pad_W // window_size[1])], dim=1)
+    assert relative_position_bias.shape == (B, pad_W // window_size[1], num_heads, window_size[0], window_size[1], window_size[0], window_size[1])
     x = x.permute(0, 1, 3, 2, 4, 5).reshape(B * num_windows, window_size[0] * window_size[1], C)  # B*nW, Ws*Ws, C
 
     # multi-head attention
@@ -237,7 +246,7 @@ def shifted_window_attention(
         length = qkv_bias.numel() // 3
         qkv_bias[length : 2 * length].zero_()
     qkv = F.linear(x, qkv_weight, qkv_bias)
-    qkv = qkv.reshape(x.size(0), x.size(1), 3, num_heads, C // num_heads).permute(2, 0, 3, 1, 4)
+    qkv = qkv.reshape(x.size(0), x.size(1), 3, num_heads, C // num_heads).permute(2, 0, 3, 1, 4) # 3, B*nW, nH, Ws*Ws, C//nH
     q, k, v = qkv[0], qkv[1], qkv[2]
     if logit_scale is not None:
         # cosine attention
@@ -250,8 +259,9 @@ def shifted_window_attention(
     #print(f"attn.shape: {attn.shape} attn.avg: {attn.mean()} attn.std: {attn.std()} attn.max: {attn.max()} attn.min: {attn.min()}")
     # add relative position bias
     # TODO: check whether relative position bias is correctly implemented
-    relative_position_bias_shape = relative_position_bias.shape # B, nH, Ws*Ws, Ws*Ws
-    relative_position_bias = relative_position_bias.unsqueeze(1).repeat(1, num_windows, 1, 1, 1).view(B * num_windows, *relative_position_bias_shape[1:])
+    relative_position_bias = relative_position_bias.repeat(1, (pad_H // window_size[0]), 1, 1, 1, 1, 1).view(B * num_windows, num_heads, window_size[0] * window_size[1], window_size[0] * window_size[1])
+    #relative_position_bias_shape = relative_position_bias.shape # B, pad_W//Ww, nH, Ws*Ws, Ws*Ws
+    #relative_position_bias = relative_position_bias.unsqueeze(1).repeat(1, num_windows, 1, 1, 1).view(B * num_windows, *relative_position_bias_shape[1:])
     attn = attn + relative_position_bias
     #print(f"relative_position_bias.shape: {relative_position_bias.shape} relative_position_bias.avg: {relative_position_bias.mean()} relative_position_bias.std: {relative_position_bias.std()} relative_position_bias.max: {relative_position_bias.max()} relative_position_bias.min: {relative_position_bias.min()}")
 
@@ -336,7 +346,7 @@ def shifted_window_attention(
 #             # torch.zeros((2 * self.window_size[0] - 1) * (2 * self.window_size[1] - 1), num_heads)
 #             torch.zeros((2 * self.window_size[0] - 1) * self.bin * self.bin, self.num_heads)
 #         )  # 2*Wh-1 * bin * bin, nH
-#         nn.init.trunc_normal_(self.relative_position_bias_table, mean=0, std=1)
+#         nn.init.trunc_normal_(self.relative_position_bias_table, mean=0, std=0.02)
 #         
 #         coords_t = torch.arange(self.window_size[0]).unsqueeze(-1).unsqueeze(-1).repeat(1, self.window_size[1], 1) # nt, nx 1
 #         coords_t_flatten = torch.flatten(coords_t, 0, 1) # nt*nx, 1
@@ -372,8 +382,10 @@ def shifted_window_attention(
 #         N = self.window_size[0] * self.window_size[1]
 #         # B, nt*nx*nt*nx, nH 
 #         relative_position_bias = self.relative_position_bias_table[relative_position_index[:]]
-#         relative_position_bias = relative_position_bias.view(loc.shape[0], N, N, -1) # B, nt*nx, nt*nx, nH
-#         relative_position_bias = relative_position_bias.permute(0, 3, 1, 2).contiguous() # B, nH, nt*nx, nt*nx
+#         # relative_position_bias = relative_position_bias.view(loc.shape[0], N, N, -1) # B, nt*nx, nt*nx, nH
+#         # relative_position_bias = relative_position_bias.permute(0, 3, 1, 2).contiguous() # B, nH, nt*nx, nt*nx
+#         relative_position_bias = relative_position_bias.view(loc.shape[0], self.window_size[0], self.window_size[1], self.window_size[0], self.window_size[1], -1) # B, nt, nx, nt, nx, nH
+#         relative_position_bias = relative_position_bias.permute(0, 5, 1, 2, 3, 4).contiguous() # B, nH, nt, nx, nt, nx
 #         
 #         return relative_position_bias
 # 
@@ -432,8 +444,8 @@ class ShiftedWindowAttention(nn.Module):
         #  grid of relative spatial position
         self.degree2km = 111.32
         self.grid_size = self.degree2km / 100
-        self.bin_x = 51
-        self.bin_y = 51
+        self.bin_x = 101
+        self.bin_y = 101
         self.bin_z = 11
 
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
@@ -458,10 +470,10 @@ class ShiftedWindowAttention(nn.Module):
         self.relative_position_bias_table_z = nn.Parameter(
             torch.zeros(self.bin_z, self.num_heads)
         )
-        nn.init.trunc_normal_(self.relative_position_bias_table_t, std=0.1)
-        nn.init.trunc_normal_(self.relative_position_bias_table_x, std=0.1)
-        nn.init.trunc_normal_(self.relative_position_bias_table_y, std=0.1)
-        nn.init.trunc_normal_(self.relative_position_bias_table_z, std=0.1)
+        nn.init.trunc_normal_(self.relative_position_bias_table_t, std=0.02)
+        nn.init.trunc_normal_(self.relative_position_bias_table_x, std=0.02)
+        nn.init.trunc_normal_(self.relative_position_bias_table_y, std=0.02)
+        nn.init.trunc_normal_(self.relative_position_bias_table_z, std=0.02)
         
         coords_t = torch.arange(self.window_size[0]).unsqueeze(-1).unsqueeze(-1).repeat(1, self.window_size[1], 1) # nt, nx 1
         coords_t_flatten = torch.flatten(coords_t, 0, 1) # nt*nx, 1
@@ -495,8 +507,10 @@ class ShiftedWindowAttention(nn.Module):
                                 self.relative_position_bias_table_x[relative_position_index[1], :] + \
                                 self.relative_position_bias_table_y[relative_position_index[2], :] + \
                                 self.relative_position_bias_table_z[relative_position_index[3], :]
-        relative_position_bias = relative_position_bias.view(loc.shape[0], N, N, -1) # B, nt*nx, nt*nx, nH
-        relative_position_bias = relative_position_bias.permute(0, 3, 1, 2).contiguous() # B, nH, nt*nx, nt*nx
+        # relative_position_bias = relative_position_bias.view(loc.shape[0], N, N, -1) # B, nt*nx, nt*nx, nH
+        # relative_position_bias = relative_position_bias.permute(0, 3, 1, 2).contiguous() # B, nH, nt*nx, nt*nx
+        relative_position_bias = relative_position_bias.view(loc.shape[0], self.window_size[0], self.window_size[1], self.window_size[0], self.window_size[1], -1) # B, nt, nx, nt, nx, nH
+        relative_position_bias = relative_position_bias.permute(0, 5, 1, 2, 3, 4).contiguous() # B, nH, nt, nx, nt, nx
         
         return relative_position_bias
 
@@ -569,18 +583,18 @@ class ShiftedWindowAttentionV2(ShiftedWindowAttention):
 
 
     def define_relative_position_bias_table_and_index(self):
-        coords_t = torch.arange(self.window_size[0]).unsqueeze(-1).unsqueeze(-1).repeat(1, self.window_size[1], 1) # nt, nx 1
+        coords_t = torch.arange(self.window_size[0]).unsqueeze(-1).unsqueeze(-1).repeat(1, 1, 1) # nt, 1, 1
         self.register_buffer("coords_t", coords_t)
 
     def get_relative_position_bias(self, loc: Tensor) -> Tensor:
         
-        coords_t = self.coords_t.repeat(loc.shape[0], 1, 1, 1) #bt, nt, nx 1
+        coords_t = self.coords_t.repeat(loc.shape[0], 1, loc.shape[1], 1) #bt, nt, nx 1
         coords_x = loc.unsqueeze(-3).repeat(1, self.coords_t.shape[0], 1, 1) #bt, nt, nx, 3
         coords = torch.cat((coords_t, coords_x), dim=-1) #bt, nt, nx, 4
         coords_flatten = torch.flatten(coords, 1, 2)  # bt, nt * nx, 4
         relative_coords = coords_flatten[:, :, None, :] - coords_flatten[:, None, :, :]  # bt, Wh*Ww, Wh*Ww, 4
         relative_position_bias = self.cpb_mlp(relative_coords) #bt, Wh*Ww, Wh*Ww, nH
-        relative_position_bias = relative_position_bias.permute(0, 3, 1, 2)
+        relative_position_bias = relative_position_bias.permute(0, 3, 1, 2).view(loc.shape[0], self.num_heads, self.window_size[0], loc.shape[1], self.window_size[0], loc.shape[1]) #bt, nH, nt, nx, nt, nx
         
         return relative_position_bias
     
@@ -610,6 +624,40 @@ class ShiftedWindowAttentionV2(ShiftedWindowAttention):
             logit_scale=self.logit_scale,
             training=self.training,
         )
+
+# class ShiftedWindowAttentionRotary(nn.Module):
+#     def __init__(
+#         self,
+#         dim: int,
+#         window_size: List[int],
+#         shift_size: List[int],
+#         num_heads: int,
+#         qkv_bias: bool = True,
+#         proj_bias: bool = True,
+#         attention_dropout: float = 0.0,
+#         dropout: float = 0.0,
+#     ):
+#         super().__init__()
+#         if len(window_size) != 2 or len(shift_size) != 2:
+#             raise ValueError("window_size and shift_size must be of length 2")
+#         self.window_size = window_size
+#         self.shift_size = shift_size
+#         self.num_heads = num_heads
+#         self.attention_dropout = attention_dropout
+#         self.dropout = dropout
+#         #  grid of relative spatial position
+#         self.degree2km = 111.32
+#         self.grid_size = self.degree2km / 100
+#         self.bin_x = 51
+#         self.bin_y = 51
+#         self.bin_z = 11
+# 
+#         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
+#         self.proj = nn.Linear(dim, dim, bias=proj_bias)
+#     
+#     
+#     pass
+
 
 class SwinTransformerBlock(nn.Module):
     """
@@ -754,14 +802,12 @@ class SwinTransformer(nn.Module):
         dropout: float = 0.0,
         attention_dropout: float = 0.0,
         stochastic_depth_prob: float = 0.0,
-        num_classes: int = 1000,
         norm_layer: Optional[Callable[..., nn.Module]] = None,
         block_name: Optional[str] = None,
         downsample_layer: Callable[..., nn.Module] = PatchMerging,
         out_indices=(0, 1, 2, 3),
     ):
         super().__init__()
-        # self.num_classes = num_classes
 
         block: Optional[Callable[..., nn.Module]]
         if block_name is None or block_name == "SwinTransformerBlock":
