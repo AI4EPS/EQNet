@@ -318,8 +318,8 @@ class EventHead(nn.Module):
                 self.channels,
                 hidden_channels[2],
                 kernel_size=kernel_size,
-                dilation=dilations[3],
-                padding=((kernel_size - 1) * dilations[3] + 1) // 2,
+                dilation=dilations[2],
+                padding=((kernel_size - 1) * dilations[2] + 1) // 2,
                 padding_mode="reflect",
                 bias=False,
             ),
@@ -329,8 +329,8 @@ class EventHead(nn.Module):
                 hidden_channels[2],
                 1,
                 kernel_size=kernel_size,
-                dilation=dilations[0],
-                padding=((kernel_size - 1) * dilations[0] + 1) // 2,
+                dilation=dilations[3],
+                padding=((kernel_size - 1) * dilations[3] + 1) // 2,
                 padding_mode="reflect",
             )
         )
@@ -433,7 +433,7 @@ class PhaseHead(nn.Module):
     def __init__(self, 
                  channels=512,
                  hidden_channels=[256, 128, 64, 32],
-                 dilations=[1, 4, 8, 16],
+                 dilations=[1, 8, 16, 32],
                  kernel_size = 3,
                  ):
         super().__init__()
@@ -445,8 +445,8 @@ class PhaseHead(nn.Module):
                 self.channels,
                 hidden_channels[1],
                 kernel_size=kernel_size,
-                dilation=dilations[0],
-                padding=((kernel_size - 1) * dilations[0] + 1) // 2,
+                dilation=dilations[1],
+                padding=((kernel_size - 1) * dilations[1] + 1) // 2,
                 padding_mode="reflect",
                 bias=False,
             ),
