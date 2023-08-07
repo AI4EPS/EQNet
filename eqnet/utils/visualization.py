@@ -323,14 +323,14 @@ def visualize_eqnet_train(meta, phase, event, epoch, figure_dir="figures", prefi
         plt.close("all")
         if flag:
             #fig, axes = plt.subplots(5, 1, figsize=(10, 20), dpi=100)
-            fig = plt.figure(figsize=(10, 15), dpi=150)
+            fig = plt.figure(figsize=(10, 18), dpi=150)
             axes=[]
-            axes.append(plt.subplot2grid((5, 4), (0, 0), colspan=4))
-            axes.append(plt.subplot2grid((5, 4), (1, 0), colspan=4))
-            axes.append(plt.subplot2grid((5, 4), (2, 0), colspan=4))
-            axes.append(plt.subplot2grid((5, 4), (3, 0), colspan=3))
-            axes.append(plt.subplot2grid((5, 4), (4, 0), colspan=3))
-            axes.append(plt.subplot2grid((5, 4), (3, 3), colspan=1))
+            axes.append(plt.subplot2grid((6, 4), (0, 0), colspan=4))
+            axes.append(plt.subplot2grid((6, 4), (1, 0), colspan=4))
+            axes.append(plt.subplot2grid((6, 4), (2, 0), colspan=4))
+            axes.append(plt.subplot2grid((6, 4), (3, 0), colspan=3, rowspan=2))
+            axes.append(plt.subplot2grid((6, 4), (5, 0), colspan=3))
+            axes.append(plt.subplot2grid((6, 4), (3, 3), colspan=1, rowspan=2))
         else:
             fig, axes = plt.subplots(3, 1, figsize=(10, 10))
         for j in range(phase.shape[-1]):
@@ -394,22 +394,22 @@ def visualize_eqnet_train(meta, phase, event, epoch, figure_dir="figures", prefi
             distance_ground_truth = distance_ground_truth.sum(axis=-2)/mask[None, :, :].sum(axis=-2)
             station_location = meta["station_location"][i]
             
-            axes[3].scatter(station_location[:, 0], station_location[:, 1], c=np.arange(station_location.shape[0]), s=50, marker=".")
-            axes[3].scatter(distance[0]+station_location[:, 0], distance[1]+station_location[:, 1], c=np.arange(station_location.shape[0]), s=50, marker="^", alpha=0.5)
+            axes[3].scatter(station_location[:, 0], station_location[:, 1], c=np.arange(station_location.shape[0]), s=50, marker="^")
+            axes[3].scatter(distance[0]+station_location[:, 0], distance[1]+station_location[:, 1], c=np.arange(station_location.shape[0]), s=50, marker=".", alpha=0.5)
             axes[3].scatter(distance_ground_truth[0]+station_location[:, 0], distance_ground_truth[1]+station_location[:, 1], c=np.arange(station_location.shape[0]), s=50, marker="*", alpha=0.5)
-            axes[3].scatter((distance[0]+station_location[:, 0]).mean(), (distance[1]+station_location[:, 1]).mean(), c="C1", s=150, marker="^", alpha=0.7)
+            axes[3].scatter((distance[0]+station_location[:, 0]).mean(), (distance[1]+station_location[:, 1]).mean(), c="C1", s=150, marker=".", alpha=0.7)
             axes[3].scatter((distance_ground_truth[0]+station_location[:, 0]).mean(), (distance_ground_truth[1]+station_location[:, 1]).mean(), c="C0", s=150, marker="*", alpha=0.7)
             
-            axes[4].scatter(station_location[:, 0], station_location[:, 2], c=np.arange(station_location.shape[0]), s=50, marker=".")
-            axes[4].scatter(distance[0]+station_location[:, 0], distance[2]+station_location[:, 2], c=np.arange(station_location.shape[0]), s=50, marker="^", alpha=0.5)
+            axes[4].scatter(station_location[:, 0], station_location[:, 2], c=np.arange(station_location.shape[0]), s=50, marker="^")
+            axes[4].scatter(distance[0]+station_location[:, 0], distance[2]+station_location[:, 2], c=np.arange(station_location.shape[0]), s=50, marker=".", alpha=0.5)
             axes[4].scatter(distance_ground_truth[0]+station_location[:, 0], distance_ground_truth[2]+station_location[:, 2], c=np.arange(station_location.shape[0]), s=50, marker="*", alpha=0.5)
-            axes[4].scatter((distance[0]+station_location[:, 0]).mean(), (distance[2]+station_location[:, 2]).mean(), c="C1", s=150, marker="^", alpha=0.7)
+            axes[4].scatter((distance[0]+station_location[:, 0]).mean(), (distance[2]+station_location[:, 2]).mean(), c="C1", s=150, marker=".", alpha=0.7)
             axes[4].scatter((distance_ground_truth[0]+station_location[:, 0]).mean(), (distance_ground_truth[2]+station_location[:, 2]).mean(), c="C0", s=150, marker="*", alpha=0.7)
             
-            axes[5].scatter(station_location[:, 2], station_location[:, 1], c=np.arange(station_location.shape[0]), s=50, marker=".")
-            axes[5].scatter(distance[2]+station_location[:, 2], distance[1]+station_location[:, 1], c=np.arange(station_location.shape[0]), s=50, marker="^", alpha=0.5)
+            axes[5].scatter(station_location[:, 2], station_location[:, 1], c=np.arange(station_location.shape[0]), s=50, marker="^")
+            axes[5].scatter(distance[2]+station_location[:, 2], distance[1]+station_location[:, 1], c=np.arange(station_location.shape[0]), s=50, marker=".", alpha=0.5)
             axes[5].scatter(distance_ground_truth[2]+station_location[:, 2], distance_ground_truth[1]+station_location[:, 1], c=np.arange(station_location.shape[0]), s=50, marker="*", alpha=0.5)
-            axes[5].scatter((distance[2]+station_location[:, 2]).mean(), (distance[1]+station_location[:, 1]).mean(), c="C1", s=150, marker="^", alpha=0.7)
+            axes[5].scatter((distance[2]+station_location[:, 2]).mean(), (distance[1]+station_location[:, 1]).mean(), c="C1", s=150, marker=".", alpha=0.7)
             axes[5].scatter((distance_ground_truth[2]+station_location[:, 2]).mean(), (distance_ground_truth[1]+station_location[:, 1]).mean(), c="C0", s=150, marker="*", alpha=0.7)
 
         axes[0].set_title("data")
