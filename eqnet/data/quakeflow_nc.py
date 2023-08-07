@@ -24,6 +24,8 @@ from typing import Dict, List, Optional, Tuple, Union
 import fsspec
 
 import datasets
+from scipy.sparse.csgraph import minimum_spanning_tree
+from scipy.sparse.csgraph import breadth_first_order
 
 
 # TODO: Add BibTeX citation
@@ -77,6 +79,7 @@ _URLS = {
     "event_train": [f"{_REPO}/{x}" for x in _FILES[:-1]],
     "station_test": [f"{_REPO}/{x}" for x in _FILES[-1:]],
     "event_test": [f"{_REPO}/{x}" for x in _FILES[-1:]],
+    "event_large": ["/home/wanghy/tests/EQNet/datasets/large_network_test_15.h5"]
 }
 
 
@@ -140,6 +143,9 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
         datasets.BuilderConfig(
             name="event_test", version=VERSION, description="yield event-based samples one by one of test dataset"
         ),
+        datasets.BuilderConfig(
+            name="event_large", version=VERSION, description="yield event-based samples with 15+ stations one by one of test dataset"
+        ),
     ]
 
     DEFAULT_CONFIG_NAME = (
@@ -165,6 +171,7 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
             (self.config.name == "event") 
             or (self.config.name == "event_train") 
             or (self.config.name == "event_test")
+            or (self.config.name == "event_large")
         ):
             features=datasets.Features(
                 {
@@ -237,6 +244,13 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                     gen_kwargs={"filepath": files, "split": "test"},
                 ),
             ]
+        elif self.config.name == "event_large":
+            return [
+                datasets.SplitGenerator(
+                    name=datasets.Split.TEST,
+                    gen_kwargs={"filepath": files, "split": "test"},
+                ),
+            ]
         else:
             raise ValueError("config.name is not in BUILDER_CONFIGS")
 
@@ -289,6 +303,7 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                             (self.config.name == "event")
                             or (self.config.name == "event_train")
                             or (self.config.name == "event_test")
+                            or (self.config.name == "event_large")
                         ):
                             event_attrs = event.attrs
 
@@ -396,6 +411,17 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                             std[std == 0] = 1.0
                             waveforms = (waveforms - np.mean(waveforms, axis=-1, keepdims=True)) / std
                             waveforms = waveforms.astype(np.float32)
+                            
+                            if self.config.name == "event_large":
+                                D = np.sqrt(((station_location[:, np.newaxis, :2] -  station_location[np.newaxis, :, :2])**2).sum(axis=-1))
+                                Tcsr = minimum_spanning_tree(D)
+                                index = breadth_first_order(Tcsr, i_start=0, directed=False, return_predecessors=False)
+                                waveforms = waveforms[index]
+                                phase_pick = phase_pick[index]
+                                event_center = event_center[index]
+                                event_location = event_location[index]
+                                event_location_mask = event_location_mask[index]
+                                station_location = station_location[index]
 
                             yield event_id, {
                                 "data": torch.from_numpy(waveforms).float(),
