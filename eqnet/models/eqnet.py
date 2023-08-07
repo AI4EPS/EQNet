@@ -5,7 +5,7 @@ from torch import nn, Tensor
 from typing import Optional, Dict
 from .resnet1d import ResNet, BasicBlock, Bottleneck
 from .swin_transformer import SwinTransformer
-from .swin_transformer1D import SwinTransformer1D
+from .swin_transformer_1d import SwinTransformer1D
 from .centernet import CenterNetHead, CenterNetHeadV1, smoothl1_reg_loss, weighted_l1_reg_loss, cross_entropy_loss, focal_loss
 from .uper_head import UPerNeck, EventHead, PhaseHead
 
