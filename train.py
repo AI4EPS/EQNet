@@ -18,6 +18,7 @@ import multiprocessing as mp
 
 import datasets
 from datasets.distributed import split_dataset_by_node
+from datasets.fingerprint import Hasher
 import eqnet
 import utils
 from eqnet.data import (
@@ -231,7 +232,7 @@ def main(args):
     device = torch.device(args.device)
     dtype = "bfloat16" if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else "float16"
     if args.model == "eqnet":
-        dtype = "float16"
+        dtype = "float16" if args.backbone == "swin" else "float16"
     ptdtype = {"float32": torch.float32, "bfloat16": torch.bfloat16, "float16": torch.float16}[dtype]
     args.dtype, args.ptdtype = dtype, ptdtype
     torch.backends.cuda.matmul.allow_tf32 = True  # allow tf32 on matmul
@@ -314,29 +315,32 @@ def main(args):
                 # Get the directory of the train.py
                 code_dir = os.path.dirname(os.path.abspath(__file__))
                 script_dir = os.path.join(code_dir, "eqnet/data/quakeflow_nc.py")
-                # dataset = datasets.load_dataset(script_dir, split="train", name="event")
-                # dataset_test = datasets.load_dataset(script_dir, split="test", name="event")
+                # dataset = datasets.load_dataset(script_dir, split="train", name=args.dataset_config)
+                # dataset_test = datasets.load_dataset(script_dir, split="test", name=args.dataset_config)
                 # TODO: just for testing
-                dataset = datasets.load_dataset(script_dir, split="test", name="event_test")
+                dataset = datasets.load_dataset(script_dir, split="test", name=args.dataset_config)
                 dataset_dict = dataset.train_test_split(test_size=0.2, seed=42)
                 dataset = dataset_dict["train"]
                 dataset_test = dataset_dict["test"]
             except:
                 print("Failed to load dataset from local")
-                dataset = datasets.load_dataset("AI4EPS/quakeflow_nc", split="train", name="event")
-                dataset_test = datasets.load_dataset("AI4EPS/quakeflow_nc", split="test", name="event")
+                dataset = datasets.load_dataset("AI4EPS/quakeflow_nc", split="train", name=args.dataset_config)
+                dataset_test = datasets.load_dataset("AI4EPS/quakeflow_nc", split="test", name=args.dataset_config)
 
             dataset = dataset.with_format("torch")
             dataset_test = dataset_test.with_format("torch")
             group_ids = create_groups(dataset, args.num_stations_list, is_pad=True)
+            num_stations_list = args.num_stations_list.copy()
             if args.distributed and world_size > 1:
                 torch.set_num_threads(1) # fix the multi-processing bug
                 if args.gpu > 0:
                     print(f"Rank {args.rank}: Gpu {args.gpu} waiting for main process to perform the mapping", force=True)
                     torch.distributed.barrier()
-                dataset = dataset.map(lambda x: cut_reorder_keys(x, num_stations_list=args.num_stations_list, is_pad=True, is_train=True), num_proc=args.workers, desc="cut_reorder_keys")
-                dataset = dataset.map(lambda x: random_shift(x, shift_range=(-160, 0), feature_scale=16), num_proc=args.workers, desc="random_shift")
-                dataset_test = dataset_test.map(lambda x: cut_reorder_keys(x, num_stations_list=args.num_stations_list, is_pad=True, is_train=False), num_proc=args.workers, desc="cut_reorder_keys")
+                print(f"Rank {args.rank}: Gpu {args.gpu} cut_reorder_keys fingerprint {Hasher.hash(lambda x: cut_reorder_keys(x, num_stations_list=num_stations_list, is_pad=True, is_train=True))}", force=True)
+                print(f"Rank {args.rank}: Gpu {args.gpu} random_shift fingerprint {Hasher.hash(lambda x: random_shift(x, shift_range=(-160, 0), feature_scale=16))}", force=True)
+                dataset = dataset.map(lambda x: cut_reorder_keys(x, num_stations_list=args.num_stations_list, is_pad=True, is_train=True), num_proc=args.workers, desc="cut_reorder_keys", new_fingerprint=Hasher.hash(lambda x: cut_reorder_keys(x, num_stations_list=num_stations_list, is_pad=True, is_train=True)))
+                dataset = dataset.map(lambda x: random_shift(x, shift_range=(-160, 0), feature_scale=16), num_proc=args.workers, desc="random_shift", new_fingerprint=Hasher.hash(lambda x: random_shift(x, shift_range=(-160, 0), feature_scale=16)))
+                dataset_test = dataset_test.map(lambda x: cut_reorder_keys(x, num_stations_list=args.num_stations_list, is_pad=True, is_train=False), num_proc=args.workers, desc="cut_reorder_keys", new_fingerprint=Hasher.hash(lambda x: cut_reorder_keys(x, num_stations_list=num_stations_list, is_pad=True, is_train=False)))
                 if args.gpu == 0:
                     print("Mapping finished, loading results from main process")
                     torch.distributed.barrier()
@@ -529,6 +533,9 @@ def main(args):
     model_without_ddp = model
     # print parameter number
     print("Number of parameters: ", sum(p.numel() for p in model_without_ddp.parameters() if p.requires_grad))
+    # for name, param in model.named_parameters():
+    #     if param.grad is None:
+    #         print(name)
     if args.distributed:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=False)
         model_without_ddp = model.module
@@ -804,6 +811,7 @@ def get_args_parser(add_help=True):
 
     # huggingface dataset
     parser.add_argument("--huggingface-dataset", action="store_true", help="use huggingface dataset")
+    parser.add_argument("--dataset-config", default="event", type=str, help="huggingface dataset config name")
     parser.add_argument(
         "--num-stations-list", default=[5, 10, 20], type=int, nargs="+", help="possible stations number of the dataset"
     )
