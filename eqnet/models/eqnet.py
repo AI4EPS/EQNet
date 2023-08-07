@@ -5,6 +5,7 @@ from torch import nn, Tensor
 from typing import Optional, Dict
 from .resnet1d import ResNet, BasicBlock, Bottleneck
 from .swin_transformer import SwinTransformer
+from .swin_transformer1D import SwinTransformer1D
 from .centernet import CenterNetHead, CenterNetHeadV1, smoothl1_reg_loss, weighted_l1_reg_loss, cross_entropy_loss, focal_loss
 from .uper_head import UPerNeck, EventHead, PhaseHead
 
@@ -287,34 +288,59 @@ class EQNet(nn.Module):
                 block_name="SwinTransformerBlockV2",
                 out_indices=out_indices,
             )
+        elif backbone == "swin_1D": 
+            out_indices = [0, 1, 2, 3] if head == "upernet" else [3]
+            self.backbone = SwinTransformer1D(
+                patch_size=4,
+                embed_dim=96,
+                depths=[2, 2, 6, 2],
+                num_heads=[3, 6, 12, 24],
+                window_size=7,
+                stochastic_depth_prob=0.2,
+                block_name="SwinTransformerBlock",
+                out_indices=out_indices,
+            )
+        elif backbone == "swin2_1D":
+            out_indices = [0, 1, 2, 3] if head == "upernet" else [3]
+            self.backbone = SwinTransformer1D(
+                patch_size=4,
+                embed_dim=96,
+                depths=[2, 2, 6, 2],
+                num_heads=[3, 6, 12, 24],
+                window_size=8,
+                stochastic_depth_prob=0.2,
+                block_name="SwinTransformerBlockV2",
+                out_indices=out_indices,
+            )
         else:
             raise ValueError("backbone must be one of 'resnet' or 'swin'")
 
         # config for Swin_T
         # the len of channels and dilations should be 5 when using other config
         # or you need to change the structure of event_detector and phase_picker
-        if (backbone == "swin" or backbone == "swin2"):
+        if "swin" in backbone:
             #channels=[768, 128, 32, 16, 8] 
             channels=[768, 256, 64, 16, 8]
             #dilations=[1, 6, 24, 48, 96] 
             dilations=[1, 4, 8, 32, 64]
+            neck_channels=256 # TODO: 512 is the original setting
         elif backbone[:6] == "resnet":
             channels=[128, 64, 32, 16, 8]
             dilations=[1, 2, 4, 8, 16]
             
-        self.neck = UPerNeck(channels=512) if head == "upernet" else nn.Sequential()
+        self.neck = UPerNeck(channels=neck_channels) if head == "upernet" else nn.Sequential()
 
         if head == "simple":
             self.event_detector = EventDetector(channels=channels, bn=True, dilations=dilations)
         elif head == "centernet":
-            if backbone == "swin":
+            if backbone == "swin" or backbone == "swin_1D":
                 self.event_detector = CenterNetHeadV1(channels=[768, 256, 64])
-            elif backbone == "swin2":
+            elif backbone == "swin2" or backbone == "swin2_1D":
                 self.event_detector = CenterNetHead(channels=[768, 256, 64])
         elif head == "upernet":
-            self.event_detector = EventHead(channels=512)
+            self.event_detector = EventHead(channels=neck_channels)
                
-        self.phase_picker = PhaseHead(channels=512) if head == "upernet" else \
+        self.phase_picker = PhaseHead(channels=neck_channels) if head == "upernet" else \
             PhasePicker(channels=channels, bn=True, dilations=dilations)
 
     @property
