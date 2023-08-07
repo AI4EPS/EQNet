@@ -363,7 +363,7 @@ class EQNet(nn.Module):
         else:
             phase_pick, event_center, event_location, event_location_mask = None, None, None, None
 
-        if self.backbone_name == "swin" or self.backbone_name == "swin2":
+        if "swin" in self.backbone_name:
             station_location = batched_inputs["station_location"].to(self.device)
             # features = self.backbone({"data": data, "station_location": station_location})
             features = self.backbone(data, station_location)

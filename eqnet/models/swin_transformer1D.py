@@ -255,7 +255,7 @@ def shifted_window_attention(
     attn = attn + relative_position_bias
     #print(f"relative_position_bias.shape: {relative_position_bias.shape} relative_position_bias.avg: {relative_position_bias.mean()} relative_position_bias.std: {relative_position_bias.std()} relative_position_bias.max: {relative_position_bias.max()} relative_position_bias.min: {relative_position_bias.min()}")
 
-    if sum(shift_size) > 0:
+    if shift_size > 0:
         # generate attention mask
         attn_mask = x.new_zeros((pad_H, pad_W))
         h_slices = ((0, -window_size), (-window_size, -shift_size), (-shift_size, None))
@@ -286,7 +286,7 @@ def shifted_window_attention(
     x = x.permute(0, 1, 3, 2, 4, 5).reshape(B, pad_H, pad_W, C)
 
     # reverse cyclic shift
-    if sum(shift_size) > 0:
+    if shift_size > 0:
         x = torch.roll(x, shifts=(shift_size, 0), dims=(1, 2))
 
     # unpad features
