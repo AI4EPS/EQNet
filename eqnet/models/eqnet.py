@@ -24,13 +24,15 @@ def log_transform(x):
 class EventDetector(nn.Module):
     # the first channel should be 8 * embedding_dim in swin transformer
     def __init__(
-        self, channels=[128, 64, 32, 16, 8], bn=True, dilations=[1, 2, 4, 8, 16], kernel_size=5, nonlin=nn.ReLU(), weights=[1, 0.015, 0.01],
+        self, channels=[128, 64, 32, 16, 8], bn=True, dilations=[1, 2, 4, 8, 16], kernel_size=5, nonlin=nn.ReLU(), weights=[1, 0.015, 0.01], offset_weight=[10, 1], reg_weight=[1,1,1,1]
     ):
         super().__init__()
         self.channels = channels
         self.bn = bn
         self.nonlin = nonlin
         self.weights = weights
+        self.offset_weight = torch.tensor(offset_weight)
+        self.reg_weight = torch.tensor(reg_weight)
 
         if self.bn:
             self.bn_layers = nn.ModuleList([nn.BatchNorm1d(c) for c in channels[1:-1]])
@@ -168,10 +170,10 @@ class EventDetector(nn.Module):
     def losses(self, outputs, event_center, event_location, event_location_mask):
         #hm_loss = cross_entropy_loss(outputs["event"], event_center)
         hm_loss = focal_loss(outputs["event"], event_center)
-        hw_loss = weighted_l1_reg_loss(outputs["offset"], event_location[:, 4:, :, :], event_location_mask, weights=torch.tensor([10, 1]).to(event_location.device))
+        hw_loss = weighted_l1_reg_loss(outputs["offset"], event_location[:, 4:, :, :], event_location_mask, weights=self.offset_weight)
         
         #reg_loss = smoothl1_reg_loss(outputs["hypocenter"], event_location[:, :3, :, :], event_location_mask)
-        reg_loss = smoothl1_reg_loss(outputs["hypocenter"], event_location[:, :4, :, :], event_location_mask)
+        reg_loss = weighted_l1_reg_loss(outputs["hypocenter"], event_location[:, :4, :, :], event_location_mask, weights=self.hypocenter_weight)
         
         loss = hm_loss * self.weights[0] + hw_loss * self.weights[1] + reg_loss * self.weights[2]
         # print(f"loss {loss}, hm_loss {hm_loss}, hw_loss {hw_loss}, reg_loss {reg_loss}", force=True)

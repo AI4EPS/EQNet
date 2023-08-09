@@ -303,14 +303,18 @@ class EventHead(nn.Module):
                  channels=512,
                  hidden_channels=[256, 128, 64, 32],
                  dilations=[1, 4, 8, 16],
-                 loss_dict: dict = {"hm_loss": "focal", "hw_loss": "wl1", "reg_loss": "sl1"},
-                 weights=[1, 0.015, 0.01],
                  kernel_size = 3,
+                 loss_dict: dict = {"hm_loss": "focal", "hw_loss": "wl1", "reg_loss": "wl1"},
+                 weights=[1, 0.015, 0.01],
+                 offset_weight=[10, 1], 
+                 reg_weight=[1,1,1,1],
                  ):
         super().__init__()
         
         self.channels = channels
         self.weights = weights
+        self.offset_weight = torch.tensor(offset_weight)
+        self.reg_weight = torch.tensor(reg_weight)
         
         #TODO: subhead layers? dilation?
         self.heatmap = nn.Sequential(
@@ -419,10 +423,10 @@ class EventHead(nn.Module):
     def losses(self, outputs, event_center, event_location, event_location_mask):
         #hm_loss = cross_entropy_loss(outputs["event"], event_center)
         hm_loss = self.hm_loss(outputs["event"], event_center)
-        hw_loss = self.hw_loss(outputs["offset"], event_location[:, 4:, :, :], event_location_mask, weights=torch.tensor([10, 1]).to(event_location.device))
+        hw_loss = self.hw_loss(outputs["offset"], event_location[:, 4:, :, :], event_location_mask, weights=self.offset_weight)
         
         #reg_loss = smoothl1_reg_loss(outputs["hypocenter"], event_location[:, :3, :, :], event_location_mask)
-        reg_loss = self.reg_loss(outputs["hypocenter"], event_location[:, :4, :, :], event_location_mask)
+        reg_loss = self.reg_loss(outputs["hypocenter"], event_location[:, :4, :, :], event_location_mask, weights=self.reg_weight)
         
         loss = hm_loss * self.weights[0] + hw_loss * self.weights[1] + reg_loss * self.weights[2]
         # print(f"loss {loss}, hm_loss {hm_loss}, hw_loss {hw_loss}, reg_loss {reg_loss}", force=True)
