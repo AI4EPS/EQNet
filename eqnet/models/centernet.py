@@ -143,6 +143,8 @@ def weighted_l1_reg_loss(output, target, mask, weights, type="sl1"):
     ground_truth = target * mask
     if weights is None:
         weights = torch.ones(ground_truth.shape[1]).to(ground_truth.device)
+    else:
+        weights = torch.tensor(weights).to(ground_truth.device)
 
     if type == "l1":
         regr_loss = F.l1_loss(pred, ground_truth, reduction='none')

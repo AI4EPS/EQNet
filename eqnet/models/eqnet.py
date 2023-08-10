@@ -31,8 +31,8 @@ class EventDetector(nn.Module):
         self.bn = bn
         self.nonlin = nonlin
         self.weights = weights
-        self.offset_weight = torch.tensor(offset_weight)
-        self.reg_weight = torch.tensor(reg_weight)
+        self.offset_weight = offset_weight
+        self.reg_weight = reg_weight
 
         if self.bn:
             self.bn_layers = nn.ModuleList([nn.BatchNorm1d(c) for c in channels[1:-1]])
@@ -173,7 +173,7 @@ class EventDetector(nn.Module):
         hw_loss = weighted_l1_reg_loss(outputs["offset"], event_location[:, 4:, :, :], event_location_mask, weights=self.offset_weight)
         
         #reg_loss = smoothl1_reg_loss(outputs["hypocenter"], event_location[:, :3, :, :], event_location_mask)
-        reg_loss = weighted_l1_reg_loss(outputs["hypocenter"], event_location[:, :4, :, :], event_location_mask, weights=self.hypocenter_weight)
+        reg_loss = weighted_l1_reg_loss(outputs["hypocenter"], event_location[:, :4, :, :], event_location_mask, weights=self.reg_weight)
         
         loss = hm_loss * self.weights[0] + hw_loss * self.weights[1] + reg_loss * self.weights[2]
         # print(f"loss {loss}, hm_loss {hm_loss}, hw_loss {hw_loss}, reg_loss {reg_loss}", force=True)

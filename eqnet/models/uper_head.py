@@ -313,8 +313,8 @@ class EventHead(nn.Module):
         
         self.channels = channels
         self.weights = weights
-        self.offset_weight = torch.tensor(offset_weight)
-        self.reg_weight = torch.tensor(reg_weight)
+        self.offset_weight = offset_weight
+        self.reg_weight = reg_weight
         
         #TODO: subhead layers? dilation?
         self.heatmap = nn.Sequential(
