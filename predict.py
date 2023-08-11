@@ -223,13 +223,8 @@ def pred_eqnet(args, model, data_loader, pick_path, figure_path, event_path=None
         for meta in metric_logger.log_every(data_loader, 1, header):
             with ctx:
                 output = model(meta)
-
             if "phase" in output:
                 phase_scores = F.softmax(output["phase"], dim=1)  # [batch, nch, nt, nsta]
-                if ("polarity" in output) and (output["polarity"] is not None):
-                    polarity_scores = (torch.sigmoid(output["polarity"]) - 0.5) * 2.0
-                else:
-                    polarity_scores = None
                 topk_phase_scores, topk_phase_inds = detect_peaks(phase_scores, vmin=args.min_prob, kernel=128)
                 phase_picks_ = extract_picks(
                     topk_phase_inds,
@@ -247,6 +242,7 @@ def pred_eqnet(args, model, data_loader, pick_path, figure_path, event_path=None
 
             if ("event" in output) and (output["event"] is not None):
                 event_scores = torch.sigmoid(output["event"])
+                event_scores = event_scores.unsqueeze(1)  # [batch, 1, nt, nsta]
                 topk_event_scores, topk_event_inds = detect_peaks(event_scores, vmin=args.min_prob, kernel=128)
                 event_picks_ = extract_picks(
                     topk_event_inds,
@@ -278,14 +274,14 @@ def pred_eqnet(args, model, data_loader, pick_path, figure_path, event_path=None
                         pass
                     continue
                 for pick_dict in event_picks_[i]:
-                    sta_order = meta["station_id"][i].index(pick_dict["station_id"])
-                    station_loc = meta["station_location"][i][sta_order]
-                    offset = output["offset"][i, 0, pick_dict["phase_index"], sta_order]
-                    width = output["offset"][i, 1, pick_dict["phase_index"], sta_order]
-                    dt = output["hypocenter"][i, 0, pick_dict["phase_index"], sta_order]
-                    # dx = output["hypocenter"][i, 1, pick_dict["phase_index"], sta_order]
-                    # dy = output["hypocenter"][i, 2, pick_dict["phase_index"], sta_order]
-                    # dz = output["hypocenter"][i, 3, pick_dict["phase_index"], sta_order]
+                    sta_order = pick_dict["station_index"]
+                    station_loc = meta["station_location"][sta_order[1], sta_order[0]]
+                    offset = output["offset"][i, 0, pick_dict["phase_index"], sta_order[0]]
+                    width = output["offset"][i, 1, pick_dict["phase_index"], sta_order[0]]
+                    dt = output["hypocenter"][i, 0, pick_dict["phase_index"], sta_order[0]]
+                    # dx = output["hypocenter"][i, 1, pick_dict["phase_index"], sta_order[0]]
+                    # dy = output["hypocenter"][i, 2, pick_dict["phase_index"], sta_order[0]]
+                    # dz = output["hypocenter"][i, 3, pick_dict["phase_index"], sta_order[0]]
                     event_center_index = pick_dict["phase_index"]+offset
                     event_index = event_center_index - dt/meta["dt_s"][i]/feature_scale
                     p_index = event_center_index - width
@@ -294,13 +290,14 @@ def pred_eqnet(args, model, data_loader, pick_path, figure_path, event_path=None
                     pick_dict["p_index"] = p_index
                     pick_dict["s_index"] = s_index
                     pick_dict["event_original_time"] = (datetime.fromisoformat(pick_dict["phase_time"])
-                                                        + timedelta(seconds=(event_index-pick_dict["phase_index"])*meta["dt_s"][i]*feature_scale)).isoformat(
+                                                        + timedelta(seconds=((event_index-pick_dict["phase_index"])*meta["dt_s"][i]*feature_scale).item())).isoformat(
                             timespec="milliseconds"
                     )
-                    pick_dict["event_location_x"] = station_loc[0] + output["hypocenter"][i, 1, pick_dict["phase_index"], sta_order]
-                    pick_dict["event_location_y"] = station_loc[1] + output["hypocenter"][i, 2, pick_dict["phase_index"], sta_order]
-                    pick_dict["event_location_z"] = station_loc[2] + output["hypocenter"][i, 3, pick_dict["phase_index"], sta_order]
-                        
+                    # TODO: return to lat/lon
+                    pick_dict["event_location_x"] = station_loc[0] + output["hypocenter"][i, 1, pick_dict["phase_index"], sta_order[0]]
+                    pick_dict["event_location_y"] = station_loc[1] + output["hypocenter"][i, 2, pick_dict["phase_index"], sta_order[0]]
+                    pick_dict["event_location_z"] = station_loc[2] + output["hypocenter"][i, 3, pick_dict["phase_index"], sta_order[0]]
+                    # TODO: find real events    
                     
                     picks_df = pd.DataFrame(event_picks_[i])
                     picks_df.sort_values(by=["phase_time"], inplace=True)
@@ -425,10 +422,11 @@ def main(args):
         response_xml=args.response_xml,
         cut_patch=args.cut_patch,
         nx=args.nx,
-        nt=args.nt,
+        nt_cut=args.nt,
         rank=rank,
         world_size=world_size,
-    )
+        )
+        sampler = None
     else:
         raise ("Unknown model")
 
@@ -476,7 +474,7 @@ def main(args):
             else:
                 raise ("Missing pretrained model for this location")
         elif args.model == "eqnet":
-            model_url = "ai4eps/model-registry/EQNet:latest"
+            model_url = "ai4eps/model-registry/eqnet-test:latest"
         else:
             raise
 
@@ -518,6 +516,7 @@ def get_args_parser(add_help=True):
     parser.add_argument("--model", default="phasenet_das", type=str, help="model name")
     parser.add_argument("--resume", default="", type=str, help="path of checkpoint")
     parser.add_argument("--backbone", default="unet", type=str, help="model backbone")
+    parser.add_argument("--head", default="simple", type=str, help="model head")
     parser.add_argument("--phases", default=["P", "S"], type=str, nargs="+", help="phases to use")
 
     parser.add_argument("--device", default="cuda", type=str, help="device (Use cuda or cpu Default: cuda)")
@@ -527,6 +526,12 @@ def get_args_parser(add_help=True):
     parser.add_argument(
         "-b", "--batch_size", default=1, type=int, help="images per gpu, the total batch size is $NGPU x batch_size"
     )
+    
+    # deterministic option
+    parser.add_argument(
+        "--use-deterministic-algorithms", action="store_true", help="Forces the use of deterministic algorithms only."
+    )
+    
     # Mixed precision training parameters
     parser.add_argument("--amp", action="store_true", help="Use torch.cuda.amp for mixed precision training")
 
