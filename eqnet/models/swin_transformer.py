@@ -214,7 +214,7 @@ def shifted_window_attention(
     pad_b = (window_size[0] - H % window_size[0]) % window_size[0]
     x = F.pad(input, (0, 0, 0, pad_r, 0, pad_b))
     # use bias shape B, nH, Wh, nsta, Wh, nsta
-    relative_position_bias = F.pad(relative_position_bias, (0, pad_r, 0, pad_r))
+    relative_position_bias = F.pad(relative_position_bias, (0, pad_r, 0, 0, 0, pad_r))
     _, pad_H, pad_W, _ = x.shape
 
     shift_size = shift_size.copy()
