@@ -330,17 +330,16 @@ def main(args):
             dataset = dataset.with_format("torch")
             dataset_test = dataset_test.with_format("torch")
             group_ids = create_groups(dataset, args.num_stations_list, is_pad=True)
-            num_stations_list = args.num_stations_list.copy()
             if args.distributed and world_size > 1:
                 torch.set_num_threads(1) # fix the multi-processing bug
                 if args.gpu > 0:
                     print(f"Rank {args.rank}: Gpu {args.gpu} waiting for main process to perform the mapping", force=True)
                     torch.distributed.barrier()
-                print(f"Rank {args.rank}: Gpu {args.gpu} cut_reorder_keys fingerprint {Hasher.hash(lambda x: cut_reorder_keys(x, num_stations_list=num_stations_list, is_pad=True, is_train=True))}", force=True)
+                print(f"Rank {args.rank}: Gpu {args.gpu} cut_reorder_keys fingerprint {Hasher.hash(lambda x: cut_reorder_keys(x, num_stations_list=args.num_stations_list, is_pad=True, is_train=True))}", force=True)
                 print(f"Rank {args.rank}: Gpu {args.gpu} random_shift fingerprint {Hasher.hash(lambda x: random_shift(x, shift_range=(-160, 0), feature_scale=16))}", force=True)
-                dataset = dataset.map(lambda x: cut_reorder_keys(x, num_stations_list=args.num_stations_list, is_pad=True, is_train=True), num_proc=args.workers, desc="cut_reorder_keys", new_fingerprint=Hasher.hash(lambda x: cut_reorder_keys(x, num_stations_list=num_stations_list, is_pad=True, is_train=True)))
-                dataset = dataset.map(lambda x: random_shift(x, shift_range=(-160, 0), feature_scale=16), num_proc=args.workers, desc="random_shift", new_fingerprint=Hasher.hash(lambda x: random_shift(x, shift_range=(-160, 0), feature_scale=16)))
-                dataset_test = dataset_test.map(lambda x: cut_reorder_keys(x, num_stations_list=args.num_stations_list, is_pad=True, is_train=False), num_proc=args.workers, desc="cut_reorder_keys", new_fingerprint=Hasher.hash(lambda x: cut_reorder_keys(x, num_stations_list=num_stations_list, is_pad=True, is_train=False)))
+                dataset = dataset.map(lambda x: cut_reorder_keys(x, num_stations_list=args.num_stations_list, is_pad=True, is_train=True), num_proc=args.workers, desc="cut_reorder_keys")#, new_fingerprint=Hasher.hash(lambda x: cut_reorder_keys(x, num_stations_list=num_stations_list, is_pad=True, is_train=True)))
+                dataset = dataset.map(lambda x: random_shift(x, shift_range=(-160, 0), feature_scale=16), num_proc=args.workers, desc="random_shift")#, new_fingerprint=Hasher.hash(lambda x: random_shift(x, shift_range=(-160, 0), feature_scale=16)))
+                dataset_test = dataset_test.map(lambda x: cut_reorder_keys(x, num_stations_list=args.num_stations_list, is_pad=True, is_train=False), num_proc=args.workers, desc="cut_reorder_keys")#, new_fingerprint=Hasher.hash(lambda x: cut_reorder_keys(x, num_stations_list=num_stations_list, is_pad=True, is_train=False)))
                 if args.gpu == 0:
                     print("Mapping finished, loading results from main process")
                     torch.distributed.barrier()
@@ -364,7 +363,16 @@ def main(args):
             # dataset_test = dataset_test.map(lambda x: reorder_keys(x))
 
         else:
-            dataset = SeismicNetworkIterableDataset(args.dataset)
+            dataset = SeismicNetworkIterableDataset(
+                data_path=args.data_path,
+                data_list=args.data_list,
+                hdf5_file=args.hdf5_file,
+                num_stations=args.num_stations_list[0],
+                format="h5",
+                training=True,
+                rank=rank,
+                world_size=world_size,
+            )    
             train_sampler = None
             test_sampler = None
             dataset_test = dataset
