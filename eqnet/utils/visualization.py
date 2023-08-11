@@ -349,30 +349,36 @@ def visualize_eqnet_train(meta, phase, event, epoch, figure_dir="figures", prefi
             feature_scale=16
             sampling_rate=100.0
             event_center = (meta["event_center"][i,:,:].eq(1).float()*torch.arange(meta["event_center"][i].shape[-2])[:,None].float()).sum(axis=-2)
+            true_station_number = event_center.shape[0]
             mask = meta["event_location_mask"][i]
+            mask_divide = mask.sum(axis=-2)
+            for k in range(mask_divide.shape[0]):
+                if mask_divide[k] == 0:
+                    mask_divide[k] = 1
+                    true_station_number -= 1
             #assert abs((mask*torch.arange(mask.shape[-2])[:,None].float()).sum(axis=-2)/mask.sum(axis=-2) - event_center).max() <= 1
             dt = (hypocenter[i, 0,:,:]*mask)*sampling_rate
-            dt = dt.sum(axis=-2)/mask.sum(axis=-2)
+            dt = dt.sum(axis=-2)/mask_divide
             offset_pred = (offset[i, 0,:,:]*mask)
-            offset_pred = offset_pred.sum(axis=-2)/mask.sum(axis=-2)
+            offset_pred = offset_pred.sum(axis=-2)/mask_divide
             dt = dt + offset_pred*feature_scale
             
             dt_ground_truth = (meta["event_location"][i, 0,:,:]*mask)*sampling_rate
-            dt_ground_truth = dt_ground_truth.sum(axis=-2)/mask.sum(axis=-2)
+            dt_ground_truth = dt_ground_truth.sum(axis=-2)/mask_divide
             offset_ground_truth = (meta["event_location"][i, 4,:,:]*mask)
-            offset_ground_truth = offset_ground_truth.sum(axis=-2)/mask.sum(axis=-2)
+            offset_ground_truth = offset_ground_truth.sum(axis=-2)/mask_divide
             dt_ground_truth = dt_ground_truth + offset_ground_truth*feature_scale
             
             #axes[2].scatter((feature_scale*(event_center+offset_ground_truth))/feature_scale, np.arange(event_center.shape[-1]), c=np.arange(event_center.shape[-1]), s=50, marker=".")
             axes[2].scatter((feature_scale*(event_center+offset_pred)-dt)/feature_scale, np.arange(event_center.shape[-1]), c=np.arange(event_center.shape[-1]), s=50, marker="^")
             axes[2].scatter((feature_scale*(event_center+offset_ground_truth)-dt_ground_truth)/feature_scale, np.arange(event_center.shape[-1]), c=np.arange(event_center.shape[-1]), s=50, marker="*")
-            axes[2].scatter(((feature_scale*(event_center+offset_pred)-dt).mean())/feature_scale, event_center.shape[-1], c="C1", s=100, marker="^")
-            axes[2].scatter(((feature_scale*(event_center+offset_ground_truth)-dt_ground_truth).mean())/feature_scale, event_center.shape[-1], c="C0", s=100, marker="*")
+            axes[2].scatter(((feature_scale*(event_center+offset_pred)-dt).sum()/true_station_number)/feature_scale, event_center.shape[-1], c="C1", s=100, marker="^")
+            axes[2].scatter(((feature_scale*(event_center+offset_ground_truth)-dt_ground_truth).sum()/true_station_number)/feature_scale, event_center.shape[-1], c="C0", s=100, marker="*")
             
             width_pred = (offset[i, 1,:,:]*mask)
-            width_pred = width_pred.sum(axis=-2)/mask.sum(axis=-2)
+            width_pred = width_pred.sum(axis=-2)/mask_divide
             width_ground_truth = (meta["event_location"][i, 5,:,:]*mask)
-            width_ground_truth = width_ground_truth.sum(axis=-2)/mask.sum(axis=-2)
+            width_ground_truth = width_ground_truth.sum(axis=-2)/mask_divide
             
             for k in range(len(event_center)):
                 # use arrow to show the prediction
@@ -386,31 +392,31 @@ def visualize_eqnet_train(meta, phase, event, epoch, figure_dir="figures", prefi
                 axes[2].vlines(event_center[k]+offset_ground_truth[k], k-0.2, k+0.2, color="C2", linestyle="--")
             
             distance = (hypocenter[i, 1:,:,:]*mask[None, :, :])
-            distance = distance.sum(axis=-2)/mask[None, :, :].sum(axis=-2)
+            distance = distance.sum(axis=-2)/mask_divide[None,:]
             # if prediction doesn't have the depth, use 0
             if distance.shape[0]==2:
                 distance = torch.cat([distance, torch.zeros_like(distance[0:1])], dim=0)
             distance_ground_truth = (meta["event_location"][i, 1:4,:,:]*mask[None, :, :])
-            distance_ground_truth = distance_ground_truth.sum(axis=-2)/mask[None, :, :].sum(axis=-2)
+            distance_ground_truth = distance_ground_truth.sum(axis=-2)/mask_divide[None, :]
             station_location = meta["station_location"][i]
             
             axes[3].scatter(station_location[:, 0], station_location[:, 1], c=np.arange(station_location.shape[0]), s=50, marker="^")
             axes[3].scatter(distance[0]+station_location[:, 0], distance[1]+station_location[:, 1], c=np.arange(station_location.shape[0]), s=50, marker=".", alpha=0.5)
             axes[3].scatter(distance_ground_truth[0]+station_location[:, 0], distance_ground_truth[1]+station_location[:, 1], c=np.arange(station_location.shape[0]), s=50, marker="*", alpha=0.5)
-            axes[3].scatter((distance[0]+station_location[:, 0]).mean(), (distance[1]+station_location[:, 1]).mean(), c="C1", s=150, marker=".", alpha=0.7)
-            axes[3].scatter((distance_ground_truth[0]+station_location[:, 0]).mean(), (distance_ground_truth[1]+station_location[:, 1]).mean(), c="C0", s=150, marker="*", alpha=0.7)
+            axes[3].scatter((distance[0]+station_location[:, 0]).sum()/true_station_number, (distance[1]+station_location[:, 1]).sum()/true_station_number, c="C1", s=150, marker=".", alpha=0.7)
+            axes[3].scatter((distance_ground_truth[0]+station_location[:, 0]).sum()/true_station_number, (distance_ground_truth[1]+station_location[:, 1]).sum()/true_station_number, c="C0", s=150, marker="*", alpha=0.7)
             
             axes[4].scatter(station_location[:, 0], station_location[:, 2], c=np.arange(station_location.shape[0]), s=50, marker="^")
             axes[4].scatter(distance[0]+station_location[:, 0], distance[2]+station_location[:, 2], c=np.arange(station_location.shape[0]), s=50, marker=".", alpha=0.5)
             axes[4].scatter(distance_ground_truth[0]+station_location[:, 0], distance_ground_truth[2]+station_location[:, 2], c=np.arange(station_location.shape[0]), s=50, marker="*", alpha=0.5)
-            axes[4].scatter((distance[0]+station_location[:, 0]).mean(), (distance[2]+station_location[:, 2]).mean(), c="C1", s=150, marker=".", alpha=0.7)
-            axes[4].scatter((distance_ground_truth[0]+station_location[:, 0]).mean(), (distance_ground_truth[2]+station_location[:, 2]).mean(), c="C0", s=150, marker="*", alpha=0.7)
+            axes[4].scatter((distance[0]+station_location[:, 0]).sum()/true_station_number, (distance[2]+station_location[:, 2]).sum()/true_station_number, c="C1", s=150, marker=".", alpha=0.7)
+            axes[4].scatter((distance_ground_truth[0]+station_location[:, 0]).sum()/true_station_number, (distance_ground_truth[2]+station_location[:, 2]).sum()/true_station_number, c="C0", s=150, marker="*", alpha=0.7)
             
             axes[5].scatter(station_location[:, 2], station_location[:, 1], c=np.arange(station_location.shape[0]), s=50, marker="^")
             axes[5].scatter(distance[2]+station_location[:, 2], distance[1]+station_location[:, 1], c=np.arange(station_location.shape[0]), s=50, marker=".", alpha=0.5)
             axes[5].scatter(distance_ground_truth[2]+station_location[:, 2], distance_ground_truth[1]+station_location[:, 1], c=np.arange(station_location.shape[0]), s=50, marker="*", alpha=0.5)
-            axes[5].scatter((distance[2]+station_location[:, 2]).mean(), (distance[1]+station_location[:, 1]).mean(), c="C1", s=150, marker=".", alpha=0.7)
-            axes[5].scatter((distance_ground_truth[2]+station_location[:, 2]).mean(), (distance_ground_truth[1]+station_location[:, 1]).mean(), c="C0", s=150, marker="*", alpha=0.7)
+            axes[5].scatter((distance[2]+station_location[:, 2]).sum()/true_station_number, (distance[1]+station_location[:, 1]).sum()/true_station_number, c="C1", s=150, marker=".", alpha=0.7)
+            axes[5].scatter((distance_ground_truth[2]+station_location[:, 2]).sum()/true_station_number, (distance_ground_truth[1]+station_location[:, 1]).sum()/true_station_number, c="C0", s=150, marker="*", alpha=0.7)
 
         axes[0].set_title("data")
         axes[1].set_title("phase_pick")
@@ -690,3 +696,6 @@ def plot_das(data, pred, picks=None, phases=["P", "S"], file_name=None, figure_d
         plt.close(fig)
 
     return 0
+
+def plot_eqnet():
+    pass
