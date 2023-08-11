@@ -505,6 +505,11 @@ class PhaseHead(nn.Module):
 
     def losses(self, inputs, targets):
         inputs = inputs.float()  # https://github.com/pytorch/pytorch/issues/48163
-        loss = torch.sum(-targets * F.log_softmax(inputs, dim=1), dim=1).mean()
+        num=targets.shape[0]*targets.shape[3]
+        for i in range(targets.shape[0]):
+            for j in range(targets.shape[3]):
+                if torch.all(targets[i,:,:,j]==0):
+                    num-=1
+        loss = torch.sum(-targets * F.log_softmax(inputs, dim=1))/(num*targets.shape[2])
 
         return loss

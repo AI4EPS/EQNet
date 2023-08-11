@@ -246,9 +246,13 @@ class PhasePicker(nn.Module):
 
     def losses(self, inputs, targets):
         inputs = inputs.float()  # https://github.com/pytorch/pytorch/issues/48163
-        loss = torch.sum(-targets * F.log_softmax(inputs, dim=1), dim=1).mean()
-        # assert not torch.isnan(loss).any(), "loss is nan"
-
+        num=targets.shape[0]*targets.shape[3]
+        for i in range(targets.shape[0]):
+            for j in range(targets.shape[3]):
+                if torch.all(targets[i,:,:,j]==0):
+                    num-=1
+        loss = torch.sum(-targets * F.log_softmax(inputs, dim=1))/(num*targets.shape[2])
+        
         return loss
 
 
@@ -325,7 +329,7 @@ class EQNet(nn.Module):
             channels=[768, 256, 64, 16, 8]
             #dilations=[1, 6, 24, 48, 96] 
             dilations=[1, 4, 8, 32, 64]
-            neck_channels=256 # TODO: 512 is the original setting
+            neck_channels=512 # TODO: 512 is the original setting
         elif backbone[:6] == "resnet":
             channels=[128, 64, 32, 16, 8]
             dilations=[1, 2, 4, 8, 16]
@@ -357,7 +361,7 @@ class EQNet(nn.Module):
             event_center = batched_inputs["event_center"].to(self.device)
             event_location = batched_inputs["event_location"].to(self.device)
             event_location_mask = batched_inputs["event_location_mask"].to(self.device)
-        elif batched_inputs["phase_pick"] is not None: # validation
+        elif "phase_pick" in batched_inputs.keys() is not None: # validation
             phase_pick = batched_inputs["phase_pick"].to(self.device)
             event_center = batched_inputs["event_center"].to(self.device)
             event_location = batched_inputs["event_location"].to(self.device)
