@@ -181,6 +181,7 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                     "event_location": datasets.Array3D(shape=(None, 6, self.feature_nt), dtype='float32'),
                     "event_location_mask": datasets.Array2D(shape=(None, self.feature_nt), dtype='float32'),
                     "station_location": datasets.Array2D(shape=(None, 3), dtype="float32"),
+                    # "reference_point": datasets.Sequence(datasets.Value("float32")),
                 }
             )
             
@@ -323,9 +324,12 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                                 continue
                             
                             reference_latitude = 0
+                            reference_longitude = 0
                             for sta_id in station_ids:
                                 reference_latitude += event[sta_id].attrs["latitude"]
+                                reference_longitude += event[sta_id].attrs["longitude"]
                             reference_latitude/=len(station_ids)
+                            reference_longitude/=len(station_ids)
                             
                             waveforms = np.zeros([len(station_ids), 3, self.nt], dtype="float32")
                             phase_pick = np.zeros_like(waveforms)
@@ -333,6 +337,7 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                             event_location = np.zeros([len(station_ids), 6, self.feature_nt])
                             event_location_mask = np.zeros([len(station_ids), self.feature_nt])
                             station_location = np.zeros([len(station_ids), 3])
+                            # reference_point = np.array([reference_longitude, reference_latitude])
 
                             for i, sta_id in enumerate(station_ids):
                                 # trace_id = event_id + "/" + sta_id
@@ -399,12 +404,13 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
 
                                 ## station location
                                 station_location[i, 0] = round(
-                                    attrs["longitude"]
+                                    (attrs["longitude"] - reference_longitude)
                                     * np.cos(np.radians(reference_latitude))
                                     * self.degree2km,
                                     2,
                                 )
-                                station_location[i, 1] = round(attrs["latitude"] * self.degree2km, 2)
+                                station_location[i, 1] = round((attrs["latitude"] - reference_latitude)
+                                                               * self.degree2km, 2)
                                 station_location[i, 2] =  round(-attrs["elevation_m"]/1e3, 2)
 
                             std = np.std(waveforms, axis=-1, keepdims=True)
@@ -412,7 +418,7 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                             waveforms = (waveforms - np.mean(waveforms, axis=-1, keepdims=True)) / std
                             waveforms = waveforms.astype(np.float32)
                             
-                            if self.config.name == "event_large":
+                            if self.config.name == "event_large" or self.config.name == "event":
                                 D = np.sqrt(((station_location[:, np.newaxis, :2] -  station_location[np.newaxis, :, :2])**2).sum(axis=-1))
                                 Tcsr = minimum_spanning_tree(D)
                                 index = breadth_first_order(Tcsr, i_start=0, directed=False, return_predecessors=False)
@@ -430,6 +436,7 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                                 "event_location": torch.from_numpy(event_location).float(),
                                 "event_location_mask": torch.from_numpy(event_location_mask).float(),
                                 "station_location": torch.from_numpy(station_location).float(),
+                                # "reference_point": torch.from_numpy(reference_point).float(),
                             }
 
 
