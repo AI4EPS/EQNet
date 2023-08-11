@@ -123,6 +123,7 @@ def extract_picks(
                         pick_dict = {
                                 # "file_name": file_i,
                                 "station_id": station_i,
+                                "station_index": [k, i],
                                 "phase_index": pick_index,
                                 "phase_time": pick_time,
                                 "phase_score": f"{score.item():.3f}",
