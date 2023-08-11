@@ -286,17 +286,17 @@ def pred_eqnet(args, model, data_loader, pick_path, figure_path, event_path=None
                     event_index = event_center_index - dt/meta["dt_s"][i]/feature_scale
                     p_index = event_center_index - width
                     s_index = event_center_index + width
-                    pick_dict["event_index"] = event_index
-                    pick_dict["p_index"] = p_index
-                    pick_dict["s_index"] = s_index
+                    pick_dict["event_index"] = event_index.item()
+                    pick_dict["p_index"] = p_index.item()
+                    pick_dict["s_index"] = s_index.item()
                     pick_dict["event_original_time"] = (datetime.fromisoformat(pick_dict["phase_time"])
                                                         + timedelta(seconds=((event_index-pick_dict["phase_index"])*meta["dt_s"][i]*feature_scale).item())).isoformat(
                             timespec="milliseconds"
                     )
                     # TODO: return to lat/lon
-                    pick_dict["event_location_x"] = station_loc[0] + output["hypocenter"][i, 1, pick_dict["phase_index"], sta_order[0]]
-                    pick_dict["event_location_y"] = station_loc[1] + output["hypocenter"][i, 2, pick_dict["phase_index"], sta_order[0]]
-                    pick_dict["event_location_z"] = station_loc[2] + output["hypocenter"][i, 3, pick_dict["phase_index"], sta_order[0]]
+                    pick_dict["event_location_x"] = station_loc[0] + output["hypocenter"][i, 1, pick_dict["phase_index"], sta_order[0]].item()
+                    pick_dict["event_location_y"] = station_loc[1] + output["hypocenter"][i, 2, pick_dict["phase_index"], sta_order[0]].item()
+                    pick_dict["event_location_z"] = station_loc[2] + output["hypocenter"][i, 3, pick_dict["phase_index"], sta_order[0]].item()
                     # TODO: find real events    
                     
                     picks_df = pd.DataFrame(event_picks_[i])
