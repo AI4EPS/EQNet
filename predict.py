@@ -1,18 +1,20 @@
 import logging
 import os
+from glob import glob
 from contextlib import nullcontext
 
 import matplotlib
 import pandas as pd
 import torch
+import torch.nn.functional as F
 import torch.multiprocessing as mp
 import torch.utils.data
 import wandb
-from glob import glob
+from datetime import datetime, timedelta
 
 import eqnet
 import utils
-from eqnet.data import DASIterableDataset, SeismicTraceIterableDataset
+from eqnet.data import DASIterableDataset, SeismicTraceIterableDataset, SeismicNetworkIterableDataset
 from eqnet.models.unet import moving_normalize
 from eqnet.utils import (
     detect_peaks,
@@ -20,6 +22,7 @@ from eqnet.utils import (
     merge_patch,
     plot_das,
     plot_phasenet,
+    plot_eqnet,
 )
 
 # mp.set_start_method("spawn", force=True)
@@ -209,6 +212,129 @@ def pred_phasenet_das(args, model, data_loader, pick_path, figure_path):
     return 0
 
 
+def pred_eqnet(args, model, data_loader, pick_path, figure_path, event_path=None):
+    model.eval()
+    metric_logger = utils.MetricLogger(delimiter="  ")
+    header = "Predicting:"
+    feature_scale = 16
+    # ctx = nullcontext() if args.device == "cpu" else torch.cuda.amp.autocast(enabled=args.amp)
+    ctx = nullcontext() if args.device == "cpu" else torch.amp.autocast(device_type=args.device, dtype=args.ptdtype)
+    with torch.inference_mode():
+        for meta in metric_logger.log_every(data_loader, 1, header):
+            with ctx:
+                output = model(meta)
+
+            if "phase" in output:
+                phase_scores = F.softmax(output["phase"], dim=1)  # [batch, nch, nt, nsta]
+                if ("polarity" in output) and (output["polarity"] is not None):
+                    polarity_scores = (torch.sigmoid(output["polarity"]) - 0.5) * 2.0
+                else:
+                    polarity_scores = None
+                topk_phase_scores, topk_phase_inds = detect_peaks(phase_scores, vmin=args.min_prob, kernel=128)
+                phase_picks_ = extract_picks(
+                    topk_phase_inds,
+                    topk_phase_scores,
+                    file_name=meta["file_name"],
+                    station_id=meta["station_id"],
+                    begin_time=meta["begin_time"] if "begin_time" in meta else None,
+                    begin_time_index=meta["begin_time_index"] if "begin_time_index" in meta else None,
+                    dt=meta["dt_s"] if "dt_s" in meta else 0.01,
+                    vmin=args.min_prob,
+                    phases=args.phases,
+                    waveform=meta["data"],
+                    window_amp=[10, 5],  # s
+                )
+
+            if ("event" in output) and (output["event"] is not None):
+                event_scores = torch.sigmoid(output["event"])
+                topk_event_scores, topk_event_inds = detect_peaks(event_scores, vmin=args.min_prob, kernel=128)
+                event_picks_ = extract_picks(
+                    topk_event_inds,
+                    topk_event_scores,
+                    file_name=meta["file_name"],
+                    station_id=meta["station_id"],
+                    begin_time=meta["begin_time"] if "begin_time" in meta else None,
+                    begin_time_index=meta["begin_time_index"] if "begin_time_index" in meta else None,
+                    ## event are picked on downsampled time resolution
+                    dt=meta["dt_s"] * feature_scale if "dt_s" in meta else 0.01 * feature_scale,
+                    vmin=args.min_prob,
+                    phases=["event"],
+                )
+                
+            for i in range(len(meta["file_name"])):
+                filename = meta["file_name"][i].split("//")[-1].replace("/", "_")
+
+                if len(phase_picks_[i]) == 0:
+                    ## keep an empty file for the file with no picks to make it easier to track processed files
+                    with open(os.path.join(pick_path, filename + ".csv"), "a"):
+                        pass
+                    continue
+                picks_df = pd.DataFrame(phase_picks_[i])
+                picks_df.sort_values(by=["phase_time"], inplace=True)
+                picks_df.to_csv(os.path.join(pick_path, filename + ".csv"), index=False)
+                    
+                if len(event_picks_[i]) == 0:
+                    with open(os.path.join(event_path, filename + ".csv"), "a"):
+                        pass
+                    continue
+                for pick_dict in event_picks_[i]:
+                    sta_order = meta["station_id"][i].index(pick_dict["station_id"])
+                    station_loc = meta["station_location"][i][sta_order]
+                    offset = output["offset"][i, 0, pick_dict["phase_index"], sta_order]
+                    width = output["offset"][i, 1, pick_dict["phase_index"], sta_order]
+                    dt = output["hypocenter"][i, 0, pick_dict["phase_index"], sta_order]
+                    # dx = output["hypocenter"][i, 1, pick_dict["phase_index"], sta_order]
+                    # dy = output["hypocenter"][i, 2, pick_dict["phase_index"], sta_order]
+                    # dz = output["hypocenter"][i, 3, pick_dict["phase_index"], sta_order]
+                    event_center_index = pick_dict["phase_index"]+offset
+                    event_index = event_center_index - dt/meta["dt_s"][i]/feature_scale
+                    p_index = event_center_index - width
+                    s_index = event_center_index + width
+                    pick_dict["event_index"] = event_index
+                    pick_dict["p_index"] = p_index
+                    pick_dict["s_index"] = s_index
+                    pick_dict["event_original_time"] = (datetime.fromisoformat(pick_dict["phase_time"])
+                                                        + timedelta(seconds=(event_index-pick_dict["phase_index"])*meta["dt_s"][i]*feature_scale)).isoformat(
+                            timespec="milliseconds"
+                    )
+                    pick_dict["event_location_x"] = station_loc[0] + output["hypocenter"][i, 1, pick_dict["phase_index"], sta_order]
+                    pick_dict["event_location_y"] = station_loc[1] + output["hypocenter"][i, 2, pick_dict["phase_index"], sta_order]
+                    pick_dict["event_location_z"] = station_loc[2] + output["hypocenter"][i, 3, pick_dict["phase_index"], sta_order]
+                        
+                    
+                    picks_df = pd.DataFrame(event_picks_[i])
+                    picks_df.sort_values(by=["phase_time"], inplace=True)
+                    picks_df.to_csv(os.path.join(event_path, filename + ".csv"), index=False)
+
+            if args.plot_figure:
+                # meta["waveform_raw"] = meta["waveform"].clone()
+                # meta["data"] = moving_normalize(meta["data"])
+                plot_eqnet(
+                    meta,
+                    phase_scores.cpu(),
+                    event_scores.cpu(),
+                    phase_picks=phase_picks_,
+                    event_picks=event_picks_,
+                    phases=args.phases,
+                    file_name=meta["file_name"],
+                    dt=meta["dt_s"] if "dt_s" in meta else torch.tensor(0.01),
+                    figure_dir=figure_path,
+                )
+                print("saving:", meta["file_name"])
+
+    ## merge picks
+    if args.distributed:
+        torch.distributed.barrier()
+        if utils.is_main_process():
+            merge_patch(pick_path, pick_path.replace("_patch", ""))
+            merge_patch(event_path, event_path.replace("_patch", ""))
+    else:
+        merge_patch(pick_path, pick_path.replace("_patch", ""))
+        merge_patch(event_path, event_path.replace("_patch", ""))
+        
+    return 0
+
+
 def main(args):
     result_path = args.result_path
     if args.cut_patch:
@@ -238,6 +364,7 @@ def main(args):
         rank, world_size = 0, 1
     device = torch.device(args.device)
     dtype = "bfloat16" if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else "float16"
+    dtype = "float16" if args.model == "eqnet" else dtype  # eqnet only supports float16
     ptdtype = {"float32": torch.float32, "bfloat16": torch.bfloat16, "float16": torch.float16}[dtype]
     args.dtype, args.ptdtype = dtype, ptdtype
     torch.backends.cuda.matmul.allow_tf32 = True  # allow tf32 on matmul
@@ -281,6 +408,27 @@ def main(args):
             world_size=world_size,
         )
         sampler = None
+    elif args.model == "eqnet":
+        dataset = SeismicNetworkIterableDataset(
+        data_path=args.data_path,
+        data_list=args.data_list,
+        hdf5_file=args.hdf5_file,
+        prefix=args.prefix,
+        format=args.format,
+        dataset=args.dataset,
+        training=False,
+        phases=["P", "S"],
+        sort=True,
+        ## for prediction
+        sampling_rate=100,
+        highpass_filter=args.highpass_filter,
+        response_xml=args.response_xml,
+        cut_patch=args.cut_patch,
+        nx=args.nx,
+        nt=args.nt,
+        rank=rank,
+        world_size=world_size,
+    )
     else:
         raise ("Unknown model")
 
@@ -300,6 +448,8 @@ def main(args):
         out_channels=(len(args.phases) + 1),
         add_polarity=args.add_polarity,
         add_event=args.add_event,
+        ## eqnet
+        head=args.head,
     )
     logger.info("Model:\n{}".format(model))
 
@@ -325,6 +475,8 @@ def main(args):
                 )
             else:
                 raise ("Missing pretrained model for this location")
+        elif args.model == "eqnet":
+            model_url = "ai4eps/model-registry/EQNet:latest"
         else:
             raise
 
@@ -352,6 +504,9 @@ def main(args):
 
     if args.model == "phasenet_das":
         pred_phasenet_das(args, model, data_loader, pick_path, figure_path)
+    
+    if args.model == "eqnet":
+        pred_eqnet(args, model, data_loader, pick_path, figure_path, event_path)
 
 
 def get_args_parser(add_help=True):
