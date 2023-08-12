@@ -362,7 +362,7 @@ class SeismicTraceIterableDataset(IterableDataset):
 
     def _count(self):
         if not self.cut_patch:
-            return len(len(self.data_list))
+            return len(self.data_list)
         else:
             with fsspec.open(self.data_list[0], "rb") as fs:
                 with h5py.File(fs, "r") as fp:
