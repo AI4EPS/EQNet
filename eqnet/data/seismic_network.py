@@ -8,6 +8,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import obspy
 import fsspec
+import json
 import logging
 import torch
 from torch.utils.data import Dataset, IterableDataset
@@ -45,6 +46,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
         data_path=None,
         data_list=None,
         hdf5_file=None,
+        station_file=None, # a json file
         prefix="",
         format="h5",
         dataset="seismic_network",
@@ -90,6 +92,9 @@ class SeismicNetworkIterableDataset(IterableDataset):
             self.data_list = None
         if self.data_list is not None:
             self.data_list = self.data_list[rank::world_size]
+        
+        if station_file is not None:
+            self.station_info = json.load(open(station_file, "r"))
             
         self.data_path = data_path
         self.hdf5_file = hdf5_file
@@ -367,10 +372,21 @@ class SeismicNetworkIterableDataset(IterableDataset):
 
         station_keys = sorted(list(station_ids.keys()))
         station_location = np.zeros([len(station_keys), 3], dtype=np.float32)
-        #TODO: station location
+        for i, sta in enumerate(station_keys):
+            station_location[i, 0] = self.station_info[sta]["longitude"]
+            station_location[i, 1] = self.station_info[sta]["latitude"]
+            station_location[i, 2] = round(-self.station_info[sta]["elevation_m"]/1e3, 2)
+        reference_latitude = np.mean(station_location[:, 1])
+        station_location[:, 0] = round(
+                (station_location[:, 0])
+                * np.cos(np.radians(reference_latitude))
+                * self.degree2km,
+                2,
+            )
+        station_location[:, 1] = round(station_location[:, 1] * self.degree2km, 2)
         nx = len(station_ids)
         nt = len(stream[0].data)
-        data = np.zeros([3, nt+((4- nt%4)%4), nx], dtype=np.float32)
+        data = np.zeros([3, nt+((32- nt%32)%32), nx], dtype=np.float32) # the length of data should be multiple of 32
         for i, sta in enumerate(station_keys):
             for c in station_ids[sta]:
                 j = comp2idx[c]
@@ -395,6 +411,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
             
             data = data[:, :, index]
             station_keys = [station_keys[i] for i in index]
+            station_location = station_location[index]
 
         return {
             "data": torch.from_numpy(data),
