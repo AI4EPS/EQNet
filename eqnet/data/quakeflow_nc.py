@@ -146,6 +146,12 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
         datasets.BuilderConfig(
             name="event_large", version=VERSION, description="yield event-based samples with 15+ stations one by one of test dataset"
         ),
+        datasets.BuilderConfig(
+            name="event_custom", version=VERSION, description="yield event-based samples one by one of custom dataset"
+        ),
+        datasets.BuilderConfig(
+            name="station_custom", version=VERSION, description="yield station-based samples one by one of custom dataset"
+        ),
     ]
 
     DEFAULT_CONFIG_NAME = (
@@ -208,7 +214,10 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
         # dl_manager is a datasets.download.DownloadManager that can be used to download and extract URLS
         # It can accept any type or nested list/dict and will give back the same structure with the url replaced with path to local files.
         # By default the archives will be extracted and a path to a cached folder where they are extracted is returned instead of the archive
-        urls = _URLS[self.config.name]
+        if "custom" in self.config.name:
+            urls = self.config.data_files
+        else:
+            urls = _URLS[self.config.name]
         # files = dl_manager.download(urls)
         files = dl_manager.download_and_extract(urls)
         print(files)
@@ -252,6 +261,26 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                     gen_kwargs={"filepath": files, "split": "test"},
                 ),
             ]
+        elif self.config.name == "event_custom" or self.config.name == "station_custom":
+            generator_list = []
+            try:
+                generator_list.append(
+                    datasets.SplitGenerator(
+                    name=datasets.Split.TRAIN,
+                    gen_kwargs={"filepath": files["train"], "split": "train"},
+                    ))
+            except:
+                pass
+            try:
+                generator_list.append(
+                    datasets.SplitGenerator(
+                    name=datasets.Split.TEST,
+                    gen_kwargs={"filepath": files["test"], "split": "test"},
+                    ))
+            except:
+                pass
+            
+            return generator_list
         else:
             raise ValueError("config.name is not in BUILDER_CONFIGS")
 
@@ -272,6 +301,7 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                             (self.config.name == "station")
                             or (self.config.name == "station_train")
                             or (self.config.name == "station_test")
+                            or (self.config.name == "station_custom")
                         ):
                             waveforms = np.zeros([3, self.nt], dtype="float32")
                             phase_pick = np.zeros_like(waveforms)
@@ -305,6 +335,7 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                             or (self.config.name == "event_train")
                             or (self.config.name == "event_test")
                             or (self.config.name == "event_large")
+                            or (self.config.name == "event_custom")
                         ):
                             event_attrs = event.attrs
 
