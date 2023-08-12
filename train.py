@@ -367,7 +367,7 @@ def main(args):
                 data_path=args.data_path,
                 data_list=args.data_list,
                 hdf5_file=args.hdf5_file,
-                num_stations=args.num_stations_list[0],
+                num_stations=args.num_stations_list[0] if args.num_stations_list is not None else None,
                 format="h5",
                 training=True,
                 rank=rank,
@@ -821,7 +821,7 @@ def get_args_parser(add_help=True):
     parser.add_argument("--huggingface-dataset", action="store_true", help="use huggingface dataset")
     parser.add_argument("--dataset-config", default="event", type=str, help="huggingface dataset config name")
     parser.add_argument(
-        "--num-stations-list", default=[5, 10, 20], type=int, nargs="+", help="possible stations number of the dataset"
+        "--num-stations-list", default=None, type=int, nargs="+", help="possible stations number of the dataset"
     )
 
     return parser

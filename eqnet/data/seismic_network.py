@@ -51,7 +51,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
         training=True,
         phases=["P", "S"],
         sort=False,
-        num_stations=10,
+        num_stations=None,
         ## for prediction
         sampling_rate=100,
         response_xml=None,
@@ -155,7 +155,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
         hdf5_fp = self.hdf5_fp
         event = hdf5_fp[event_id]
         station_ids = list(event.keys())
-        if len(station_ids) < num_stations:
+        if num_stations is not None and len(station_ids) < num_stations:
             return None
         else:
             station_ids = np.random.choice(station_ids, num_stations, replace=False)

@@ -294,9 +294,9 @@ def pred_eqnet(args, model, data_loader, pick_path, figure_path, event_path=None
                             timespec="milliseconds"
                     )
                     # TODO: return to lat/lon
-                    pick_dict["event_location_x"] = station_loc[0] + output["hypocenter"][i, 1, pick_dict["phase_index"], sta_order[0]].item()
-                    pick_dict["event_location_y"] = station_loc[1] + output["hypocenter"][i, 2, pick_dict["phase_index"], sta_order[0]].item()
-                    pick_dict["event_location_z"] = station_loc[2] + output["hypocenter"][i, 3, pick_dict["phase_index"], sta_order[0]].item()
+                    pick_dict["event_location_x"] = (station_loc[0] + output["hypocenter"][i, 1, pick_dict["phase_index"], sta_order[0]]).item()
+                    pick_dict["event_location_y"] = (station_loc[1] + output["hypocenter"][i, 2, pick_dict["phase_index"], sta_order[0]]).item()
+                    pick_dict["event_location_z"] = (station_loc[2] + output["hypocenter"][i, 3, pick_dict["phase_index"], sta_order[0]]).item()
                     # TODO: find real events    
                     
                     picks_df = pd.DataFrame(event_picks_[i])
@@ -307,7 +307,7 @@ def pred_eqnet(args, model, data_loader, pick_path, figure_path, event_path=None
                 # meta["waveform_raw"] = meta["waveform"].clone()
                 # meta["data"] = moving_normalize(meta["data"])
                 plot_eqnet(
-                    meta,
+                    meta.cpu(),
                     phase_scores.cpu(),
                     event_scores.cpu(),
                     phase_picks=phase_picks_,
