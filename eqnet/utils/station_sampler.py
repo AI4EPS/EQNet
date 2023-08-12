@@ -128,7 +128,7 @@ def create_groups(dataset, num_stations_list=[5, 10, 20], is_pad=False):
     return group_ids
 
 
-def cut_reorder_keys(example, num_stations_list=[5, 10, 20], is_pad=False, is_train=True):
+def cut_reorder_keys(example, num_stations_list=[5, 10, 20], is_pad=False, is_train=True, padding_mode="zeros"):
     num_stations = example["station_location"].shape[0]
     num_stations_list = np.array(sorted(num_stations_list))
     if is_train and num_stations < 5:
@@ -146,9 +146,14 @@ def cut_reorder_keys(example, num_stations_list=[5, 10, 20], is_pad=False, is_tr
             pad_size = group_id - num_stations
             # patch the data
             if pad_size > 0:
-                pad_indices = np.random.choice(num_stations, pad_size, replace=True)
-                for keys in example.keys():
-                    example[keys] = torch.cat([example[keys], example[keys][pad_indices]], dim=0)
+                if padding_mode == "random":
+                    pad_indices = np.random.choice(num_stations, pad_size, replace=True)
+                    for keys in example.keys():
+                        example[keys] = torch.cat([example[keys], example[keys][pad_indices]], dim=0)
+                elif padding_mode == "zeros":
+                    # zero padding
+                    for keys in example.keys():
+                        example[keys] = torch.cat([example[keys], torch.zeros(pad_size, *example[keys].shape[1:])], dim=0)
     else:
         if num_stations < num_stations_list[0]:
             return reorder_keys(example)
