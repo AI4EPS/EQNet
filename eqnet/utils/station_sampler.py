@@ -154,6 +154,7 @@ def cut_reorder_keys(example, num_stations_list=[5, 10, 20], is_pad=False, is_tr
                     # zero padding
                     for keys in example.keys():
                         example[keys] = torch.cat([example[keys], torch.zeros(pad_size, *example[keys].shape[1:])], dim=0)
+                    example["phase_pick"][:, 0, :] = 1 # the data is noise
     else:
         if num_stations < num_stations_list[0]:
             return reorder_keys(example)
