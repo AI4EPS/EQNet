@@ -361,7 +361,7 @@ class EQNet(nn.Module):
             event_center = batched_inputs["event_center"].to(self.device)
             event_location = batched_inputs["event_location"].to(self.device)
             event_location_mask = batched_inputs["event_location_mask"].to(self.device)
-        elif "phase_pick" in batched_inputs.keys() is not None: # validation
+        elif "phase_pick" in batched_inputs.keys(): # validation
             phase_pick = batched_inputs["phase_pick"].to(self.device)
             event_center = batched_inputs["event_center"].to(self.device)
             event_location = batched_inputs["event_location"].to(self.device)
