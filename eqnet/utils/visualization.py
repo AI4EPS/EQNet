@@ -697,5 +697,91 @@ def plot_das(data, pred, picks=None, phases=["P", "S"], file_name=None, figure_d
 
     return 0
 
-def plot_eqnet():
-    pass
+def plot_eqnet(meta, pred_phase, pred_event, phase_picks=None, event_picks=None, phases=["P", "S"], file_name=None, begin_time_index=None, dt=torch.tensor(0.01), figure_dir="./figures", feature_scale = 16, **kwargs):
+    nt=60000
+    nb0, nc0, nt0, ns0 = pred_phase.shape
+    chn_name = ["E", "N", "Z"]
+    # normalize = lambda x: (x - torch.mean(x, dim=2, keepdim=True)) / torch.std(x, dim=2, keepdim=True) / 10
+    # waveform_raw = normalize(meta["waveform_raw"])
+    # waveform = normalize(meta["waveform"])
+    # waveform = meta["waveform"] / 3.0
+
+    waveform = meta["data"]
+    # waveform = normalize(waveform)
+    # vmax = torch.std(waveform) * 3
+    # vmin = -vmax
+    if "begin_time" in meta:
+        begin_time = meta["begin_time"]
+    else:
+        begin_time = [0] * nb0
+    
+    for i in range(nb0):
+        dt = dt[i].item()
+
+        for ii in range(0, nt0, nt):
+            plt.close("all")
+            fig, axes = plt.subplots(4, 1, figsize=(20, 10))
+
+            for k in range(ns0):
+                begin_time_i = datetime.fromisoformat(begin_time[i])
+                t = [
+                    begin_time_i + timedelta(seconds=(ii + it) * dt) for it in range(len(pred_phase[i, 1, ii : ii + nt, k]))
+                ]
+                
+                t_event = [
+                    begin_time_i + timedelta(seconds=(ii + it) * dt*feature_scale) for it in range(len(pred_event[i, 1, ii : ii + nt, k]))
+                ]
+
+                if ns0 == 1:
+                    for j in range(3):
+                        waveform_ijk = waveform[i, j, ii : ii + nt, k]
+                        waveform_ijk -= torch.mean(waveform_ijk)
+                        waveform_ijk /= torch.std(waveform_ijk) * 6
+                        axes[0].plot(t, waveform_ijk + j, linewidth=0.2, color="k", label=f"{chn_name[j]}")
+                else:
+                    waveform_ijk = waveform[i, 2, ii : ii + nt, k]
+                    waveform_ijk -= torch.mean(waveform_ijk)
+                    waveform_ijk /= torch.std(waveform_ijk) * 6
+                axes[0].plot(t, waveform_ijk + k, linewidth=0.2, color="k", label=f"{chn_name[2]}")
+
+                axes[1].plot(t, pred_phase[i, 1, ii : ii + nt, k] + k, "-C0", linewidth=1.0)
+                axes[1].plot(t, pred_phase[i, 2, ii : ii + nt, k] + k, "-C1", linewidth=1.0)
+
+                axes[1].plot(t_event, pred_event[i, ii : ii + nt, k] + k, "-C3", linewidth=1.0)
+
+            axes[2].scatter(meta["station_location"][i, :, 0], meta["station_location"][i, :, 1], c=np.arange(ns0), s=50, marker="^")
+            axes[3].scatter(meta["station_location"][i, :, 0], meta["station_location"][i, :, 2], c=np.arange(ns0), s=50, marker="^")
+            for pick_dict in event_picks[i]:
+                if ii > pick_dict["event_center_index"]*feature_scale or ii + nt < pick_dict["event_center_index"]*feature_scale:
+                    continue
+                sta_order = pick_dict["station_index"]
+                axes[1].scatter(pick_dict["event_original_time"], sta_order[0], marker="^", s=50, c=sta_order[0])
+                p_time = (datetime.fromisoformat(pick_dict["phase_time"])
+                            + timedelta(seconds=((pick_dict["p_index"]-pick_dict["phase_index"])*dt*feature_scale).item())).isoformat(timespec="milliseconds")
+                s_time = (datetime.fromisoformat(pick_dict["phase_time"])
+                            + timedelta(seconds=((pick_dict["s_index"]-pick_dict["phase_index"])*dt*feature_scale).item())).isoformat(timespec="milliseconds")
+                axes[1].vlines(p_time, sta_order[0]-0.5, sta_order[0]+0.5, color="r", linewidth=1.0)
+                axes[1].vlines(s_time, sta_order[0]-0.5, sta_order[0]+0.5, color="b", linewidth=1.0)
+                
+                axes[2].scatter(pick_dict["event_location_x"], pick_dict["event_location_y"], marker=".", s=50, c=sta_order[0])
+                axes[3].scatter(pick_dict["event_location_x"], pick_dict["event_location_z"], marker=".", s=50, c=sta_order[0])
+            
+            axes[0].grid("on")
+            axes[1].grid("on")
+            axes[2].grid("on")
+            axes[3].grid("on")
+            axes[0].set_title(f"{file_name[i]} data")
+            axes[1].set_title("phase & event")
+            axes[2].set_title("event location")
+
+            fig.tight_layout()
+            fig.subplots_adjust(hspace=0.5, bottom=0.05, top=0.95)
+            if not os.path.exists(figure_dir):
+                os.makedirs(figure_dir)
+            fig.savefig(
+                os.path.join(figure_dir, file_name[i].replace("/", "_") + f"_{ii:06d}.png"),
+                bbox_inches="tight",
+                dpi=300,
+            )
+
+            plt.close(fig)

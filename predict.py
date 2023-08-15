@@ -286,6 +286,7 @@ def pred_eqnet(args, model, data_loader, pick_path, figure_path, event_path=None
                     event_index = event_center_index - dt/meta["dt_s"][i]/feature_scale
                     p_index = event_center_index - width
                     s_index = event_center_index + width
+                    pick_dict["event_center_index"] = event_center_index.item()
                     pick_dict["event_index"] = event_index.item()
                     pick_dict["p_index"] = p_index.item()
                     pick_dict["s_index"] = s_index.item()
@@ -314,8 +315,10 @@ def pred_eqnet(args, model, data_loader, pick_path, figure_path, event_path=None
                     event_picks=event_picks_,
                     phases=args.phases,
                     file_name=meta["file_name"],
+                    begin_time_index=meta["begin_time_index"] if "begin_time_index" in meta else None,
                     dt=meta["dt_s"] if "dt_s" in meta else torch.tensor(0.01),
                     figure_dir=figure_path,
+                    feature_scale=feature_scale,
                 )
                 print("saving:", meta["file_name"])
 
