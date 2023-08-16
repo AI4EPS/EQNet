@@ -62,7 +62,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
         world_size=1,
         cut_patch=False,
         nt_cut=1024 * 8,
-        nx=20,
+        nx=30,
         min_nt=1024,
         min_nx=1,
     ):
@@ -85,9 +85,16 @@ class SeismicNetworkIterableDataset(IterableDataset):
             with open(data_list, "r") as f:
                 self.data_list = f.read().splitlines()
         elif data_path is not None:
-            self.data_list = [
-                os.path.basename(x) for x in sorted(list(glob(os.path.join(data_path, f"{prefix}*.{format}"))))
-            ]
+            if "hour" in format:
+                day = len(glob(f"{data_path}/**/", recursive=False))
+                hours = glob(f"{data_path}/**/", recursive=True)[day+1:]
+                self.data_list = [
+                    f"{x}{prefix}*.{format.split('_')[0]}" for x in sorted(list(hours))
+                ]
+            else:
+                self.data_list = [
+                    x for x in sorted(list(glob(os.path.join(data_path, f"{prefix}*.{format}"))))
+                ]
         else:
             self.data_list = None
         if self.data_list is not None:
@@ -145,11 +152,23 @@ class SeismicNetworkIterableDataset(IterableDataset):
         if not self.cut_patch:
             return len(self.data_list)
         else:
-            with fsspec.open(self.data_list[0], "rb") as fs:
-                with h5py.File(fs, "r") as fp:
-                    nx, nt = fp["data"].shape
-            # return len(self.data_list) * ((nt - 1) // self.nt + 1) * ((nx - 1) // self.nx + 1)
-            return len(self.data_list) * ((nt - 1) // self.nt_cut + 1)
+            if self.format == "h5":
+                with fsspec.open(self.data_list[0], "rb") as fs:
+                    with h5py.File(fs, "r") as fp:
+                        nx, nt = fp["data"].shape
+            elif "mseed" in self.format:
+                nx = len(self.station_info)
+                for fname in self.data_list:
+                    try:
+                        stream = obspy.read(fname)
+                        break
+                    except:
+                        pass
+                begin_time = min([st.stats.starttime for st in stream])
+                end_time = max([st.stats.endtime for st in stream])
+                nt = int((end_time - begin_time) * self.sampling_rate)
+            return len(self.data_list) * ((nt - 1) // self.nt_cut + 1) * ((nx - 1) // self.nx + 1)
+            # return len(self.data_list) * ((nt - 1) // self.nt_cut + 1)
     
     def __len__(self):
         return self._data_len
@@ -301,7 +320,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
                 continue
 
             if self.sort:
-                D = np.sqrt(((meta["station_location"][:, np.newaxis, :2] -  (meta["station_location"][np.newaxis, :, :2])**2).sum(axis=-1)))
+                D = np.sqrt(((meta["station_location"][:, np.newaxis, :2] -  meta["station_location"][np.newaxis, :, :2])**2).sum(axis=-1))
                 Tcsr = minimum_spanning_tree(D)
                 index = breadth_first_order(Tcsr, i_start=0, directed=False, return_predecessors=False)
                 
@@ -377,13 +396,13 @@ class SeismicNetworkIterableDataset(IterableDataset):
             station_location[i, 1] = self.station_info[sta]["latitude"]
             station_location[i, 2] = round(-self.station_info[sta]["elevation_m"]/1e3, 2)
         reference_latitude = np.mean(station_location[:, 1])
-        station_location[:, 0] = round(
+        station_location[:, 0] = np.round(
                 (station_location[:, 0])
                 * np.cos(np.radians(reference_latitude))
                 * self.degree2km,
                 2,
             )
-        station_location[:, 1] = round(station_location[:, 1] * self.degree2km, 2)
+        station_location[:, 1] = np.round(station_location[:, 1] * self.degree2km, 2)
         nx = len(station_ids)
         nt = len(stream[0].data)
         data = np.zeros([3, nt+((32- nt%32)%32), nx], dtype=np.float32) # the length of data should be multiple of 32
@@ -403,9 +422,14 @@ class SeismicNetworkIterableDataset(IterableDataset):
 
                 tmp = trace.data.astype("float32")
                 data[j, : len(tmp), i] = tmp[:nt]
+            
+        std = np.std(data, axis=1, keepdims=True)
+        std[std == 0] = 1.0
+        data = (data - np.mean(data, axis=1, keepdims=True)) / std
+        data = data.astype(np.float32)
         
         if self.sort:
-            D = np.sqrt(((station_location[:, np.newaxis, :2] -  (station_location[np.newaxis, :, :2])**2).sum(axis=-1)))
+            D = np.sqrt(((station_location[:, np.newaxis, :2] -  station_location[np.newaxis, :, :2])**2).sum(axis=-1))
             Tcsr = minimum_spanning_tree(D)
             index = breadth_first_order(Tcsr, i_start=0, directed=False, return_predecessors=False)
             
@@ -512,31 +536,38 @@ class SeismicNetworkIterableDataset(IterableDataset):
     
     def sample_test(self, data_list):
         for fname in data_list:
-            if self.format == "mseed":
+            if "mseed" in self.format:
                 meta = self.read_mseed(
                     fname,
                     response_xml=self.response_xml,
                     highpass_filter=self.highpass_filter,
                     sampling_rate=self.sampling_rate,
                 )
+                if "hour" in self.format:
+                    meta["file_name"] = fname.split("/")[-3]+"/"+fname.split("/")[-2]
+                else:
+                    meta["file_name"] = os.path.basename(fname).split(".")[0]
             elif (self.format == "h5") and (self.dataset == "seismic_network"):
                 meta = self.read_hdf5(fname)
+                meta["file_name"] = fname
             elif (self.format == "h5") and (self.dataset == "das"):
                 meta = self.read_das_hdf5(fname)
+                meta["file_name"] = fname
             else:
                 raise NotImplementedError
             if meta is None:
                 continue
-            meta["file_name"] = fname
-                
+
             if not self.cut_patch:
                 yield meta
             else:
                 _, nt, nx = meta["data"].shape
-                for i in list(range(0, nt, self.nt)):
+                for i in list(range(0, nt, self.nt_cut)):
                     for j in list(range(0, nx, self.nx)):
+                        assert meta["data"][:, i : i + self.nt_cut, j : j + self.nx].shape[1] > 256, f"Error: {fname} {i} {j}, too short {meta['data'][:, i : i + self.nt_cut, j : j + self.nx].shape[1]}, please check the data or adjust cut_patch parameters"
                         yield {
-                            "data": meta["data"][:, i : i + self.nt, j : j + self.nx],
+                            "data": meta["data"][:, i : i + self.nt_cut, j : j + self.nx],
+                            "station_location": meta["station_location"][j : j + self.nx, :], # [nx, 3]
                             "station_id": meta["station_id"][j : j + self.nx],
                             "begin_time": (
                                 datetime.fromisoformat(meta["begin_time"]) + timedelta(seconds=i * meta["dt_s"])
