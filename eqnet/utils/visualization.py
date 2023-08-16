@@ -729,7 +729,7 @@ def plot_eqnet(meta, pred_phase, pred_event, phase_picks=None, event_picks=None,
                 ]
                 
                 t_event = [
-                    begin_time_i + timedelta(seconds=(ii + it) * dt*feature_scale) for it in range(len(pred_event[i, 1, ii : ii + nt, k]))
+                    begin_time_i + timedelta(seconds=(ii + it) * dt*feature_scale) for it in range(len(pred_event[i, ii : ii + nt, k]))
                 ]
 
                 if ns0 == 1:
@@ -755,11 +755,11 @@ def plot_eqnet(meta, pred_phase, pred_event, phase_picks=None, event_picks=None,
                 if ii > pick_dict["event_center_index"]*feature_scale or ii + nt < pick_dict["event_center_index"]*feature_scale:
                     continue
                 sta_order = pick_dict["station_index"]
-                axes[1].scatter(pick_dict["event_original_time"], sta_order[0], marker="^", s=50, c=sta_order[0])
+                axes[1].scatter(datetime.fromisoformat(pick_dict["event_original_time"]), sta_order[0], marker="^", s=50, c=sta_order[0])
                 p_time = (datetime.fromisoformat(pick_dict["phase_time"])
-                            + timedelta(seconds=((pick_dict["p_index"]-pick_dict["phase_index"])*dt*feature_scale).item())).isoformat(timespec="milliseconds")
+                            + timedelta(seconds=((pick_dict["p_index"]-pick_dict["phase_index"])*dt*feature_scale)))
                 s_time = (datetime.fromisoformat(pick_dict["phase_time"])
-                            + timedelta(seconds=((pick_dict["s_index"]-pick_dict["phase_index"])*dt*feature_scale).item())).isoformat(timespec="milliseconds")
+                            + timedelta(seconds=((pick_dict["s_index"]-pick_dict["phase_index"])*dt*feature_scale)))
                 axes[1].vlines(p_time, sta_order[0]-0.5, sta_order[0]+0.5, color="r", linewidth=1.0)
                 axes[1].vlines(s_time, sta_order[0]-0.5, sta_order[0]+0.5, color="b", linewidth=1.0)
                 
