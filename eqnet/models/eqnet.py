@@ -257,7 +257,7 @@ class PhasePicker(nn.Module):
 
 
 class EQNet(nn.Module):
-    def __init__(self, backbone="resnet50", head="simple") -> None:
+    def __init__(self, backbone="resnet50", head="simple", use_station_location=True) -> None:
         super().__init__()
         self.backbone_name = backbone
         self.head_name = head
@@ -279,6 +279,7 @@ class EQNet(nn.Module):
                 stochastic_depth_prob=0.2,
                 block_name="SwinTransformerBlock",
                 out_indices=out_indices,
+                use_station_location=use_station_location,
             )
         elif backbone == "swin2":
             out_indices = [0, 1, 2, 3] if head == "upernet" else [3]
@@ -293,6 +294,7 @@ class EQNet(nn.Module):
                 stochastic_depth_prob=0.2,
                 block_name="SwinTransformerBlockV2",
                 out_indices=out_indices,
+                use_station_location=use_station_location,
             )
         elif backbone == "swin_1D": 
             out_indices = [0, 1, 2, 3] if head == "upernet" else [3]
@@ -395,5 +397,5 @@ class EQNet(nn.Module):
             return {"phase": output_phase, **outputs_event}
 
 
-def build_model(backbone="resnet50", head="simple", **kargs) -> EQNet:
-    return EQNet(backbone=backbone, head=head)
+def build_model(backbone="resnet50", head="simple", use_station_location=True, **kargs) -> EQNet:
+    return EQNet(backbone=backbone, head=head, use_station_location=use_station_location)

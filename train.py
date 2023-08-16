@@ -315,13 +315,13 @@ def main(args):
                 # Get the directory of the train.py
                 code_dir = os.path.dirname(os.path.abspath(__file__))
                 script_dir = os.path.join(code_dir, "eqnet/data/quakeflow_nc.py")
-                # dataset = datasets.load_dataset(script_dir, split="train", name=args.dataset_config)
-                # dataset_test = datasets.load_dataset(script_dir, split="test", name=args.dataset_config)
+                dataset = datasets.load_dataset(script_dir, split="train", name=args.dataset_config)
+                dataset_test = datasets.load_dataset(script_dir, split="test", name=args.dataset_config)
                 # TODO: just for testing
-                dataset = datasets.load_dataset(script_dir, split="test", name=args.dataset_config)
-                dataset_dict = dataset.train_test_split(test_size=0.2, seed=42)
-                dataset = dataset_dict["train"]
-                dataset_test = dataset_dict["test"]
+                # dataset = datasets.load_dataset(script_dir, split="test", name=args.dataset_config)
+                # dataset_dict = dataset.train_test_split(test_size=0.2, seed=42)
+                # dataset = dataset_dict["train"]
+                # dataset_test = dataset_dict["test"]
             except:
                 print("Failed to load dataset from local")
                 dataset = datasets.load_dataset("AI4EPS/quakeflow_nc", split="train", name=args.dataset_config)
@@ -425,6 +425,7 @@ def main(args):
         polarity_loss_weight=args.polarity_loss_weight,
         ## eqnet
         head=args.head,
+        use_station_location=args.use_station_location,
     )
     logger.info("Model:\n{}".format(model))
 
@@ -646,6 +647,7 @@ def get_args_parser(add_help=True):
     parser.add_argument("--model", default="phasenet_das", type=str, help="model name")
     parser.add_argument("--backbone", default="unet", type=str, help="model backbone")
     parser.add_argument("--head", default="simple", type=str, help="model head")
+    parser.add_argument("--use-station-location", action="store_true", help="use station location")
     parser.add_argument(
         "--device",
         default="cuda",
