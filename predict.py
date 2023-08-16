@@ -277,22 +277,22 @@ def pred_eqnet(args, model, data_loader, pick_path, figure_path, event_path=None
                     sta_order = pick_dict["station_index"]
                     station_loc = meta["station_location"][sta_order[1], sta_order[0]]
                     time_shift = meta["begin_time_index"][sta_order[1]] if "begin_time_index" in meta.keys() else 0
-                    offset = output["offset"][i, 0, pick_dict["phase_index"]-time_shift, sta_order[0]]
-                    width = output["offset"][i, 1, pick_dict["phase_index"]-time_shift, sta_order[0]]
-                    dt = output["hypocenter"][i, 0, pick_dict["phase_index"]-time_shift, sta_order[0]]
-                    # dx = output["hypocenter"][i, 1, pick_dict["phase_index"]-time_shift, sta_order[0]]
-                    # dy = output["hypocenter"][i, 2, pick_dict["phase_index"]-time_shift, sta_order[0]]
-                    # dz = output["hypocenter"][i, 3, pick_dict["phase_index"]-time_shift, sta_order[0]]
+                    offset = output["offset"][i, 0, pick_dict["phase_index"]-time_shift, sta_order[0]].float().item()
+                    width = output["offset"][i, 1, pick_dict["phase_index"]-time_shift, sta_order[0]].float().item()
+                    dt = output["hypocenter"][i, 0, pick_dict["phase_index"]-time_shift, sta_order[0]].float().item()
+                    # dx = output["hypocenter"][i, 1, pick_dict["phase_index"]-time_shift, sta_order[0]].float().item()
+                    # dy = output["hypocenter"][i, 2, pick_dict["phase_index"]-time_shift, sta_order[0]].float().item()
+                    # dz = output["hypocenter"][i, 3, pick_dict["phase_index"]-time_shift, sta_order[0]].float().item()
                     event_center_index = pick_dict["phase_index"]+offset
-                    event_index = event_center_index - dt/meta["dt_s"][i]/feature_scale
+                    event_index = event_center_index - dt/(meta["dt_s"][i].item())/feature_scale
                     p_index = event_center_index - width
                     s_index = event_center_index + width
-                    pick_dict["event_center_index"] = event_center_index.item()
-                    pick_dict["event_index"] = event_index.item()
-                    pick_dict["p_index"] = p_index.item()
-                    pick_dict["s_index"] = s_index.item()
+                    pick_dict["event_center_index"] = event_center_index
+                    pick_dict["event_index"] = event_index
+                    pick_dict["p_index"] = p_index
+                    pick_dict["s_index"] = s_index
                     pick_dict["event_original_time"] = (datetime.fromisoformat(pick_dict["phase_time"])
-                                                        + timedelta(seconds=(offset*meta["dt_s"][i]*feature_scale - dt).item())).isoformat(
+                                                        + timedelta(seconds=(offset*meta["dt_s"][i].item()*feature_scale - dt))).isoformat(
                             timespec="milliseconds"
                     )
                     # TODO: return to lat/lon
@@ -453,6 +453,7 @@ def main(args):
         add_event=args.add_event,
         ## eqnet
         head=args.head,
+        use_station_location=args.use_station_location,
     )
     logger.info("Model:\n{}".format(model))
 
@@ -522,6 +523,7 @@ def get_args_parser(add_help=True):
     parser.add_argument("--resume", default="", type=str, help="path of checkpoint")
     parser.add_argument("--backbone", default="unet", type=str, help="model backbone")
     parser.add_argument("--head", default="simple", type=str, help="model head")
+    parser.add_argument("--use-station-location", action="store_true", help="use station location")
     parser.add_argument("--phases", default=["P", "S"], type=str, nargs="+", help="phases to use")
 
     parser.add_argument("--device", default="cuda", type=str, help="device (Use cuda or cpu Default: cuda)")
