@@ -276,12 +276,13 @@ def pred_eqnet(args, model, data_loader, pick_path, figure_path, event_path=None
                 for pick_dict in event_picks_[i]:
                     sta_order = pick_dict["station_index"]
                     station_loc = meta["station_location"][sta_order[1], sta_order[0]]
-                    offset = output["offset"][i, 0, pick_dict["phase_index"], sta_order[0]]
-                    width = output["offset"][i, 1, pick_dict["phase_index"], sta_order[0]]
-                    dt = output["hypocenter"][i, 0, pick_dict["phase_index"], sta_order[0]]
-                    # dx = output["hypocenter"][i, 1, pick_dict["phase_index"], sta_order[0]]
-                    # dy = output["hypocenter"][i, 2, pick_dict["phase_index"], sta_order[0]]
-                    # dz = output["hypocenter"][i, 3, pick_dict["phase_index"], sta_order[0]]
+                    time_shift = meta["begin_time_index"][sta_order[1]] if "begin_time_index" in meta.keys() else 0
+                    offset = output["offset"][i, 0, pick_dict["phase_index"]-time_shift, sta_order[0]]
+                    width = output["offset"][i, 1, pick_dict["phase_index"]-time_shift, sta_order[0]]
+                    dt = output["hypocenter"][i, 0, pick_dict["phase_index"]-time_shift, sta_order[0]]
+                    # dx = output["hypocenter"][i, 1, pick_dict["phase_index"]-time_shift, sta_order[0]]
+                    # dy = output["hypocenter"][i, 2, pick_dict["phase_index"]-time_shift, sta_order[0]]
+                    # dz = output["hypocenter"][i, 3, pick_dict["phase_index"]-time_shift, sta_order[0]]
                     event_center_index = pick_dict["phase_index"]+offset
                     event_index = event_center_index - dt/meta["dt_s"][i]/feature_scale
                     p_index = event_center_index - width
@@ -291,24 +292,24 @@ def pred_eqnet(args, model, data_loader, pick_path, figure_path, event_path=None
                     pick_dict["p_index"] = p_index.item()
                     pick_dict["s_index"] = s_index.item()
                     pick_dict["event_original_time"] = (datetime.fromisoformat(pick_dict["phase_time"])
-                                                        + timedelta(seconds=((event_index-pick_dict["phase_index"])*meta["dt_s"][i]*feature_scale).item())).isoformat(
+                                                        + timedelta(seconds=(offset*meta["dt_s"][i]*feature_scale - dt).item())).isoformat(
                             timespec="milliseconds"
                     )
                     # TODO: return to lat/lon
-                    pick_dict["event_location_x"] = (station_loc[0] + output["hypocenter"][i, 1, pick_dict["phase_index"], sta_order[0]]).item()
-                    pick_dict["event_location_y"] = (station_loc[1] + output["hypocenter"][i, 2, pick_dict["phase_index"], sta_order[0]]).item()
-                    pick_dict["event_location_z"] = (station_loc[2] + output["hypocenter"][i, 3, pick_dict["phase_index"], sta_order[0]]).item()
+                    pick_dict["event_location_x"] = (station_loc[0] + output["hypocenter"][i, 1, pick_dict["phase_index"]-time_shift, sta_order[0]]).item()
+                    pick_dict["event_location_y"] = (station_loc[1] + output["hypocenter"][i, 2, pick_dict["phase_index"]-time_shift, sta_order[0]]).item()
+                    pick_dict["event_location_z"] = (station_loc[2] + output["hypocenter"][i, 3, pick_dict["phase_index"]-time_shift, sta_order[0]]).item()
                     # TODO: find real events    
                     
-                    picks_df = pd.DataFrame(event_picks_[i])
-                    picks_df.sort_values(by=["phase_time"], inplace=True)
-                    picks_df.to_csv(os.path.join(event_path, filename + ".csv"), index=False)
+                picks_df = pd.DataFrame(event_picks_[i])
+                picks_df.sort_values(by=["phase_time"], inplace=True)
+                picks_df.to_csv(os.path.join(event_path, filename + ".csv"), index=False)
 
             if args.plot_figure:
                 # meta["waveform_raw"] = meta["waveform"].clone()
                 # meta["data"] = moving_normalize(meta["data"])
                 plot_eqnet(
-                    meta.cpu(),
+                    meta,
                     phase_scores.cpu(),
                     event_scores.cpu(),
                     phase_picks=phase_picks_,
@@ -413,6 +414,7 @@ def main(args):
         data_path=args.data_path,
         data_list=args.data_list,
         hdf5_file=args.hdf5_file,
+        station_file=args.station_file,
         prefix=args.prefix,
         format=args.format,
         dataset=args.dataset,
@@ -546,6 +548,7 @@ def get_args_parser(add_help=True):
     parser.add_argument("--data_path", type=str, default="./", help="path to data directory")
     parser.add_argument("--data_list", type=str, default=None, help="selectecd data list")
     parser.add_argument("--hdf5-file", default=None, type=str, help="hdf5 file for training")
+    parser.add_argument("--station_file", default=None, type=str, help="station file")
     parser.add_argument("--prefix", default="", type=str, help="prefix for the file name")
     parser.add_argument("--format", type=str, default="h5", help="data format")
     parser.add_argument("--dataset", type=str, default="das", help="dataset type; seismic_trace, seismic_network, das")
