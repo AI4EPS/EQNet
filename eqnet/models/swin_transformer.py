@@ -1142,3 +1142,178 @@ def _swin_transformer(
         model.load_state_dict(weights.get_state_dict(progress=progress))
 
     return model
+
+
+
+def swin_t(*, weights=None, progress: bool = True, use_station_location: bool = True, **kwargs: Any) -> SwinTransformer:
+    """
+    Constructs a swin_tiny architecture from
+    `Swin Transformer: Hierarchical Vision Transformer using Shifted Windows <https://arxiv.org/abs/2103.14030>`_.
+
+    Args:
+        weights (optional): The pretrained weights to use. 
+            By default, no pre-trained weights are used.
+        progress (bool, optional): If True, displays a progress bar of the
+            download to stderr. Default is True.
+        **kwargs: parameters passed to the ``eqnet.models.swin_transformer.SwinTransformer``
+            base class. 
+    """
+
+    return _swin_transformer(
+        patch_size=[4, 1],
+        embed_dim=96,
+        depths=[2, 2, 6, 2],
+        num_heads=[3, 6, 12, 24],
+        window_size=[7, 10],
+        stochastic_depth_prob=0.2,
+        weights=weights,
+        progress=progress,
+        block_name="SwinTransformerBlock",
+        use_station_location=use_station_location,
+        **kwargs,
+    )
+
+
+def swin_s(*, weights=None, progress: bool = True, use_station_location: bool = True, **kwargs: Any) -> SwinTransformer:
+    """
+    Constructs a swin_small architecture from
+    `Swin Transformer: Hierarchical Vision Transformer using Shifted Windows <https://arxiv.org/abs/2103.14030>`_.
+
+    Args:
+        weights (optional): The pretrained weights to use. 
+            By default, no pre-trained weights are used.
+        progress (bool, optional): If True, displays a progress bar of the
+            download to stderr. Default is True.
+        **kwargs: parameters passed to the ``eqnet.models.swin_transformer.SwinTransformer``
+            base class. 
+    """
+    
+    return _swin_transformer(
+        patch_size=[4, 1],
+        embed_dim=96,
+        depths=[2, 2, 18, 2],
+        num_heads=[3, 6, 12, 24],
+        window_size=[7, 10],
+        stochastic_depth_prob=0.3,
+        weights=weights,
+        progress=progress,
+        block_name="SwinTransformerBlock",
+        use_station_location=use_station_location,
+        **kwargs,
+    )
+
+
+def swin_b(*, weights=None, progress: bool = True, use_station_location: bool = True, **kwargs: Any) -> SwinTransformer:
+    """
+    Constructs a swin_base architecture from
+    `Swin Transformer: Hierarchical Vision Transformer using Shifted Windows <https://arxiv.org/abs/2103.14030>`_.
+
+    Args:
+        weights (optional): The pretrained weights to use. 
+            By default, no pre-trained weights are used.
+        progress (bool, optional): If True, displays a progress bar of the
+            download to stderr. Default is True.
+        **kwargs: parameters passed to the ``eqnet.models.swin_transformer.SwinTransformer``
+            base class. 
+    """
+    
+    return _swin_transformer(
+        patch_size=[4, 1],
+        embed_dim=128,
+        depths=[2, 2, 18, 2],
+        num_heads=[4, 8, 16, 32],
+        window_size=[7, 7],
+        stochastic_depth_prob=0.5,
+        weights=weights,
+        progress=progress,
+        block_name="SwinTransformerBlock",
+        use_station_location=use_station_location,
+        **kwargs,
+    )
+
+
+def swin_v2_t(*, weights=None, progress: bool = True, use_station_location: bool = True, **kwargs: Any) -> SwinTransformer:
+    """
+    Constructs a swin_v2_tiny architecture from
+    `Swin Transformer V2: Scaling Up Capacity and Resolution <https://arxiv.org/abs/2111.09883>`_.
+
+    Args:
+        weights (optional): The pretrained weights to use. 
+            By default, no pre-trained weights are used.
+        progress (bool, optional): If True, displays a progress bar of the
+            download to stderr. Default is True.
+        **kwargs: parameters passed to the ``eqnet.models.swin_transformer.SwinTransformer``
+            base class. 
+    """
+    
+    return _swin_transformer(
+        patch_size=[4, 1],
+        embed_dim=96,
+        depths=[2, 2, 6, 2],
+        num_heads=[3, 6, 12, 24],
+        window_size=[8, 10],
+        stochastic_depth_prob=0.2,
+        weights=weights,
+        progress=progress,
+        block_name="SwinTransformerBlockV2",
+        use_station_location=use_station_location,
+        **kwargs,
+    )
+
+
+def swin_v2_s(*, weights=None, progress: bool = True, use_station_location: bool = True, **kwargs: Any) -> SwinTransformer:
+    """
+    Constructs a swin_v2_small architecture from
+    `Swin Transformer V2: Scaling Up Capacity and Resolution <https://arxiv.org/abs/2111.09883>`_.
+
+    Args:
+        weights (optional): The pretrained weights to use. 
+            By default, no pre-trained weights are used.
+        progress (bool, optional): If True, displays a progress bar of the
+            download to stderr. Default is True.
+        **kwargs: parameters passed to the ``eqnet.models.swin_transformer.SwinTransformer``
+            base class. 
+    """
+    
+    return _swin_transformer(
+        patch_size=[4, 4],
+        embed_dim=96,
+        depths=[2, 2, 18, 2],
+        num_heads=[3, 6, 12, 24],
+        window_size=[8, 8],
+        stochastic_depth_prob=0.3,
+        weights=weights,
+        progress=progress,
+        block_name="SwinTransformerBlockV2",
+        use_station_location=use_station_location,
+        **kwargs,
+    )
+
+
+def swin_v2_b(*, weights=None, progress: bool = True, use_station_location: bool = True, **kwargs: Any) -> SwinTransformer:
+    """
+    Constructs a swin_v2_base architecture from
+    `Swin Transformer V2: Scaling Up Capacity and Resolution <https://arxiv.org/abs/2111.09883>`_.
+
+    Args:
+        weights (optional): The pretrained weights to use. 
+            By default, no pre-trained weights are used.
+        progress (bool, optional): If True, displays a progress bar of the
+            download to stderr. Default is True.
+        **kwargs: parameters passed to the ``eqnet.models.swin_transformer.SwinTransformer``
+            base class. 
+    """
+    
+    return _swin_transformer(
+        patch_size=[4, 4],
+        embed_dim=128,
+        depths=[2, 2, 18, 2],
+        num_heads=[4, 8, 16, 32],
+        window_size=[8, 8],
+        stochastic_depth_prob=0.5,
+        weights=weights,
+        progress=progress,
+        block_name="SwinTransformerBlockV2",
+        use_station_location=use_station_location,
+        **kwargs,
+    )
