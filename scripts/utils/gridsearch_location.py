@@ -36,6 +36,10 @@ if __name__ == "__main__":
     # xlim_degree = [-120.0, -117.5]
     # ylim_degree = [37.1, 38.7]
 
+    protocol = "gs://"
+    bucket = "quakeflow_das"
+    # fs = fsspec.filesystem(protocol.replace("://", ""))
+
     min_longitude = -120
     max_longitude = -117.5
     min_latitude = 37.1
@@ -47,7 +51,8 @@ if __name__ == "__main__":
     ylim_degree = [min_latitude, max_latitude]
 
     # %%
-    stations = pd.read_csv(f"das_info.csv")
+    # stations = pd.read_csv(f"das_info.csv")
+    stations = pd.read_csv(f"{protocol}{bucket}/mammoth/das_info.csv")
     stations["id"] = stations["index"]
     y0 = stations["latitude"].mean()
     x0 = stations["longitude"].mean()
@@ -63,7 +68,7 @@ if __name__ == "__main__":
         stations["z(km)"] = 0
     stations["id"] = stations["id"].astype(str)
 
-    catalog = pd.read_csv(f"gs://quakeflow_das/mammoth_north/catalog_data.csv")
+    catalog = pd.read_csv(f"{protocol}{bucket}/mammoth_north/catalog_data.csv")
     catalog = catalog[
         (catalog["longitude"] > xlim_degree[0])
         & (catalog["longitude"] < xlim_degree[1])
@@ -156,23 +161,34 @@ if __name__ == "__main__":
         phase_type = np.array(phase_type)
         config_eikonal = config["eikonal"]
 
-        with mp.get_context("spawn").Pool(ncpu) as pool:
-            for ii, (i, j, k) in enumerate(zip(xgrid.flatten(), ygrid.flatten(), zgrid.flatten())):
-                pool.apply_async(
-                    run_proc,
-                    args=(idx, residual, ii, [i, j, k], tt, station_loc, phase_type, config_eikonal, lock),
-                    callback=lambda _: pbar.update(),
-                )
-            pool.close()
-            pool.join()
+        # with mp.get_context("spawn").Pool(ncpu) as pool:
+        #     for ii, (i, j, k) in enumerate(zip(xgrid.flatten(), ygrid.flatten(), zgrid.flatten())):
+        #         pool.apply_async(
+        #             run_proc,
+        #             args=(idx, residual, ii, [i, j, k], tt, station_loc, phase_type, config_eikonal, lock),
+        #             callback=lambda _: pbar.update(),
+        #         )
+        #     pool.close()
+        #     pool.join()
 
-        residual = np.array(list(residual))
-        idx = np.array(list(idx))
-        residual = residual[np.argsort(idx)]
-        residual = residual.reshape(xgrid.shape)
+        # residual = np.array(list(residual))
+        # idx = np.array(list(idx))
+        # residual = residual[np.argsort(idx)]
+        # residual = residual.reshape(xgrid.shape)
 
-        # Save residual
-        np.savez(f"gridsearch_{ic}.npz", residual=residual, xgrid=xgrid, ygrid=ygrid, zgrid=zgrid, center=center)
+        # # Save residual
+        # np.savez(
+        #     f"gridsearch_{ic}.npz",
+        #     residual=residual,
+        #     xgrid=xgrid,
+        #     ygrid=ygrid,
+        #     zgrid=zgrid,
+        #     center=center,
+        #     xgrid_degree=xgrid_degree,
+        #     ygrid_degree=ygrid_degree,
+        #     zgrid_degree=zgrid_degree,
+        #     center_degree=center_degree,
+        # )
 
         #     # %%
         #     fig, ax = plt.subplots(3, 1, squeeze=False, figsize=(8, 8))
@@ -225,12 +241,18 @@ if __name__ == "__main__":
         #     #     raise
         #     # raise
 
-        # %%
-        picker_name = {
-            "phasenet": "PhaseNet",
-            "phasenet_das": "PhaseNet-DAS v1",
-            "phasenet_das_v1": "PhaseNet-DAS v2",
-        }
+        # for ic, center in enumerate(centers):
+        meta = np.load(f"gridsearch_{ic}.npz")
+        residual = meta["residual"]
+        # convert residual into probability
+        residual = np.exp(-residual)
+        residual = residual / residual.sum()
+
+        xgrid = meta["xgrid"]
+        ygrid = meta["ygrid"]
+        zgrid = meta["zgrid"]
+        center = meta["center"]
+
         protocol = "gs://"
         bucket = "quakeflow_das"
         das_mammoth_north = pd.read_csv(f"{protocol}{bucket}/mammoth_north/das_info.csv")
@@ -271,6 +293,15 @@ if __name__ == "__main__":
             residual[:, :, 0],
             cmap="binary",
             shading="nearest",
+            rasterized=True,
+        )
+        ## add contour of probability
+        axes[0, 0].contour(
+            xgrid_degree[:, :, 0],
+            ygrid_degree[:, :, 0],
+            residual[:, :, 0],
+            levels=[0.5],
+            colors="r",
             rasterized=True,
         )
         axes[0, 0].scatter(center_degree[0], center_degree[1], s=100, c="r")

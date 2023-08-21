@@ -72,7 +72,7 @@ if not figure_path.exists():
 
 # %%
 for folder in folders:
-    fig, ax = plt.subplots(1, 3, squeeze=False, figsize=(10, 3))
+    fig, ax = plt.subplots(1, 3, squeeze=False, figsize=(10, 2.5))
     for j, picker in enumerate(pickers):
         events = pd.read_csv(f"{protocol}{bucket}/{folder}/gamma/{picker}/gamma_events.csv")
         if j == 0:
@@ -120,7 +120,7 @@ for folder in folders:
     plt.show()
 
 # %%
-fig, ax = plt.subplots(2, 2, squeeze=False, figsize=(8, 8))
+fig, ax = plt.subplots(2, 2, squeeze=False, figsize=(8, 6))
 for i, folder in enumerate(folders):
     for j, picker in enumerate(pickers):
         events = pd.read_csv(f"{protocol}{bucket}/{folder}/gamma/{picker}/gamma_events.csv")
@@ -162,6 +162,12 @@ fig.savefig(figure_path / "sigma_time.pdf", dpi=300, bbox_inches="tight")
 
 
 # %%
+ylim = {
+    "mammoth_north": [-14, 7],
+    "mammoth_south": [-14, 7],
+    "ridgecrest_north": [-7, 3.5],
+    "ridgecrest_south": [-14, 7],
+}
 xlim = {
     "mammoth_north": [-5, 12],
     "mammoth_south": [-5, 20],
@@ -169,7 +175,7 @@ xlim = {
     "ridgecrest_south": [-5, 10],
 }
 
-fig, ax = plt.subplots(2, 2, squeeze=False, figsize=(8, 8))
+fig, ax = plt.subplots(2, 2, squeeze=False, figsize=(8, 6))
 
 for i, folder in enumerate(folders):
     result_path = Path(f"results/stats/{folder}")
@@ -184,9 +190,25 @@ for i, folder in enumerate(folders):
     # # plt.show()
 
     for picker in pickers:
-        detected_event = fs.glob(f"{bucket}/{folder}/gamma/{picker}/picks/*csv")
-        detected_event_id = [e.split("/")[-1].split("_")[-1].split(".")[0] for e in detected_event]
-        snr_df[f"{picker}"] = snr_df["event_id"].apply(lambda x: x in detected_event_id)
+        # detected_event = fs.glob(f"{bucket}/{folder}/gamma/{picker}/picks/*csv")
+        # detected_event_id = [e.split("/")[-1].split("_")[-1].split(".")[0] for e in detected_event]
+        # snr_df[f"{picker}"] = snr_df["event_id"].apply(lambda x: x in detected_event_id)
+
+        events = pd.read_csv(f"{protocol}{bucket}/training/stats/{folder}/{picker}/time_residual.csv")
+
+        events.loc[events["pdiff_mean"].isna(), "pdiff_mean"] = events.loc[events["pdiff_mean"].isna(), "sdiff_mean"]
+        events.loc[events["sdiff_mean"].isna(), "sdiff_mean"] = events.loc[events["sdiff_mean"].isna(), "pdiff_mean"]
+        events["mean"] = events[["pdiff_mean", "sdiff_mean"]].mean(axis=1)
+        events = events.loc[events.groupby("event_id")["mean"].idxmin()]
+
+        events = events.loc[
+            (events["pdiff_mean"] > ylim[folder][0])
+            & (events["pdiff_mean"] < ylim[folder][1])
+            & (events["sdiff_mean"] > ylim[folder][0])
+            & (events["sdiff_mean"] < ylim[folder][1])
+        ]
+
+        snr_df[f"{picker}"] = snr_df["event_id"].apply(lambda x: x in events["event_id"].values)
 
     bins = np.linspace(-10, 25, 35 + 1)
     ax[i // 2, i % 2].hist(
@@ -244,12 +266,12 @@ fig.savefig(figure_path / "snr.pdf", dpi=300, bbox_inches="tight")
 plt.show()
 
 # %%
-ylim = {
-    "mammoth_north": [-14, 7],
-    "mammoth_south": [-14, 7],
-    "ridgecrest_north": [-7, 3.5],
-    "ridgecrest_south": [-14, 7],
-}
+# ylim = {
+#     "mammoth_north": [-14, 7],
+#     "mammoth_south": [-14, 7],
+#     "ridgecrest_north": [-7, 3.5],
+#     "ridgecrest_south": [-14, 7],
+# }
 xlim_right = {
     "mammoth_north": 350,
     "mammoth_south": 350,
@@ -303,6 +325,7 @@ for i, folder in enumerate(folders):
             # s=3,
             alpha=0.2,
             # label="P",
+            rasterized=True,
         )
         ax[j, 0].scatter(
             residual["dist_km"][index],
@@ -311,13 +334,14 @@ for i, folder in enumerate(folders):
             # s=3,
             alpha=0.2,
             # label="S",
+            rasterized=True,
         )
 
         ax[j, 0].set_ylim(ylim[folder])
         ax[j, 0].set_xlim(right=xlim_right[folder])
         if j == 0:
-            ax[j, 0].scatter([], [], s=20, c="C0", label="P")
-            ax[j, 0].scatter([], [], s=20, c="C1", label="S")
+            ax[j, 0].scatter([], [], s=20, c="C0", label=f"P")
+            ax[j, 0].scatter([], [], s=20, c="C1", label=f"S")
             ax[j, 0].legend(loc="upper right")
 
         ax[j, 0].grid(linestyle="--", linewidth=0.5)
@@ -373,6 +397,7 @@ for i, folder in enumerate(folders):
             s=2 ** catalog["magnitude"],
             c="gray",
             alpha=0.2,
+            rasterized=True,
         )
         ax[j, 0].scatter(
             detected_catalog["dist_km"],
@@ -380,6 +405,7 @@ for i, folder in enumerate(folders):
             s=2 ** detected_catalog["magnitude"],
             c="C3",
             alpha=0.5,
+            rasterized=True,
         )
 
         ax[j, 0].set_xlim(right=xlim_right[folder])
@@ -394,9 +420,9 @@ for i, folder in enumerate(folders):
         )
 
         if j == 0:
-            ax[j, 0].scatter([], [], s=20, c="gray", label="Dataset")
-            ax[j, 0].scatter([], [], s=20, c="C3", label="Detected")
-            ax[j, 0].legend(loc="upper right")
+            ax[j, 0].scatter([], [], s=20, c="gray", label=f"Dataset")
+        ax[j, 0].scatter([], [], s=20, c="C3", label=f"Detected: {len(detected_catalog):.0f}")
+        ax[j, 0].legend(loc="upper right")
 
     fig.text(x=0.05, y=0.5, s="Magnitude", ha="center", va="center", rotation="vertical", fontsize=14)
     fig.text(x=0.5, y=0.05, s="Distance (km)", ha="center", va="center", fontsize=14)
@@ -427,7 +453,9 @@ for j, picker in enumerate(pickers):
     min_time = min(events.time.min(), catalog.event_time.min())
     events_time = (events.time - min_time).astype("timedelta64[s]").to_numpy()
     catalog_time = (catalog.event_time - min_time).astype("timedelta64[s]").to_numpy()
-    matrix = np.abs(events_time[:, None] - catalog_time[None, :])
+    # matrix = np.abs(events_time[:, None] - catalog_time[None, :])
+    # matrix = events_time[:, None] - catalog_time[None, :]
+    matrix = catalog_time[None, :] - events_time[:, None]
     matrix = (matrix > ylim["mammoth_south"][0]) & (matrix < ylim["mammoth_south"][1])
     recall = np.any(matrix, axis=0)
 
@@ -439,6 +467,7 @@ for j, picker in enumerate(pickers):
         s=2 ** catalog["magnitude"],
         c="gray",
         alpha=0.2,
+        rasterized=True,
     )
     ax[j, 0].scatter(
         catalog[recall]["dist_km"],
@@ -446,6 +475,7 @@ for j, picker in enumerate(pickers):
         s=2 ** catalog[recall]["magnitude"],
         c="C3",
         alpha=0.5,
+        rasterized=True,
     )
 
     ax[j, 0].set_xlim(right=xlim_right["mammoth_south"])
@@ -460,9 +490,10 @@ for j, picker in enumerate(pickers):
     )
 
     if j == 0:
-        ax[j, 0].scatter([], [], s=20, c="gray", label="Dataset")
-        ax[j, 0].scatter([], [], s=20, c="C3", label="Detected")
-        ax[j, 0].legend(loc="upper right")
+        ax[j, 0].scatter([], [], s=20, c="gray", label=f"Dataset")
+    ax[j, 0].scatter([], [], s=20, c="C3", label=f"Detected: {len(catalog[recall]):.0f}")
+    ax[j, 0].legend(loc="upper right")
+
 
 fig.text(x=0.05, y=0.5, s="Magnitude", ha="center", va="center", rotation="vertical", fontsize=14)
 fig.text(x=0.5, y=0.05, s="Distance (km)", ha="center", va="center", fontsize=14)
@@ -471,7 +502,7 @@ fig.savefig(figure_path / f"mag_dist_{folder}.pdf", dpi=300, bbox_inches="tight"
 plt.show()
 
 # %%
-fig, ax = plt.subplots(2, 2, squeeze=False, figsize=(8, 8))
+fig, ax = plt.subplots(2, 2, squeeze=False, figsize=(8, 6))
 for i, folder in enumerate(folders):
     das_info = pd.read_csv(f"{protocol}{bucket}/{folder}/das_info.csv")
     lat_0 = das_info["latitude"].mean()
@@ -554,31 +585,90 @@ fig.savefig(figure_path / f"detection.png", dpi=300, bbox_inches="tight")
 fig.savefig(figure_path / f"detection.pdf", dpi=300, bbox_inches="tight")
 plt.show()
 
+# %%
+fig, ax = plt.subplots(1, 1, squeeze=False, figsize=(8, 5))
+folder = "mammoth"
+das_info = pd.read_csv(f"{protocol}{bucket}/{folder}/das_info.csv")
+lat_0 = das_info["latitude"].mean()
+lon_0 = das_info["longitude"].mean()
+proj = pyproj.Proj(f"+proj=sterea +lon_0={lon_0} +lat_0={lat_0} +units=km")
+
+catalog = pd.read_csv(f"{protocol}{bucket}/{folder}/catalog_data.csv", parse_dates=["event_time"])
+catalog["x_km"], catalog["y_km"] = proj(catalog["longitude"].values, catalog["latitude"].values)
+catalog["z_km"] = catalog["depth_km"]
+catalog["dist_km"] = catalog.apply(lambda x: np.sqrt(x["x_km"] ** 2 + x["y_km"] ** 2 + x["z_km"] ** 2), axis=1)
+bins = np.linspace(catalog["dist_km"].min(), xlim_right["mammoth_south"], 31)
+
+ax[0, 0].hist(
+    catalog["dist_km"],
+    alpha=0.5,
+    # facecolor="C3",
+    facecolor="gray",
+    edgecolor="white",
+    bins=bins,
+    label="Dataset",
+)
+
+for j, picker in enumerate(pickers):
+    # events = pd.read_csv(f"results/stats/{folder}/{picker}/time_residual.csv")
+    events = pd.read_csv(f"{protocol}{bucket}/{folder}/gamma/{picker}/gamma_events.csv", parse_dates=["time"])
+    # add timezone info
+    events["time"] = events["time"].dt.tz_localize("UTC")
+
+    # get timestamp in seconds
+    min_time = min(events.time.min(), catalog.event_time.min())
+    events_time = (events.time - min_time).astype("timedelta64[s]").to_numpy()
+    catalog_time = (catalog.event_time - min_time).astype("timedelta64[s]").to_numpy()
+    # matrix = np.abs(events_time[:, None] - catalog_time[None, :])
+    # matrix = events_time[:, None] - catalog_time[None, :]
+    matrix = catalog_time[None, :] - events_time[:, None]
+    matrix = (matrix > ylim["mammoth_south"][0]) & (matrix < ylim["mammoth_south"][1])
+    recall = np.any(matrix, axis=0)
+
+    hist_picker = ax[0, 0].hist(
+        catalog[recall]["dist_km"],
+        alpha=0.5,
+        # facecolor="C3",
+        facecolor=f"C{j}",
+        edgecolor="white",
+        bins=bins,
+        label=f"{picker_name[picker]}: {len(catalog[recall])}",
+    )
+
+ax[0, 0].set_yscale("log")
+legend = ax[0, 0].legend(loc="upper right")
+ax[0, 0].set_xlabel("Distance (km)")
+ax[0, 0].set_ylabel("Number of events")
+ax[0, 0].set_xlim(right=xlim_right["mammoth_south"])
+fig.savefig(figure_path / f"detection_{folder}.png", dpi=300, bbox_inches="tight")
+fig.savefig(figure_path / f"detection_{folder}.pdf", dpi=300, bbox_inches="tight")
+plt.show()
+
 
 # %%
-fig, ax = plt.subplots(3, 3, squeeze=False, figsize=(15, 15))
-xlim = [-120.0, -117.5]
-ylim = [37.1, 38.7]
-zlim = [30, 0]
-catalog = pd.read_csv(f"{protocol}{bucket}/mammoth_north/catalog_data.csv")
-for i, picker in enumerate(pickers):
-    # events = pd.read_csv(f"results/gamma/{picker}/mammoth/gamma_events.csv")
-    events = pd.read_csv(f"{protocol}{bucket}/mammoth/gamma/{picker}/gamma_events.csv")
+# fig, ax = plt.subplots(3, 3, squeeze=False, figsize=(15, 15))
+# xlim = [-120.0, -117.5]
+# ylim = [37.1, 38.7]
+# zlim = [30, 0]
+# catalog = pd.read_csv(f"{protocol}{bucket}/mammoth_north/catalog_data.csv")
+# for i, picker in enumerate(pickers):
+#     # events = pd.read_csv(f"results/gamma/{picker}/mammoth/gamma_events.csv")
+#     events = pd.read_csv(f"{protocol}{bucket}/mammoth/gamma/{picker}/gamma_events.csv")
 
-    s = events["gamma_score"] / events["gamma_score"].max() * 2
-    ax[i, 0].scatter(catalog["longitude"], catalog["latitude"], s=1, c="gray", alpha=0.1, label=picker_name[picker])
-    ax[i, 0].scatter(events["longitude"], events["latitude"], s=s, c="red", alpha=0.2, label=picker_name[picker])
+#     s = events["gamma_score"] / events["gamma_score"].max() * 2
+#     ax[i, 0].scatter(catalog["longitude"], catalog["latitude"], s=1, c="gray", alpha=0.1, label=picker_name[picker])
+#     ax[i, 0].scatter(events["longitude"], events["latitude"], s=s, c="red", alpha=0.2, label=picker_name[picker])
 
-    ax[i, 0].set_xlim(xlim)
-    ax[i, 0].set_ylim(ylim)
+#     ax[i, 0].set_xlim(xlim)
+#     ax[i, 0].set_ylim(ylim)
 
-    ax[i, 1].scatter(catalog["longitude"], catalog["depth_km"], s=1, c="gray", alpha=0.1, label=picker_name[picker])
-    ax[i, 1].scatter(events["longitude"], events["depth_km"], s=s * 3, c="red", alpha=0.2, label=picker_name[picker])
-    ax[i, 1].set_xlim(xlim)
-    ax[i, 1].set_ylim(zlim)
+#     ax[i, 1].scatter(catalog["longitude"], catalog["depth_km"], s=1, c="gray", alpha=0.1, label=picker_name[picker])
+#     ax[i, 1].scatter(events["longitude"], events["depth_km"], s=s * 3, c="red", alpha=0.2, label=picker_name[picker])
+#     ax[i, 1].set_xlim(xlim)
+#     ax[i, 1].set_ylim(zlim)
 
-    ax[i, 2].scatter(catalog["latitude"], catalog["depth_km"], s=1, c="gray", alpha=0.1, label=picker_name[picker])
-    ax[i, 2].scatter(events["latitude"], events["depth_km"], s=s * 3, c="red", alpha=0.2, label=picker_name[picker])
-    ax[i, 2].set_xlim(ylim)
-    ax[i, 2].set_ylim(zlim)
+#     ax[i, 2].scatter(catalog["latitude"], catalog["depth_km"], s=1, c="gray", alpha=0.1, label=picker_name[picker])
+#     ax[i, 2].scatter(events["latitude"], events["depth_km"], s=s * 3, c="red", alpha=0.2, label=picker_name[picker])
+#     ax[i, 2].set_xlim(ylim)
+#     ax[i, 2].set_ylim(zlim)
 # %%

@@ -124,7 +124,7 @@ axes[0, 1].scatter(
     rasterized=True,
 )
 axes[0, 1].scatter(
-    das_ridgecrest_north["longitude"], das_ridgecrest_north["latitude"], s=1, label="Ridgecrest", rasterized=True
+    das_ridgecrest_north["longitude"], das_ridgecrest_north["latitude"], s=1, label="Ridgecrest North", rasterized=True
 )
 axes[0, 1].scatter(
     das_ridgecrest_south["longitude"], das_ridgecrest_south["latitude"], s=1, label="Ridgecrest South", rasterized=True
