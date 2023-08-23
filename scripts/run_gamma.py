@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 from gamma.utils import association
 from pyproj import Proj
+import time
 
 warnings.filterwarnings("ignore")
 
@@ -180,6 +181,7 @@ def run(files, config, stations, result_path):
             events[["longitude", "latitude"]] = events.apply(
                 lambda x: pd.Series(proj(longitude=x["x(km)"], latitude=x["y(km)"], inverse=True)), axis=1
             )
+            events["file_name"] = file.name
             events["depth_km"] = events["z(km)"]
             events.drop(columns=["x(km)", "y(km)", "z(km)"], inplace=True)
             events.to_csv(result_path / "events" / file.name, index=False, float_format="%.7f")
@@ -192,7 +194,14 @@ def run(files, config, stations, result_path):
         picks.to_csv(
             result_path / "picks" / file.name,
             index=False,
-            columns=["station_id", "phase_index", "phase_time", "phase_score", "phase_type", "event_index"],
+            columns=[
+                "station_id",
+                "phase_index",
+                "phase_time",
+                "phase_score",
+                "phase_type",
+                "event_index",
+            ],
             float_format="%.3f",
         )
 
@@ -259,6 +268,8 @@ if __name__ == "__main__":
     )
     files = sorted(list(pick_path.rglob("*.csv")), key=lambda x: -os.path.getsize(x))
 
+    # files = [Path("nc73511800.csv")]
+
     # %%
     result_path = Path(f"results/gamma/{args.picker}/{args.folder}")
     if not result_path.exists():
@@ -271,6 +282,13 @@ if __name__ == "__main__":
         (result_path / "figures").mkdir(parents=True)
 
     config, stations, catalog, proj = set_config(args)
+
+    # # %%
+    # print(len(files))
+    # t0 = time.time()
+    # run(files, config, stations, result_path)
+    # print(f"Time: {time.time()-t0:.2f} s")
+    # raise
 
     # %%
     manager = Manager()

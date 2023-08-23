@@ -26,7 +26,7 @@ def get_args_parser():
     parser.add_argument("--picker", type=str, default="phasenet_das_v1")
     parser.add_argument("--station_csv", type=str, default="das_info.csv")
     parser.add_argument("--plot_figure", type=bool, default=True)
-    parser.add_argument("--protocol", type=str, default="gs")
+    parser.add_argument("--protocol", type=str, default="gs://")
     parser.add_argument("--overwrite", action="store_true", default=False)
 
     return parser
@@ -34,7 +34,8 @@ def get_args_parser():
 
 def set_config(args):
     # %%
-    stations = pd.read_csv(f"{args.station_csv}")
+    # stations = pd.read_csv(f"{args.station_csv}")
+    stations = pd.read_csv(f"{args.protocol}{args.bucket}/{args.folder}/das_info.csv")
     stations["id"] = stations["index"]
 
     # %% Match data format for GaMMA
@@ -135,10 +136,10 @@ def associate(picks, stations, config):
 
 
 # def run(files, event_list, config, stations, result_path):
-def run(files, config, stations, result_path):
+def run(files, config, stations, result_path, args, proj):
     for file in files:
         ## test init location
-        # event_id = file.name.split("_")[-1].replace(".h5.csv", "")
+        # event_id = filename.split("_")[-1].replace(".h5.csv", "")
         # config["x_init"] = [catalog.loc[event_id, "x(km)"]]
         # config["y_init"] = [catalog.loc[event_id, "y(km)"]]
         # config["z_init"] = [catalog.loc[event_id, "z(km)"]]
@@ -151,13 +152,22 @@ def run(files, config, stations, result_path):
         #     (None, None),  # t
         # )
 
-        if os.path.exists(result_path / "picks" / file.name) and (not args.overwrite):
+        filename = file.split("/")[-1]
+
+        if os.path.exists(result_path / "picks" / filename) and (not args.overwrite):
             continue
 
-        if os.path.getsize(file) == 0:
-            continue
+        # if os.path.getsize(file) == 0:
+        #     continue
 
-        picks = pd.read_csv(file)
+        with fsspec.open(args.protocol + file, "rb") as f:
+            if f.size == 0:
+                print(f"Empty file: {file}")
+                continue
+            picks = pd.read_csv(f)
+
+        picks = pd.read_csv(args.protocol + file)
+
         if args.picker == "phasenet":
             picks = picks[picks["phase_score"] > 0.5]  # used for PhaseNet
         else:
@@ -173,7 +183,7 @@ def run(files, config, stations, result_path):
             continue
 
         # for e in events:
-        #     # e["event_id"] = file.name.split("_")[-1].replace(".h5.csv", "")
+        #     # e["event_id"] = filename.split("_")[-1].replace(".h5.csv", "")
         #     e["event_id"] = file.stem
         #     event_list.append(e)
 
@@ -185,23 +195,31 @@ def run(files, config, stations, result_path):
                 lambda x: pd.Series(proj(longitude=x["x(km)"], latitude=x["y(km)"], inverse=True)), axis=1
             )
             events["depth_km"] = events["z(km)"]
+            events["filename"] = filename
             events.drop(columns=["x(km)", "y(km)", "z(km)"], inplace=True)
-            events.to_csv(result_path / "events" / file.name, index=False, float_format="%.7f")
+            events.to_csv(result_path / "events" / filename, index=False, float_format="%.7f")
 
         if args.plot_figure:
-            plot_picks(result_path, file, picks)
+            plot_picks(result_path, filename.replace(".csv", ""), picks)
 
         picks["event_index"] = picks["event_idx"]
         picks.sort_values(by=["station_id", "phase_index"], inplace=True)
         picks.to_csv(
-            result_path / "picks" / file.name,
+            result_path / "picks" / filename,
             index=False,
-            columns=["station_id", "phase_index", "phase_time", "phase_score", "phase_type", "event_index"],
+            columns=[
+                "station_id",
+                "phase_index",
+                "phase_time",
+                "phase_score",
+                "phase_type",
+                "event_index",
+            ],
             float_format="%.3f",
         )
 
 
-def plot_picks(result_path, file, picks):
+def plot_picks(result_path, filename, picks):
     fig, axs = plt.subplots(1, 1, squeeze=False, figsize=(10, 5))
     idx = picks["event_idx"] == -1
     idx_p = (picks["phase_type"] == "P") & idx
@@ -238,7 +256,7 @@ def plot_picks(result_path, file, picks):
     )
     axs[0, 0].invert_yaxis()
     plt.savefig(
-        result_path / "figures" / (file.stem + ".jpg"),
+        result_path / "figures" / (filename + ".jpg"),
         bbox_inches="tight",
         dpi=300,
     )
@@ -264,6 +282,12 @@ if __name__ == "__main__":
     pick_path = Path(f"picks/{args.picker}/")
     files = sorted(list(pick_path.rglob("*.csv")), key=lambda x: -os.path.getsize(x))
 
+    fs = fsspec.filesystem(args.protocol.replace("://", ""))
+    files = fs.glob(f"{args.bucket}/{args.folder}/{args.picker}/picks/*.csv")
+    # files = sorted(files, key=lambda x: -fs.size(x))
+
+    # files = files[:100]
+
     # %%
     result_path = Path(f"results/gamma/{args.picker}/{args.folder}")
     if not result_path.exists():
@@ -281,10 +305,9 @@ if __name__ == "__main__":
     manager = Manager()
     jobs = []
     num_cores = max(1, multiprocessing.cpu_count() // 2)
-    # num_cores = 1
-    with multiprocessing.Pool(num_cores) as pool:
+    with multiprocessing.get_context("spawn").Pool(num_cores) as pool:
         # pool.starmap(run, [(files[i::num_cores], event_list, config, stations, result_path) for i in range(num_cores)])
-        pool.starmap(run, [(files[i::num_cores], config, stations, result_path) for i in range(num_cores)])
+        pool.starmap(run, [(files[i::num_cores], config, stations, result_path, args, proj) for i in range(num_cores)])
 
     # print(f"Number of events: {len(event_list)}")
     # if len(event_list) > 0:
