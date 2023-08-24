@@ -97,7 +97,7 @@ def _repeat_to_at_least(iterable, n):
     repeated = chain.from_iterable(repeat(iterable, repeat_times))
     return list(repeated)    
     
-def create_groups(dataset, num_stations_list=[5, 10, 20], is_pad=False):
+def create_groups(dataset, num_stations_list=[5, 10, 20], is_pad=False, is_train=True):
     '''
     create groups of data with different number of stations
     '''
@@ -105,7 +105,7 @@ def create_groups(dataset, num_stations_list=[5, 10, 20], is_pad=False):
     for data in dataset:
         num_stations = data["station_location"].shape[0]
         num_stations_list = np.array(sorted(num_stations_list))
-        if num_stations < 5:
+        if is_train and num_stations < 5:
             group_id = 0
         elif is_pad:
             if num_stations >= num_stations_list[-1]:
