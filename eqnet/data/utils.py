@@ -24,11 +24,11 @@ def random_shift(example, shift_range=(-160, 16), feature_scale=16):
     feature_shift = np.random.randint(*shift_range)
     shift = feature_shift * feature_scale
     # shift at time axis
-    example["data"] = torch.roll(example["data"], shift, dims=-2)
-    example["phase_pick"] = torch.roll(example["phase_pick"], shift, dims=-2)
-    example["event_center"] = torch.roll(example["event_center"], feature_shift, dims=-2)
-    example["event_location"] = torch.roll(example["event_location"], feature_shift, dims=-2)
-    example["event_location_mask"] = torch.roll(example["event_location_mask"], feature_shift, dims=-2)
+    example["data"] = torch.roll(example["data"], shift, dims=-2).contiguous()
+    example["phase_pick"] = torch.roll(example["phase_pick"], shift, dims=-2).contiguous()
+    example["event_center"] = torch.roll(example["event_center"], feature_shift, dims=-2).contiguous()
+    example["event_location"] = torch.roll(example["event_location"], feature_shift, dims=-2).contiguous()
+    example["event_location_mask"] = torch.roll(example["event_location_mask"], feature_shift, dims=-2).contiguous()
     
     return example
     
