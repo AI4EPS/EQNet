@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import nn, Tensor
 from typing import Optional, Dict
+from .unet import moving_normalize
 from .resnet1d import ResNet, BasicBlock, Bottleneck
 from .swin_transformer import SwinTransformer
 from .swin_transformer_1d import SwinTransformer1D
@@ -116,7 +117,7 @@ class EventDetector(nn.Module):
             nn.Conv1d(
                 channels[-1],
                 #3,
-                4,
+                5,
                 kernel_size=kernel_size,
                 dilation=dilations[-1],
                 padding=((kernel_size - 1) * dilations[-1] + 1) // 2,
@@ -170,10 +171,10 @@ class EventDetector(nn.Module):
     def losses(self, outputs, event_center, event_location, event_location_mask):
         #hm_loss = cross_entropy_loss(outputs["event"], event_center)
         hm_loss = focal_loss(outputs["event"], event_center)
-        hw_loss = weighted_l1_reg_loss(outputs["offset"], event_location[:, 4:, :, :], event_location_mask, weights=self.offset_weight)
+        hw_loss = weighted_l1_reg_loss(outputs["offset"], event_location[:, 5:, :, :], event_location_mask, weights=self.offset_weight)
         
         #reg_loss = smoothl1_reg_loss(outputs["hypocenter"], event_location[:, :3, :, :], event_location_mask)
-        reg_loss = weighted_l1_reg_loss(outputs["hypocenter"], event_location[:, :4, :, :], event_location_mask, weights=self.reg_weight)
+        reg_loss = weighted_l1_reg_loss(outputs["hypocenter"], event_location[:, :5, :, :], event_location_mask, weights=self.reg_weight)
         
         loss = hm_loss * self.weights[0] + hw_loss * self.weights[1] + reg_loss * self.weights[2]
         # print(f"loss {loss}, hm_loss {hm_loss}, hw_loss {hw_loss}, reg_loss {reg_loss}", force=True)
@@ -257,10 +258,11 @@ class PhasePicker(nn.Module):
 
 
 class EQNet(nn.Module):
-    def __init__(self, backbone="resnet50", head="simple", use_station_location=True) -> None:
+    def __init__(self, backbone="resnet50", head="simple", use_station_location=True, moving_norm=(1024, 128),) -> None:
         super().__init__()
         self.backbone_name = backbone
         self.head_name = head
+        self.moving_norm = moving_norm
         if backbone == "resnet18":
             self.backbone = ResNet(BasicBlock, [2, 2, 2, 2])  # ResNet18
             # self.backbone = ResNet(BasicBlock, [3, 4, 6, 3]) #ResNet34
@@ -331,7 +333,7 @@ class EQNet(nn.Module):
             channels=[768, 256, 64, 16, 8]
             #dilations=[1, 6, 24, 48, 96] 
             dilations=[1, 4, 8, 32, 64]
-            neck_channels=512 # TODO: 512 is the original setting
+            neck_channels=256 # TODO: 512 is the original setting
         elif backbone[:6] == "resnet":
             channels=[128, 64, 32, 16, 8]
             dilations=[1, 2, 4, 8, 16]
@@ -357,6 +359,7 @@ class EQNet(nn.Module):
 
     def forward(self, batched_inputs: Tensor) -> Dict[str, Tensor]:
         data = batched_inputs["data"].to(self.device)
+        data = moving_normalize(data, filter=self.moving_norm[0], stride=self.moving_norm[1])
 
         if self.training:
             phase_pick = batched_inputs["phase_pick"].to(self.device)
@@ -397,5 +400,5 @@ class EQNet(nn.Module):
             return {"phase": output_phase, **outputs_event}
 
 
-def build_model(backbone="resnet50", head="simple", use_station_location=True, **kargs) -> EQNet:
+def build_model(backbone="resnet50", head="simple", use_station_location=True, **kwargs) -> EQNet:
     return EQNet(backbone=backbone, head=head, use_station_location=use_station_location)

@@ -86,8 +86,10 @@ class SeismicNetworkIterableDataset(IterableDataset):
                 self.data_list = f.read().splitlines()
         elif data_path is not None:
             if "hour" in format:
-                day = len(glob(f"{data_path}/**/", recursive=False))
-                hours = glob(f"{data_path}/**/", recursive=True)[day+1:]
+                days = glob(f"{data_path}/**/", recursive=False)
+                hours = []
+                for day in sorted(days):
+                    hours += glob(f"{day}**/", recursive=False)
                 self.data_list = [
                     f"{x}{prefix}*.{format.split('_')[0]}" for x in sorted(list(hours))
                 ]
@@ -290,10 +292,10 @@ class SeismicNetworkIterableDataset(IterableDataset):
                                            * self.degree2km, 2)
             station_location[i, 2] =  round(-attrs["elevation_m"]/1e3, 2)
 
-        std = np.std(waveforms, axis=-1, keepdims=True)
-        std[std == 0] = 1.0
-        waveforms = (waveforms - np.mean(waveforms, axis=-1, keepdims=True)) / std
-        waveforms = waveforms.astype(np.float32)
+        # std = np.std(waveforms, axis=-1, keepdims=True)
+        # std[std == 0] = 1.0
+        # waveforms = (waveforms - np.mean(waveforms, axis=-1, keepdims=True)) / std
+        # waveforms = waveforms.astype(np.float32)
 
         return {
             "data": torch.from_numpy(waveforms).float(),
@@ -342,6 +344,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
                 stream = stream.remove_sensitivity(response)
         except Exception as e:
             print(f"Error reading {fname}:\n{e}")
+            assert 0, f"Error reading {fname}:\n{e}"
             return None
 
         tmp_stream = obspy.Stream()
@@ -423,10 +426,10 @@ class SeismicNetworkIterableDataset(IterableDataset):
                 tmp = trace.data.astype("float32")
                 data[j, : len(tmp), i] = tmp[:nt]
             
-        std = np.std(data, axis=1, keepdims=True)
-        std[std == 0] = 1.0
-        data = (data - np.mean(data, axis=1, keepdims=True)) / std
-        data = data.astype(np.float32)
+        # std = np.std(data, axis=1, keepdims=True)
+        # std[std == 0] = 1.0
+        # data = (data - np.mean(data, axis=1, keepdims=True)) / std
+        # data = data.astype(np.float32)
         
         if self.sort:
             D = np.sqrt(((station_location[:, np.newaxis, :2] -  station_location[np.newaxis, :, :2])**2).sum(axis=-1))
@@ -479,10 +482,10 @@ class SeismicNetworkIterableDataset(IterableDataset):
                                                * self.degree2km, 2)
                 station_location[i, 2] =  round(-attrs["elevation_m"]/1e3, 2)
 
-            std = np.std(waveforms, axis=1, keepdims=True)
-            std[std == 0] = 1.0
-            waveforms = (waveforms - np.mean(waveforms, axis=1, keepdims=True)) / std
-            waveforms = waveforms.astype(np.float32)
+            # std = np.std(waveforms, axis=1, keepdims=True)
+            # std[std == 0] = 1.0
+            # waveforms = (waveforms - np.mean(waveforms, axis=1, keepdims=True)) / std
+            # waveforms = waveforms.astype(np.float32)
             
             if self.sort:
                 D = np.sqrt(((station_location[:, np.newaxis, :2] -  station_location[np.newaxis, :, :2])**2).sum(axis=-1))
@@ -543,20 +546,21 @@ class SeismicNetworkIterableDataset(IterableDataset):
                     highpass_filter=self.highpass_filter,
                     sampling_rate=self.sampling_rate,
                 )
-                if "hour" in self.format:
-                    meta["file_name"] = fname.split("/")[-3]+"/"+fname.split("/")[-2]
-                else:
-                    meta["file_name"] = os.path.basename(fname).split(".")[0]
             elif (self.format == "h5") and (self.dataset == "seismic_network"):
                 meta = self.read_hdf5(fname)
-                meta["file_name"] = fname
             elif (self.format == "h5") and (self.dataset == "das"):
                 meta = self.read_das_hdf5(fname)
-                meta["file_name"] = fname
             else:
                 raise NotImplementedError
             if meta is None:
                 continue
+            if self.format == "h5":
+                meta["file_name"] = fname
+            elif "mseed" in self.format:
+                if "hour" in self.format:
+                    meta["file_name"] = fname.split("/")[-3]+"/"+fname.split("/")[-2]
+                else:
+                    meta["file_name"] = os.path.basename(fname).split(".")[0]
 
             if not self.cut_patch:
                 yield meta
