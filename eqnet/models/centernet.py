@@ -44,14 +44,26 @@ def _transpose_and_gather_feat(feat, ind):
 
 def cross_entropy_loss(inputs, targets):
     inputs = inputs.float()  # https://github.com/pytorch/pytorch/issues/48163
+    # loss = 0
+    # for i in range(targets.shape[0]):
+    #     ind = []
+    #     for j in range(targets.shape[-1]):
+    #         if not torch.all(targets[i,:,j]==0):
+    #             ind.append(j)
+    #     ind = torch.tensor(ind)
+    #     inputs_ = inputs[i, :, ind]
+    #     targets_ = targets[i, :, ind]
+    #     loss += F.binary_cross_entropy_with_logits(inputs_, targets_)
+    # loss /= targets.shape[0]
     num=targets.shape[0]*targets.shape[-1]
     for i in range(targets.shape[0]):
         for j in range(targets.shape[-1]):
             if torch.all(targets[i,:,j]==0):
                 num-=1
-    loss = torch.sum(-targets * F.log_softmax(inputs, dim=1))/(num*targets.shape[-2])
-    
+    loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction='sum')/(num*targets.shape[1])
+        
     return loss
+
 
 
 def focal_loss(out, target):
@@ -136,7 +148,7 @@ def norml1_reg_loss(output, target, mask):
     return regr_loss / (num + 1e-4)
 
 
-def weighted_l1_reg_loss(output, target, mask, weights, type="sl1"):
+def weighted_l1_reg_loss(output, target, mask, weights=None, type="sl1"):
     '''
     Arguments:
         weights: channel
