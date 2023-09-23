@@ -29,6 +29,7 @@ def random_shift(example, shift_range=(-160, 16), feature_scale=16):
     example["event_center"] = torch.roll(example["event_center"], feature_shift, dims=-2).contiguous()
     example["event_location"] = torch.roll(example["event_location"], feature_shift, dims=-2).contiguous()
     example["event_location_mask"] = torch.roll(example["event_location_mask"], feature_shift, dims=-2).contiguous()
+    example["amplitude"] = torch.roll(example["amplitude"], shift, dims=-2).contiguous()
     
     return example
     

@@ -6,6 +6,8 @@ import numpy as np
 import torch
 import torch.distributed as dist
 import math
+from scipy.sparse.csgraph import minimum_spanning_tree
+from scipy.sparse.csgraph import breadth_first_order
 from torch.utils.data.sampler import Sampler, BatchSampler
 from glob import glob
 from collections import defaultdict
@@ -137,13 +139,15 @@ def cut_reorder_keys(example, num_stations_list=[5, 10, 20], is_pad=False, is_tr
     num_stations = example["station_location"].shape[0]
     num_stations_list = np.array(sorted(num_stations_list))
     if is_train and num_stations < 5:
-        return example
+        return reorder_keys(example)
     if is_pad:
         if num_stations >= num_stations_list[-1]:
             group_id = num_stations_list[-1]
-            cut = np.random.permutation(num_stations)[:group_id]
+            cut = np.sort(np.random.permutation(num_stations)[:group_id])
+            assert example["data"].shape[0]==example["amplitude"].shape[0], f"data: {example['data'].shape}, amplitude: {example['amplitude'].shape}"
             for keys in example.keys():
                 example[keys] = example[keys][cut]
+            assert example["data"].shape[0]==example["amplitude"].shape[0], f"data: {example['data'].shape}, amplitude: {example['amplitude'].shape}"
         else:
             group_id = num_stations_list[num_stations_list>=num_stations][0]
             # randomly choose a subset of stations to pad the batch
@@ -157,15 +161,17 @@ def cut_reorder_keys(example, num_stations_list=[5, 10, 20], is_pad=False, is_tr
                         example[keys] = torch.cat([example[keys], example[keys][pad_indices]], dim=0)
                 elif padding_mode == "zeros":
                     # zero padding
+                    assert example["data"].shape[0]==example["amplitude"].shape[0], f"data: {example['data'].shape}, amplitude: {example['amplitude'].shape}"
                     for keys in example.keys():
                         example[keys] = torch.cat([example[keys], torch.zeros(pad_size, *example[keys].shape[1:])], dim=0)
                     example["phase_pick"][:, 0, :] = 1 # the data is noise
+                    assert example["data"].shape[0]==example["amplitude"].shape[0], f"data: {example['data'].shape}, amplitude: {example['amplitude'].shape}"
     else:
         if num_stations < num_stations_list[0]:
             return reorder_keys(example)
         else:
             group_id = num_stations_list[num_stations_list<=num_stations][-1]
-            cut = np.random.permutation(num_stations)[:group_id]
+            cut = np.sort(np.random.permutation(num_stations)[:group_id])
             for keys in example.keys():
                 example[keys] = example[keys][cut]
 
@@ -179,4 +185,5 @@ def reorder_keys(example):
     example["event_location"] = example["event_location"].permute(1,2,0).contiguous()
     example["event_location_mask"] = example["event_location_mask"].permute(1,0).contiguous()
     example["station_location"] = example["station_location"].contiguous()
+    example["amplitude"] = example["amplitude"].permute(1,2,0).contiguous()
     return example
