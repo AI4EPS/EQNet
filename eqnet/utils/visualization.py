@@ -318,6 +318,7 @@ def plot_phasenet(
 
 
 def visualize_eqnet_train(meta, phase, event, epoch, figure_dir="figures", prefix="", offset=None, hypocenter=None):
+    data = normalize(meta["data"])
     flag=True if (offset is not None) and (hypocenter is not None) else False
     for i in range(meta["data"].shape[0]):
         plt.close("all")
@@ -331,10 +332,11 @@ def visualize_eqnet_train(meta, phase, event, epoch, figure_dir="figures", prefi
             axes.append(plt.subplot2grid((6, 4), (3, 0), colspan=3, rowspan=2))
             axes.append(plt.subplot2grid((6, 4), (5, 0), colspan=3))
             axes.append(plt.subplot2grid((6, 4), (3, 3), colspan=1, rowspan=2))
+            axes.append(plt.subplot2grid((6, 4), (5, 3), colspan=1))
         else:
             fig, axes = plt.subplots(3, 1, figsize=(10, 10))
         for j in range(phase.shape[-1]):
-            axes[0].plot((meta["data"][i, -1, :, j]) / torch.std(meta["data"][i, -1, :, j]) / 8 + j)
+            axes[0].plot((data[i, -1, :, j]) + j)
 
             axes[1].plot(phase[i, 1, :, j] + j, "r")
             axes[1].plot(phase[i, 2, :, j] + j, "b")
@@ -365,7 +367,7 @@ def visualize_eqnet_train(meta, phase, event, epoch, figure_dir="figures", prefi
             
             dt_ground_truth = (meta["event_location"][i, 0,:,:]*mask)*sampling_rate
             dt_ground_truth = dt_ground_truth.sum(axis=-2)/mask_divide
-            offset_ground_truth = (meta["event_location"][i, 4,:,:]*mask)
+            offset_ground_truth = (meta["event_location"][i, 5,:,:]*mask)
             offset_ground_truth = offset_ground_truth.sum(axis=-2)/mask_divide
             dt_ground_truth = dt_ground_truth + offset_ground_truth*feature_scale
             
@@ -377,7 +379,7 @@ def visualize_eqnet_train(meta, phase, event, epoch, figure_dir="figures", prefi
             
             width_pred = (offset[i, 1,:,:]*mask)
             width_pred = width_pred.sum(axis=-2)/mask_divide
-            width_ground_truth = (meta["event_location"][i, 5,:,:]*mask)
+            width_ground_truth = (meta["event_location"][i, 6,:,:]*mask)
             width_ground_truth = width_ground_truth.sum(axis=-2)/mask_divide
             
             for k in range(len(event_center)):
@@ -391,7 +393,7 @@ def visualize_eqnet_train(meta, phase, event, epoch, figure_dir="figures", prefi
                 axes[2].vlines(event_center[k]+width_ground_truth[k], k-0.2, k+0.2, color="C0", linestyle="--")
                 axes[2].vlines(event_center[k]+offset_ground_truth[k], k-0.2, k+0.2, color="C2", linestyle="--")
             
-            distance = (hypocenter[i, 1:,:,:]*mask[None, :, :])
+            distance = (hypocenter[i, 1:4,:,:]*mask[None, :, :])
             distance = distance.sum(axis=-2)/mask_divide[None,:]
             # if prediction doesn't have the depth, use 0
             if distance.shape[0]==2:
@@ -417,6 +419,15 @@ def visualize_eqnet_train(meta, phase, event, epoch, figure_dir="figures", prefi
             axes[5].scatter(distance_ground_truth[2]+station_location[:, 2], distance_ground_truth[1]+station_location[:, 1], c=np.arange(station_location.shape[0]), s=50, marker="*", alpha=0.5)
             axes[5].scatter((distance[2]+station_location[:, 2]).sum()/true_station_number, (distance[1]+station_location[:, 1]).sum()/true_station_number, c="C1", s=150, marker=".", alpha=0.7)
             axes[5].scatter((distance_ground_truth[2]+station_location[:, 2]).sum()/true_station_number, (distance_ground_truth[1]+station_location[:, 1]).sum()/true_station_number, c="C0", s=150, marker="*", alpha=0.7)
+            
+            magnitude = (hypocenter[i, 4,:,:]*mask)
+            magnitude = magnitude.sum(axis=-2)/mask_divide
+            magnitude_ground_truth = (meta["event_location"][i, 4,:,:]*mask)
+            magnitude_ground_truth = magnitude_ground_truth.sum(axis=-2)/mask_divide
+            
+            axes[6].scatter(magnitude, np.zeros_like(magnitude), c=np.arange(magnitude.shape[0]), s=50, marker=".", alpha=0.7)
+            axes[6].scatter(magnitude.sum()/true_station_number, 0, c=magnitude.shape[0], s=150, marker=".")
+            axes[6].scatter(magnitude_ground_truth.sum()/true_station_number, 0, c="C1", s=150, marker="*")
 
         axes[0].set_title("data")
         axes[1].set_title("phase_pick")
@@ -425,6 +436,7 @@ def visualize_eqnet_train(meta, phase, event, epoch, figure_dir="figures", prefi
             axes[3].set_title("hypocenter xy")
             axes[4].set_title("hypocenter xz")
             axes[5].set_title("hypocenter yz")
+            axes[6].set_title("magnitude")
             #axes[3].set_aspect("equal")
             #axes[4].set_aspect("equal")
             #axes[5].set_aspect("equal")
@@ -706,7 +718,7 @@ def plot_eqnet(meta, pred_phase, pred_event, phase_picks=None, event_picks=None,
     # waveform = normalize(meta["waveform"])
     # waveform = meta["waveform"] / 3.0
 
-    waveform = meta["data"]
+    waveform = normalize(meta["data"])
     # waveform = normalize(waveform)
     # vmax = torch.std(waveform) * 3
     # vmin = -vmax
@@ -729,7 +741,7 @@ def plot_eqnet(meta, pred_phase, pred_event, phase_picks=None, event_picks=None,
                 ]
                 
                 t_event = [
-                    begin_time_i + timedelta(seconds=(ii + it) * dt*feature_scale) for it in range(len(pred_event[i, ii : ii + nt, k]))
+                    begin_time_i + timedelta(seconds=(ii + it*feature_scale) * dt) for it in range(len(pred_event[i, ii//feature_scale : (ii + nt)//feature_scale, k]))
                 ]
 
                 if ns0 == 1:
@@ -744,14 +756,16 @@ def plot_eqnet(meta, pred_phase, pred_event, phase_picks=None, event_picks=None,
                     waveform_ijk /= torch.std(waveform_ijk) * 6
                 axes[0].plot(t, waveform_ijk + k, linewidth=0.2, color="k", label=f"{chn_name[2]}")
 
-                axes[1].plot(t, pred_phase[i, 1, ii : ii + nt, k] + k, "-C0", linewidth=1.0)
-                axes[1].plot(t, pred_phase[i, 2, ii : ii + nt, k] + k, "-C1", linewidth=1.0)
+                axes[1].plot(t, pred_phase[i, 1, ii : ii + nt, k] + k, "-C3", linewidth=1.0)
+                axes[1].plot(t, pred_phase[i, 2, ii : ii + nt, k] + k, "-C0", linewidth=1.0)
 
-                axes[1].plot(t_event, pred_event[i, ii : ii + nt, k] + k, "-C3", linewidth=1.0)
+                axes[1].plot(t_event, pred_event[i, ii//feature_scale : (ii + nt)//feature_scale, k] + k, "-C1", linewidth=1.0)
 
             axes[2].scatter(meta["station_location"][i, :, 0], meta["station_location"][i, :, 1], c=np.arange(ns0), s=50, marker="^")
             axes[3].scatter(meta["station_location"][i, :, 0], meta["station_location"][i, :, 2], c=np.arange(ns0), s=50, marker="^")
             for pick_dict in event_picks[i]:
+                if len(phase_picks[i]) == 0:
+                    continue
                 if ii > pick_dict["event_center_index"]*feature_scale or ii + nt < pick_dict["event_center_index"]*feature_scale:
                     continue
                 sta_order = pick_dict["station_index"]
