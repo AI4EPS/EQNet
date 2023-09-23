@@ -359,6 +359,8 @@ class EQNet(nn.Module):
 
     def forward(self, batched_inputs: Tensor) -> Dict[str, Tensor]:
         data = batched_inputs["data"].to(self.device)
+        amplitude = batched_inputs["amplitude"].to(self.device)
+        assert data.shape[-1]==amplitude.shape[-1], f"data {data.shape}, amplitude {amplitude.shape}"
         data = moving_normalize(data, filter=self.moving_norm[0], stride=self.moving_norm[1])
 
         if self.training:
@@ -384,7 +386,7 @@ class EQNet(nn.Module):
         features = self.neck(features)
 
         output_phase, loss_phase = self.phase_picker(features, phase_pick)
-        outputs_event, losses_event = self.event_detector(features, event_center, event_location, event_location_mask)
+        outputs_event, losses_event = self.event_detector(features, event_center, event_location, event_location_mask, amplitude)
 
         if self.training:
             loss = loss_phase + losses_event["loss"]

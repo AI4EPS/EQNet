@@ -149,9 +149,7 @@ class UPerNeck(nn.Module, metaclass=ABCMeta):
     def psp_forward(self, inputs):
         """Forward function of PSP module."""
         x = inputs[-1]
-        psp_outs = [x]
-        psp_outs.extend(self.psp_modules(x))
-        psp_outs = torch.cat(psp_outs, dim=1)
+        psp_outs = torch.cat([x]+self.psp_modules(x), dim=1)
         output = self.bottleneck(psp_outs)
 
         return output
@@ -159,16 +157,11 @@ class UPerNeck(nn.Module, metaclass=ABCMeta):
     def _forward_feature(self, inputs):
         """Forward function for feature maps 
         Args:
-            inputs (list[Tensor]): Listc of multi-level img features.
+            inputs (list[Tensor]): Listc of multi-level wave features.
+            amplitude (Tensor): A tensor of shape (batch_size*nsta, channels, nt) which is the amplitude
 
         Returns:
-            [offset, heatmap, hypocenter]: List of multi-level features.
-            offset: PPM output (Tensor): A tensor of shape (batch_size * nstations,
-            self.channels, nt=1/32 raw nt) which is feature by PPM Module
-            heatmap: FPN output[0] (Tensor): A tensor of shape (batch_size * nstations, 
-            self.channels, nt=1/4 raw nt) which is feature by the last layer of FPN
-            hypocenter: feats (Tensor): A tensor of shape (batch_size * nstations, 
-            self.channels, nt=1/4 raw nt) which is feature map by Fusion Module
+            outputs: Dict of multi-level features.
         """
         inputs = self._transform_inputs(inputs)
         outputs = {}
@@ -216,7 +209,8 @@ class UPerNeck(nn.Module, metaclass=ABCMeta):
     def forward(self, features):
         """Forward function.
         Args:
-            features (list[Tensor]): List of multi-level features. Shape of each: bt, sta, chn, nt
+            features (dict[Tensor]): Dict of multi-level features. Shape of each: bt, sta, chn, nt
+            amplitude (Tensor): A tensor of shape (batch_size, channels, nt, nsta) which is the amplitude
         """
         features = [features[f"out{i}"] for i in range(len(features.keys()))]
         for i in range(len(features)):
@@ -305,9 +299,9 @@ class EventHead(nn.Module):
                  dilations=[1, 4, 8, 16],
                  kernel_size = 3,
                  loss_dict: dict = {"hm_loss": "focal", "hw_loss": "wl1", "reg_loss": "wl1"},
-                 weights=[1, 0.015, 0.01],
-                 offset_weight=[10, 1], 
-                 reg_weight=[1,1,1,1],
+                 weights=[1.5, 0.015, 0.035],
+                 offset_weight=[5, 1], 
+                 reg_weight=[1,1,1,1, 15],
                  ):
         super().__init__()
         
@@ -355,8 +349,8 @@ class EventHead(nn.Module):
                 hidden_channels[2],
                 2,
                 kernel_size=kernel_size,
-                dilation=dilations[0],
-                padding=((kernel_size - 1) * dilations[0] + 1) // 2,
+                dilation=dilations[1],
+                padding=((kernel_size - 1) * dilations[1] + 1) // 2,
                 padding_mode="reflect",
             )
         )
@@ -378,8 +372,40 @@ class EventHead(nn.Module):
                 #3,
                 4,
                 kernel_size=kernel_size,
-                dilation=dilations[0],
-                padding=((kernel_size - 1) * dilations[0] + 1) // 2,
+                dilation=dilations[1],
+                padding=((kernel_size - 1) * dilations[1] + 1) // 2,
+                padding_mode="reflect",
+            )
+        )
+        
+        self.magnitude = nn.Sequential(
+            nn.Conv1d(
+                self.channels+3,
+                hidden_channels[2],
+                kernel_size=kernel_size,
+                dilation=dilations[3],
+                padding=((kernel_size - 1) * dilations[3] + 1) // 2,
+                padding_mode="reflect",
+                bias=False,
+            ),
+            nn.BatchNorm1d(hidden_channels[2]),
+            nn.ReLU(inplace=True),
+            nn.Conv1d(
+                hidden_channels[2],
+                16,
+                kernel_size=kernel_size,
+                dilation=dilations[2],
+                padding=((kernel_size - 1) * dilations[2] + 1) // 2,
+                padding_mode="reflect",
+            ),
+            nn.BatchNorm1d(16),
+            nn.ReLU(inplace=True),
+            nn.Conv1d(
+                16,
+                1,
+                kernel_size=kernel_size,
+                dilation=dilations[1],
+                padding=((kernel_size - 1) * dilations[1] + 1) // 2,
                 padding_mode="reflect",
             )
         )
@@ -391,7 +417,7 @@ class EventHead(nn.Module):
         self.hw_loss = loss_factory[loss_dict["hw_loss"]]
         self.reg_loss = loss_factory[loss_dict["reg_loss"]]
         
-    def forward(self, features, event_center, event_location, event_location_mask):
+    def forward(self, features, event_center, event_location, event_location_mask, amplitude):
         x = features['ppm']
         bt, st, ch, nt = x.shape
         x = x.view(bt*st, ch, nt)
@@ -412,6 +438,22 @@ class EventHead(nn.Module):
         hypocenter = hypocenter.view(bt, st, hypocenter.shape[1], hypocenter.shape[2])
         hypocenter = hypocenter.permute(0, 2, 3, 1)
         
+        bt, ch, nt, st = amplitude.shape
+        #amplitude = F.avg_pool2d(amplitude, kernel_size=(1024, 1), stride=(128, 1))
+        #amplitude = F.interpolate(amplitude, scale_factor=(1024, 1), mode="bilinear", align_corners=False)[:, :, :nt, :nx]
+        amplitude[torch.abs(amplitude)<1e-6] = 1e-6
+        amplitude = torch.log10(torch.abs(amplitude))
+        assert torch.all(torch.isfinite(amplitude)), "amplitude should be finite"
+        assert not torch.any(torch.isnan(amplitude)), "amplitude should not be nan"
+        amplitude = amplitude.permute(0, 3, 1, 2).contiguous().view(bt*st, ch, nt)
+        # downsample amplitude
+        amplitude = F.interpolate(amplitude, size=x.shape[-1], mode='linear', align_corners=False)
+        
+        magnitude = self.magnitude(torch.cat([x, amplitude], dim=1))
+        magnitude = magnitude.view(bt, st, magnitude.shape[1], magnitude.shape[2]).permute(0, 2, 3, 1)
+        assert hypocenter.shape[-2]==512
+        hypocenter = torch.cat([hypocenter, magnitude], dim=1)
+        
         if self.training:            
             return None, self.losses({"event": heatmap, "offset": offset, "hypocenter": hypocenter}, event_center, event_location, event_location_mask)
         elif event_center is not None:
@@ -423,10 +465,10 @@ class EventHead(nn.Module):
     def losses(self, outputs, event_center, event_location, event_location_mask):
         #hm_loss = cross_entropy_loss(outputs["event"], event_center)
         hm_loss = self.hm_loss(outputs["event"], event_center)
-        hw_loss = self.hw_loss(outputs["offset"], event_location[:, 4:, :, :], event_location_mask, weights=self.offset_weight)
+        hw_loss = self.hw_loss(outputs["offset"], event_location[:, 5:, :, :], event_location_mask, weights=self.offset_weight)
         
         #reg_loss = smoothl1_reg_loss(outputs["hypocenter"], event_location[:, :3, :, :], event_location_mask)
-        reg_loss = self.reg_loss(outputs["hypocenter"], event_location[:, :4, :, :], event_location_mask, weights=self.reg_weight)
+        reg_loss = self.reg_loss(outputs["hypocenter"], event_location[:, :5, :, :], event_location_mask, weights=self.reg_weight)
         
         loss = hm_loss * self.weights[0] + hw_loss * self.weights[1] + reg_loss * self.weights[2]
         # print(f"loss {loss}, hm_loss {hm_loss}, hw_loss {hw_loss}, reg_loss {reg_loss}", force=True)
@@ -505,6 +547,17 @@ class PhaseHead(nn.Module):
 
     def losses(self, inputs, targets):
         inputs = inputs.float()  # https://github.com/pytorch/pytorch/issues/48163
+        # loss = 0
+        # for i in range(targets.shape[0]):
+        #     ind = []
+        #     for j in range(targets.shape[3]):
+        #         if not torch.all(targets[i,1:,:,j]==0):
+        #             ind.append(j)
+        #     ind = torch.tensor(ind)
+        #     inputs_ = inputs[i, :, :, ind]
+        #     targets_ = targets[i, :, :, ind]
+        #     loss += torch.sum(-targets_ * F.log_softmax(inputs_, dim=0), dim=0).mean()
+        # loss /= targets.shape[0]
         num=targets.shape[0]*targets.shape[3]
         for i in range(targets.shape[0]):
             for j in range(targets.shape[3]):
