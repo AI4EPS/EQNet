@@ -130,11 +130,11 @@ def create_groups(dataset, num_stations_list=[5, 10, 20], is_pad=False, is_train
     return group_ids
 
 
-def cut_reorder_keys(example, num_stations_list=[5, 10, 20], is_pad=False, is_train=True, padding_mode="zeros"):
+def cut_reorder_keys(example, num_stations_list=[5, 10, 20], is_pad=False, is_train=True, padding_mode="randn"):
     '''
     Args:
         num_stations_list: a list of number of stations
-        padding_mode: "zeros" or "random_duplicate", if "zeros", pad the data with zeros, if "random_duplicate", randomly duplicate some stations
+        padding_mode: "zeros" or "random_duplicate", if "randn", pad the data with randn, if "random_duplicate", randomly duplicate some stations
     '''
     num_stations = example["station_location"].shape[0]
     num_stations_list = np.array(sorted(num_stations_list))
@@ -159,11 +159,13 @@ def cut_reorder_keys(example, num_stations_list=[5, 10, 20], is_pad=False, is_tr
                     pad_indices = np.random.choice(num_stations, pad_size, replace=True)
                     for keys in example.keys():
                         example[keys] = torch.cat([example[keys], example[keys][pad_indices]], dim=0)
-                elif padding_mode == "zeros":
+                elif padding_mode == "randn":
                     # zero padding
                     assert example["data"].shape[0]==example["amplitude"].shape[0], f"data: {example['data'].shape}, amplitude: {example['amplitude'].shape}"
                     for keys in example.keys():
                         example[keys] = torch.cat([example[keys], torch.zeros(pad_size, *example[keys].shape[1:])], dim=0)
+                    example["data"] = torch.randn(*example["data"].shape)
+                    example["amplitude"] = example["data"].clone()
                     example["phase_pick"][:, 0, :] = 1 # the data is noise
                     assert example["data"].shape[0]==example["amplitude"].shape[0], f"data: {example['data'].shape}, amplitude: {example['amplitude'].shape}"
     else:
