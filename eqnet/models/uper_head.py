@@ -299,9 +299,9 @@ class EventHead(nn.Module):
                  dilations=[1, 4, 8, 16],
                  kernel_size = 3,
                  loss_dict: dict = {"hm_loss": "focal", "hw_loss": "wl1", "reg_loss": "wl1"},
-                 weights=[1.5, 0.015, 0.035],
+                 weights=[1.5, 0.016, 0.04],
                  offset_weight=[5, 1], 
-                 reg_weight=[1,1,1,1, 15],
+                 reg_weight=[0.8,1,1,0.8, 10],
                  ):
         super().__init__()
         
@@ -451,7 +451,6 @@ class EventHead(nn.Module):
         
         magnitude = self.magnitude(torch.cat([x, amplitude], dim=1))
         magnitude = magnitude.view(bt, st, magnitude.shape[1], magnitude.shape[2]).permute(0, 2, 3, 1)
-        assert hypocenter.shape[-2]==512
         hypocenter = torch.cat([hypocenter, magnitude], dim=1)
         
         if self.training:            

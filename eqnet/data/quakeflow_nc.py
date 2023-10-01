@@ -26,6 +26,8 @@ import fsspec
 import datasets
 from scipy.sparse.csgraph import minimum_spanning_tree
 from scipy.sparse.csgraph import breadth_first_order
+from scipy.interpolate import LSQUnivariateSpline
+from scipy.signal import butter, filtfilt
 
 
 # TODO: Add BibTeX citation
@@ -72,9 +74,13 @@ _FILES = [
     "NC2019.h5",
     "NC2020.h5",
 ]
+
+_PATH = "/home/zhuwq/quakeflow_share/quakeflow_nc/data"
+_NAMES = ["2016.h5", "2017.h5", "2018.h5", "2019.h5", "2020.h5"]#, "2021.h5", "2022.h5"]
 _URLS = {
     "station": [f"{_REPO}/{x}" for x in _FILES],
     "event": [f"{_REPO}/{x}" for x in _FILES],
+    #"event": [f"{_PATH}/{x}" for x in _NAMES],
     "station_train": [f"{_REPO}/{x}" for x in _FILES[:-1]],
     "event_train": [f"{_REPO}/{x}" for x in _FILES[:-1]],
     "station_test": [f"{_REPO}/{x}" for x in _FILES[-1:]],
@@ -184,9 +190,10 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                     "data": datasets.Array3D(shape=(None, 3, self.nt), dtype='float32'),
                     "phase_pick": datasets.Array3D(shape=(None, 3, self.nt), dtype='float32'),
                     "event_center" : datasets.Array2D(shape=(None, self.feature_nt), dtype='float32'),
-                    "event_location": datasets.Array3D(shape=(None, 6, self.feature_nt), dtype='float32'),
+                    "event_location": datasets.Array3D(shape=(None, 7, self.feature_nt), dtype='float32'),
                     "event_location_mask": datasets.Array2D(shape=(None, self.feature_nt), dtype='float32'),
                     "station_location": datasets.Array2D(shape=(None, 3), dtype="float32"),
+                    "amplitude": datasets.Array3D(shape=(None, 3, self.nt), dtype="float32"),
                     # "reference_point": datasets.Sequence(datasets.Value("float32")),
                 }
             )
@@ -343,12 +350,27 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                             is_sick = False
                             for sta_id in station_ids:
                                 attrs = event[sta_id].attrs
+                                # if len(attrs.keys()) <22:
+                                #     is_sick = True
+                                #     break
+                                # try:
+                                #     print(event_id)
+                                #     p_picks = attrs["phase_index"][attrs["phase_type"] == "P"]
+                                # except:
+                                #     print(event_id, event_attrs)
+                                #     print(sta_id, attrs)
+                                #     raise
                                 p_picks = attrs["phase_index"][attrs["phase_type"] == "P"]
                                 s_picks = attrs["phase_index"][attrs["phase_type"] == "S"]
-                                if p_picks>=s_picks:
-                                    is_sick = True
-                                    break
-                                if ((p_picks) + (s_picks))[0] > self.nt * 2:
+                                p_events = attrs["event_id"][attrs["phase_type"] == "P"]
+                                s_events = attrs["event_id"][attrs["phase_type"] == "S"]
+                                for p_pick, s_pick, p_event, s_event in zip(p_picks, s_picks, p_events, s_events):
+                                    if p_pick>=s_pick and p_event==s_event:
+                                        is_sick = True
+                                        break
+                                p_pick = attrs["phase_index"][np.logical_and(attrs["phase_type"] == "P", attrs["event_id"] == event_attrs["event_id"])]
+                                s_pick = attrs["phase_index"][np.logical_and(attrs["phase_type"] == "S", attrs["event_id"] == event_attrs["event_id"])]
+                                if ((p_pick) + (s_pick))[0] > self.nt * 2:
                                     is_sick = True
                                     break
                             if is_sick:
@@ -362,10 +384,13 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                             reference_latitude/=len(station_ids)
                             reference_longitude/=len(station_ids)
                             
+                            b, a = butter(4, 0.1, btype="highpass", analog=False)
+                            
                             waveforms = np.zeros([len(station_ids), 3, self.nt], dtype="float32")
+                            amplitude = np.zeros_like(waveforms)
                             phase_pick = np.zeros_like(waveforms)
                             event_center = np.zeros([len(station_ids), self.feature_nt])
-                            event_location = np.zeros([len(station_ids), 6, self.feature_nt])
+                            event_location = np.zeros([len(station_ids), 7, self.feature_nt])
                             event_location_mask = np.zeros([len(station_ids), self.feature_nt])
                             station_location = np.zeros([len(station_ids), 3])
                             # reference_point = np.array([reference_longitude, reference_latitude])
@@ -373,16 +398,28 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                             for i, sta_id in enumerate(station_ids):
                                 # trace_id = event_id + "/" + sta_id
                                 waveforms[i, :, :] = event[sta_id][:, :self.nt]
+                                amplitude[i, :, :] = event[sta_id][:, :self.nt]
                                 attrs = event[sta_id].attrs
-                                p_picks = attrs["phase_index"][attrs["phase_type"] == "P"]
-                                s_picks = attrs["phase_index"][attrs["phase_type"] == "S"]
+                                p_picks = attrs["phase_index"][np.logical_and(attrs["phase_type"] == "P", attrs["event_id"] == event_attrs["event_id"])]
+                                s_picks = attrs["phase_index"][np.logical_and(attrs["phase_type"] == "S", attrs["event_id"] == event_attrs["event_id"])]
                                 phase_pick[i, :, :] = generate_label([p_picks, s_picks], nt=self.nt)
+                                if attrs["unit"][-6:] == "m/s**2":
+                                    # integrate acceleration to velocity
+                                    amplitude[i] = np.cumsum(amplitude[i]*attrs["dt_s"], axis=-1)
+                                    for j in range(3): 
+                                        spline_i = LSQUnivariateSpline(np.arange(self.nt), amplitude[i, j, :], t=np.arange(self.nt, step=self.nt/2048)[1:], k=3)
+                                        amplitude[i, j, :] -= spline_i(np.arange(self.nt))
+                                    amplitude[i] = filtfilt(b, a, amplitude[i], axis=-1)
+                                elif attrs["unit"][-3:] == "m/s":
+                                    amplitude[i] = amplitude[i] * 10e4 #TODO: temp
+                                    
 
                                 ## TODO: how to deal with multiple phases
                                 # center = (attrs["phase_index"][::2] + attrs["phase_index"][1::2])/2.0
                                 ## assuming only one event with both P and S picks
+                                assert len(p_picks)==len(s_picks), f'{event_id} {sta_id}: p_picks:{p_picks}, s_picks:{s_picks}'
                                 c0 = ((p_picks) + (s_picks)) / 2.0 # phase center
-                                c0_width = max(((s_picks - p_picks) * self.sampling_rate / 200.0).max(), 80)
+                                c0_width = max(((s_picks - p_picks) * self.sampling_rate / 200.0).max(), 0)
                                 # c0_width = ((s_picks - p_picks) * self.sampling_rate / 200.0).max() # min=160
                                 assert c0_width>0
                                 dx = round(
@@ -400,6 +437,7 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                                     event_attrs["depth_km"] + attrs["elevation_m"] / 1e3,
                                     2,
                                 )
+                                magnitude = round(event_attrs["magnitude"], 2)
 
                                 assert c0[0]<self.nt
                                 c0 = c0/self.feature_scale
@@ -416,7 +454,7 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                                         c0_int,
                                     ],
                                     label_width=[
-                                        c0_width,
+                                        10,
                                     ],
                                     # label_width=[
                                     #     10,
@@ -430,7 +468,7 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                                 ) / self.sampling_rate
                                 # event_location[0, :, i] = (np.arange(self.feature_nt) - 3000 / self.feature_scale) / self.sampling_rate
                                 # print(event_location[i, 1:, mask].shape, event_location.shape, event_location[i][1:, mask].shape)
-                                event_location[i][1:, mask] = np.array([dx, dy, dz, (c0-c0_int)[0], c0_width])[:, np.newaxis]
+                                event_location[i][1:, mask] = np.array([dx, dy, dz, magnitude, (c0-c0_int)[0], c0_width])[:, np.newaxis]
                                 event_location_mask[i, :] = mask
 
                                 ## station location
@@ -444,16 +482,17 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                                                                * self.degree2km, 2)
                                 station_location[i, 2] =  round(-attrs["elevation_m"]/1e3, 2)
 
-                            std = np.std(waveforms, axis=-1, keepdims=True)
-                            std[std == 0] = 1.0
-                            waveforms = (waveforms - np.mean(waveforms, axis=-1, keepdims=True)) / std
-                            waveforms = waveforms.astype(np.float32)
+                            # std = np.std(waveforms, axis=-1, keepdims=True)
+                            # std[std == 0] = 1.0
+                            # waveforms = (waveforms - np.mean(waveforms, axis=-1, keepdims=True)) / std
+                            # waveforms = waveforms.astype(np.float32)
                             
-                            if self.config.name == "event_large" or self.config.name == "event":
+                            if (self.config.name == "event_large" or self.config.name == "event") and len(station_ids) > 5:
                                 D = np.sqrt(((station_location[:, np.newaxis, :2] -  station_location[np.newaxis, :, :2])**2).sum(axis=-1))
                                 Tcsr = minimum_spanning_tree(D)
                                 index = breadth_first_order(Tcsr, i_start=0, directed=False, return_predecessors=False)
                                 waveforms = waveforms[index]
+                                amplitude = amplitude[index]
                                 phase_pick = phase_pick[index]
                                 event_center = event_center[index]
                                 event_location = event_location[index]
@@ -467,6 +506,7 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                                 "event_location": torch.from_numpy(event_location).float(),
                                 "event_location_mask": torch.from_numpy(event_location_mask).float(),
                                 "station_location": torch.from_numpy(station_location).float(),
+                                "amplitude": torch.from_numpy(amplitude).float(),
                                 # "reference_point": torch.from_numpy(reference_point).float(),
                             }
 

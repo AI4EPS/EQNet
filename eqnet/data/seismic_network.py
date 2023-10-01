@@ -16,6 +16,8 @@ from collections import defaultdict
 from datetime import timedelta, datetime
 from scipy.sparse.csgraph import minimum_spanning_tree
 from scipy.sparse.csgraph import breadth_first_order
+from scipy.interpolate import LSQUnivariateSpline
+from scipy.signal import butter, filtfilt
 
 from ..utils.station_sampler import reorder_keys
 from .utils import random_shift
@@ -210,10 +212,12 @@ class SeismicNetworkIterableDataset(IterableDataset):
         reference_latitude/=len(station_ids)
         reference_longitude/=len(station_ids)
         
+        b, a = butter(4, 0.1, btype="highpass", analog=False)
         waveforms = np.zeros([len(station_ids), 3, self.nt], dtype="float32")
+        amplitude = np.zeros_like(waveforms)
         phase_pick = np.zeros_like(waveforms)
         event_center = np.zeros([len(station_ids), self.feature_nt])
-        event_location = np.zeros([len(station_ids), 6, self.feature_nt])
+        event_location = np.zeros([len(station_ids), 7, self.feature_nt])
         event_location_mask = np.zeros([len(station_ids), self.feature_nt])
         station_location = np.zeros([len(station_ids), 3])
         # reference_point = np.array([reference_longitude, reference_latitude])
@@ -221,7 +225,18 @@ class SeismicNetworkIterableDataset(IterableDataset):
         for i, sta_id in enumerate(station_ids):
             # trace_id = event_id + "/" + sta_id
             waveforms[i, :, :] = event[sta_id][:, :self.nt]
+            amplitude[i, :, :] = event[sta_id][:, :self.nt]
             attrs = event[sta_id].attrs
+            if attrs["unit"][-6:] == "m/s**2":
+                # integrate acceleration to velocity
+                amplitude[:, :, i] = np.cumsum(amplitude[:, :, i]*attrs["dt_s"], axis=1)
+                for j in range(3): 
+                    spline_i = LSQUnivariateSpline(np.arange(amplitude.shape[1]), amplitude[j, :, i], t=np.arange(amplitude.shape[1], step=amplitude.shape[1]/2048)[1:], k=3)
+                    amplitude[j, :, i] -= spline_i(np.arange(amplitude.shape[1]))
+                amplitude[:, :, i] = filtfilt(b, a, amplitude[:, :, i], axis=1)
+            elif attrs["unit"][-3:] == "m/s": #TODO: temp
+                amplitude[:, :, i] = amplitude[:, :, i] * 10e4
+            
             p_picks = attrs["phase_index"][attrs["phase_type"] == "P"]
             s_picks = attrs["phase_index"][attrs["phase_type"] == "S"]
             phase_pick[i, :, :] = generate_label([p_picks, s_picks], nt=self.nt)
@@ -299,6 +314,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
 
         return {
             "data": torch.from_numpy(waveforms).float(),
+            "amplitude": torch.from_numpy(amplitude).float(),
             "phase_pick": torch.from_numpy(phase_pick).float(),
             "event_center": torch.from_numpy(event_center).float(),
             "event_location": torch.from_numpy(event_location).float(),
@@ -409,6 +425,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
         nx = len(station_ids)
         nt = len(stream[0].data)
         data = np.zeros([3, nt+((32- nt%32)%32), nx], dtype=np.float32) # the length of data should be multiple of 32
+        amplitude = np.zeros_like(data)
         for i, sta in enumerate(station_keys):
             for c in station_ids[sta]:
                 j = comp2idx[c]
@@ -419,29 +436,28 @@ class SeismicNetworkIterableDataset(IterableDataset):
 
                 trace = stream.select(id=sta + c)[0]
 
+                tmp = trace.data.astype("float32")
                 ## accerleration to velocity
                 if sta[-1] == "N":
-                    trace = trace.integrate().filter("highpass", freq=1.0)
-
-                tmp = trace.data.astype("float32")
+                    amp = trace.integrate().filter("highpass", freq=1.0).data.astype("float32")
+                else:
+                    amp = tmp
                 data[j, : len(tmp), i] = tmp[:nt]
-            
-        # std = np.std(data, axis=1, keepdims=True)
-        # std[std == 0] = 1.0
-        # data = (data - np.mean(data, axis=1, keepdims=True)) / std
-        # data = data.astype(np.float32)
+                amplitude[j, : len(tmp), i] = amp[:nt]
         
-        if self.sort:
+        if self.sort and len(station_keys) > 5:
             D = np.sqrt(((station_location[:, np.newaxis, :2] -  station_location[np.newaxis, :, :2])**2).sum(axis=-1))
             Tcsr = minimum_spanning_tree(D)
             index = breadth_first_order(Tcsr, i_start=0, directed=False, return_predecessors=False)
             
             data = data[:, :, index]
+            amplitude = amplitude[:, :, index]
             station_keys = [station_keys[i] for i in index]
             station_location = station_location[index]
 
         return {
             "data": torch.from_numpy(data),
+            "amplitude": torch.from_numpy(amplitude),
             "station_id": station_keys,
             "station_location": torch.from_numpy(station_location).float(),
             "begin_time": begin_time.datetime.isoformat(timespec="milliseconds"),
@@ -460,7 +476,9 @@ class SeismicNetworkIterableDataset(IterableDataset):
             dt_s = event[station_ids[0]].attrs["dt_s"]
             # data shape
             nt = event[station_ids[0]].shape[1]
-            waveforms = np.zeros([3, nt, len(station_ids)], dtype="float32")
+            b, a = butter(4, 0.1, btype="highpass", analog=False)
+            waveforms = np.zeros([3, nt+((32-(nt%32))%32), len(station_ids)], dtype="float32")
+            amplitude = np.zeros_like(waveforms)
             station_location = np.zeros([len(station_ids), 3])
             reference_latitude = 0
             for sta_id in station_ids:
@@ -468,8 +486,18 @@ class SeismicNetworkIterableDataset(IterableDataset):
             reference_latitude/=len(station_ids)
             for i, sta_id in enumerate(station_ids):
                 # trace_id = event_id + "/" + sta_id
-                waveforms[:, :, i] = event[sta_id][:, :]
+                waveforms[:, :nt, i] = event[sta_id][:, :]
+                amplitude[:, :nt, i] = event[sta_id][:, :]
                 attrs = event[sta_id].attrs
+                if attrs["unit"][-6:] == "m/s**2":
+                    # integrate acceleration to velocity
+                    amplitude[:, :, i] = np.cumsum(amplitude[:, :, i]*attrs["dt_s"], axis=1)
+                    for j in range(3): 
+                        spline_i = LSQUnivariateSpline(np.arange(amplitude.shape[1]), amplitude[j, :, i], t=np.arange(amplitude.shape[1], step=amplitude.shape[1]/2048)[1:], k=3)
+                        amplitude[j, :, i] -= spline_i(np.arange(amplitude.shape[1]))
+                    amplitude[:, :, i] = filtfilt(b, a, amplitude[:, :, i], axis=1)
+                elif attrs["unit"][-3:] == "m/s": #TODO: temp
+                    amplitude[:, :, i] = amplitude[:, :, i] * 10e4
 
                 ## station location
                 station_location[i, 0] = round(
@@ -487,17 +515,19 @@ class SeismicNetworkIterableDataset(IterableDataset):
             # waveforms = (waveforms - np.mean(waveforms, axis=1, keepdims=True)) / std
             # waveforms = waveforms.astype(np.float32)
             
-            if self.sort:
+            if self.sort and len(station_ids)>5:
                 D = np.sqrt(((station_location[:, np.newaxis, :2] -  station_location[np.newaxis, :, :2])**2).sum(axis=-1))
                 Tcsr = minimum_spanning_tree(D)
                 index = breadth_first_order(Tcsr, i_start=0, directed=False, return_predecessors=False)
                 
                 waveforms = waveforms[:, :, index]
+                amplitude = amplitude[:, :, index]
                 station_ids = [station_ids[i] for i in index]
                 station_location = station_location[index]
 
         return {
             "data": torch.from_numpy(waveforms).float(),
+            "amplitude": torch.from_numpy(amplitude).float(),
             "station_id": station_ids,
             "station_location": torch.from_numpy(station_location).float(),
             "begin_time": begin_time,
@@ -571,6 +601,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
                         assert meta["data"][:, i : i + self.nt_cut, j : j + self.nx].shape[1] > 256, f"Error: {fname} {i} {j}, too short {meta['data'][:, i : i + self.nt_cut, j : j + self.nx].shape[1]}, please check the data or adjust cut_patch parameters"
                         yield {
                             "data": meta["data"][:, i : i + self.nt_cut, j : j + self.nx],
+                            "amplitude": meta["amplitude"][:, i : i + self.nt_cut, j : j + self.nx],
                             "station_location": meta["station_location"][j : j + self.nx, :], # [nx, 3]
                             "station_id": meta["station_id"][j : j + self.nx],
                             "begin_time": (
@@ -589,22 +620,23 @@ if __name__ == "__main__":
     dataset = SeismicNetworkIterableDataset("/Users/weiqiang/Research/EQNet/datasets/NCEDC/ncedc_event.h5")
     for x in dataset:
         # print(x)
-        fig, axes = plt.subplots(1, 5, figsize=(15, 5))
+        fig, axes = plt.subplots(1, 6, figsize=(15, 5))
         for i in range(x["data"].shape[-1]):
             axes[0].plot((x["data"][-1, :, i]) / torch.std(x["data"][-1, :, i]) / 10 + i)
+            axes[1].plot(x["amplitude"][-1, :, i] / torch.std(x["amplitude"][-1, :, i]) / 10 + i)
 
-            axes[1].plot(x["phase_pick"][1, :, i] + i)
-            axes[1].plot(x["phase_pick"][2, :, i] + i)
+            axes[2].plot(x["phase_pick"][1, :, i] + i)
+            axes[2].plot(x["phase_pick"][2, :, i] + i)
 
-            axes[2].plot(x["event_center"][:, i] + i - 0.5)
+            axes[3].plot(x["event_center"][:, i] + i - 0.5)
             # axes[2].scatter(x["event_location"][0, :, i], x["event_location"][1, :, i])
 
-            axes[3].plot(x["event_location"][0, :, i] / 10 + i)
+            axes[4].plot(x["event_location"][0, :, i] / 10 + i)
 
             t = np.arange(x["event_location"].shape[1])[x["event_location_mask"][:, i] == 1]
-            axes[4].plot(t, x["event_location"][1, x["event_location_mask"][:, i] == 1, i] / 10 + i, color=f"C{i}")
-            axes[4].plot(t, x["event_location"][2, x["event_location_mask"][:, i] == 1, i] / 10 + i, color=f"C{i}")
-            axes[4].plot(t, x["event_location"][3, x["event_location_mask"][:, i] == 1, i] / 10 + i, color=f"C{i}")
+            axes[5].plot(t, x["event_location"][1, x["event_location_mask"][:, i] == 1, i] / 10 + i, color=f"C{i}")
+            axes[5].plot(t, x["event_location"][2, x["event_location_mask"][:, i] == 1, i] / 10 + i, color=f"C{i}")
+            axes[5].plot(t, x["event_location"][3, x["event_location_mask"][:, i] == 1, i] / 10 + i, color=f"C{i}")
 
         plt.savefig("test.png")
         plt.show()
