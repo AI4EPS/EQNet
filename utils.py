@@ -7,6 +7,7 @@ import time
 from collections import defaultdict, deque, OrderedDict
 from typing import List, Optional, Tuple
 
+import numpy as np
 import torch
 import torch.distributed as dist
 
@@ -479,3 +480,45 @@ def set_weight_decay(
         if len(params[key]) > 0:
             param_groups.append({"params": params[key], "weight_decay": params_weight_decay[key]})
     return param_groups
+
+
+def MTLBalance(type, tasks, pre_weight, temp, epochs, device):
+    if type == "dwa":
+        return DWA(tasks, pre_weight, temp, epochs, device)
+    else:
+        return None
+    
+class DWA:
+    r"""Dynamic Weight Average (DWA).
+    
+    This method is proposed in `End-To-End Multi-Task Learning With Attention (CVPR 2019) <https://openaccess.thecvf.com/content_CVPR_2019/papers/Liu_End-To-End_Multi-Task_Learning_With_Attention_CVPR_2019_paper.pdf>`_ \
+    and implemented by modifying from the `official PyTorch implementation <https://github.com/lorenmt/mtan>`_. 
+
+    Args:
+        T (float, default=2.0): The softmax temperature.
+
+    """
+    def __init__(self, tasks, pre_weight, temp=2.0, epochs=100, device="cpu"):
+        self.tasks=tasks
+        self.task_num = len(tasks)
+        self.temp = temp
+        self.epochs = epochs
+        self.pre_weight = pre_weight
+        self.train_loss_buffer = torch.zeros((self.task_num, epochs)).to(device)
+        self.batch_weight = torch.ones((epochs, self.task_num)).to(device)
+        
+    def balance(self, output, epoch=0, **kwargs):
+        # output: dict
+        loss = 0
+        for i, k in enumerate(self.tasks):
+            loss += self.batch_weight[epoch,i]*output[k]*self.pre_weight[i]
+            
+        return loss
+    
+    def update(self, meters, epoch, **kwargs):
+        for i, k in enumerate(self.tasks):
+            self.train_loss_buffer[i, epoch] = meters[k].global_avg
+                
+        if epoch > 0:
+            w_i = self.train_loss_buffer[:,epoch]/self.train_loss_buffer[:,epoch-1]
+            self.batch_weight[epoch+1] = self.task_num*torch.nn.functional.softmax(w_i/self.temp, dim=-1)
