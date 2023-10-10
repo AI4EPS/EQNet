@@ -130,15 +130,16 @@ def create_groups(dataset, num_stations_list=[5, 10, 20], is_pad=False, is_train
     return group_ids
 
 
-def cut_reorder_keys(example, num_stations_list=[5, 10, 20], is_pad=False, is_train=True, padding_mode="randn"):
+def cut_reorder_keys(example, num_stations_list=[5, 10, 20], is_pad=False, is_train=True, padding_mode="zeros"):
     '''
     Args:
         num_stations_list: a list of number of stations
-        padding_mode: "zeros" or "random_duplicate", if "randn", pad the data with randn, if "random_duplicate", randomly duplicate some stations
+        padding_mode: "zeros" or "random_duplicate", if "zeros", pad the data with zeros, if "random_duplicate", randomly duplicate some stations
     '''
     num_stations = example["station_location"].shape[0]
     num_stations_list = np.array(sorted(num_stations_list))
     if is_train and num_stations < 5:
+        example["num_stations"] = num_stations
         return reorder_keys(example)
     if is_pad:
         if num_stations >= num_stations_list[-1]:
@@ -159,17 +160,18 @@ def cut_reorder_keys(example, num_stations_list=[5, 10, 20], is_pad=False, is_tr
                     pad_indices = np.random.choice(num_stations, pad_size, replace=True)
                     for keys in example.keys():
                         example[keys] = torch.cat([example[keys], example[keys][pad_indices]], dim=0)
-                elif padding_mode == "randn":
+                elif padding_mode == "zeros":
                     # zero padding
                     assert example["data"].shape[0]==example["amplitude"].shape[0], f"data: {example['data'].shape}, amplitude: {example['amplitude'].shape}"
                     for keys in example.keys():
                         example[keys] = torch.cat([example[keys], torch.zeros(pad_size, *example[keys].shape[1:])], dim=0)
-                    example["data"] = torch.randn(*example["data"].shape)
-                    example["amplitude"] = example["data"].clone()
+                    # example["data"] = torch.clamp(torch.randn(*example["data"].shape), -3, 3)*30
+                    # example["amplitude"] = example["data"].clone()
                     example["phase_pick"][:, 0, :] = 1 # the data is noise
                     assert example["data"].shape[0]==example["amplitude"].shape[0], f"data: {example['data'].shape}, amplitude: {example['amplitude'].shape}"
     else:
         if num_stations < num_stations_list[0]:
+            example["num_stations"] = num_stations
             return reorder_keys(example)
         else:
             group_id = num_stations_list[num_stations_list<=num_stations][-1]
@@ -177,10 +179,13 @@ def cut_reorder_keys(example, num_stations_list=[5, 10, 20], is_pad=False, is_tr
             for keys in example.keys():
                 example[keys] = example[keys][cut]
 
+    example["num_stations"] = min(num_stations, example["station_location"].shape[0])
     return reorder_keys(example)
         
         
 def reorder_keys(example):
+    if "num_stations" not in example.keys():
+        example["num_stations"] = example["station_location"].shape[0]
     example["data"] = example["data"].permute(1,2,0).contiguous()
     example["phase_pick"] = example["phase_pick"].permute(1,2,0).contiguous()
     example["event_center"] = example["event_center"].permute(1,0).contiguous()

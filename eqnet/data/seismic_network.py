@@ -476,8 +476,9 @@ class SeismicNetworkIterableDataset(IterableDataset):
             dt_s = event[station_ids[0]].attrs["dt_s"]
             # data shape
             nt = event[station_ids[0]].shape[1]
+            nt_feature = 32
             b, a = butter(4, 0.1, btype="highpass", analog=False)
-            waveforms = np.zeros([3, nt+((32-(nt%32))%32), len(station_ids)], dtype="float32")
+            waveforms = np.zeros([3, nt+((nt_feature-(nt%nt_feature))%nt_feature), len(station_ids)], dtype="float32")
             amplitude = np.zeros_like(waveforms)
             station_location = np.zeros([len(station_ids), 3])
             reference_latitude = 0

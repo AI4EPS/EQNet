@@ -368,13 +368,15 @@ class EQNet(nn.Module):
             event_center = batched_inputs["event_center"].to(self.device)
             event_location = batched_inputs["event_location"].to(self.device)
             event_location_mask = batched_inputs["event_location_mask"].to(self.device)
+            num_stations = batched_inputs["num_stations"].to(self.device)
         elif "phase_pick" in batched_inputs.keys(): # validation
             phase_pick = batched_inputs["phase_pick"].to(self.device)
             event_center = batched_inputs["event_center"].to(self.device)
             event_location = batched_inputs["event_location"].to(self.device)
             event_location_mask = batched_inputs["event_location_mask"].to(self.device)
+            num_stations = batched_inputs["num_stations"].to(self.device)
         else:
-            phase_pick, event_center, event_location, event_location_mask = None, None, None, None
+            phase_pick, event_center, event_location, event_location_mask, num_stations = None, None, None, None, None
 
         if "swin" in self.backbone_name:
             station_location = batched_inputs["station_location"].to(self.device)
@@ -385,7 +387,7 @@ class EQNet(nn.Module):
             
         features = self.neck(features)
 
-        output_phase, loss_phase = self.phase_picker(features, phase_pick)
+        output_phase, loss_phase = self.phase_picker(features, phase_pick, num_stations)
         outputs_event, losses_event = self.event_detector(features, event_center, event_location, event_location_mask, amplitude)
 
         if self.training:

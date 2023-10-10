@@ -149,8 +149,8 @@ class UPerNeck(nn.Module, metaclass=ABCMeta):
     def psp_forward(self, inputs):
         """Forward function of PSP module."""
         x = inputs[-1]
-        psp_outs = torch.cat([x]+self.psp_modules(x), dim=1)
-        output = self.bottleneck(psp_outs)
+        #psp_outs = torch.cat([x]+self.psp_modules(x), dim=1)
+        output = self.bottleneck(torch.cat([x]+self.psp_modules(x), dim=1))
 
         return output
 
@@ -323,6 +323,7 @@ class EventHead(nn.Module):
             ),
             nn.BatchNorm1d(hidden_channels[2]),
             nn.ReLU(inplace=True),
+            #Upsample(scale_factor=2, mode='linear', align_corners=False),
             nn.Conv1d(
                 hidden_channels[2],
                 1,
@@ -345,6 +346,7 @@ class EventHead(nn.Module):
             ),
             nn.BatchNorm1d(hidden_channels[2]),
             nn.ReLU(inplace=True),
+            #Upsample(scale_factor=2, mode='linear', align_corners=False),
             nn.Conv1d(
                 hidden_channels[2],
                 2,
@@ -367,9 +369,9 @@ class EventHead(nn.Module):
             ),
             nn.BatchNorm1d(hidden_channels[2]),
             nn.ReLU(inplace=True),
+            #Upsample(scale_factor=2, mode='linear', align_corners=False),
             nn.Conv1d(
                 hidden_channels[2],
-                #3,
                 4,
                 kernel_size=kernel_size,
                 dilation=dilations[1],
@@ -390,6 +392,7 @@ class EventHead(nn.Module):
             ),
             nn.BatchNorm1d(hidden_channels[2]),
             nn.ReLU(inplace=True),
+            #Upsample(scale_factor=2, mode='linear', align_corners=False),
             nn.Conv1d(
                 hidden_channels[2],
                 16,
@@ -522,29 +525,31 @@ class PhaseHead(nn.Module):
             padding_mode="reflect",
         )
         
-    def forward(self, features, targets=None):
+    def forward(self, features, targets=None, num_stations=None):
         """input shape [batch, in_channels, time_steps]
         output shape [batch, time_steps]"""
         x = features["fusion"]
         bt, st, ch, nt = x.shape  # batch, station, channel, time
         x = x.view(bt * st, ch, nt)
         
+        # x = F.interpolate(x, scale_factor=2, mode="linear", align_corners=False)
         x = self.phase_1(x)
         x = F.interpolate(x, scale_factor=2, mode="linear", align_corners=False)
         x = self.phase_2(x)
         x = F.interpolate(x, scale_factor=2, mode="linear", align_corners=False)
         x = self.conv_out(x)
+        # x = F.interpolate(x, scale_factor=2, mode="linear", align_corners=False)
         x = x.view(bt, st, x.shape[1], x.shape[2])
         x = x.permute(0, 2, 3, 1)
 
         if self.training:
-            return None, self.losses(x, targets)
+            return None, self.losses(x, targets, num_stations)
         elif targets is not None:
-            return x, self.losses(x, targets)
+            return x, self.losses(x, targets, num_stations)
         else:
             return x, {}
 
-    def losses(self, inputs, targets):
+    def losses(self, inputs, targets, num_stations):
         inputs = inputs.float()  # https://github.com/pytorch/pytorch/issues/48163
         # loss = 0
         # for i in range(targets.shape[0]):
@@ -557,11 +562,22 @@ class PhaseHead(nn.Module):
         #     targets_ = targets[i, :, :, ind]
         #     loss += torch.sum(-targets_ * F.log_softmax(inputs_, dim=0), dim=0).mean()
         # loss /= targets.shape[0]
-        num=targets.shape[0]*targets.shape[3]
-        for i in range(targets.shape[0]):
-            for j in range(targets.shape[3]):
-                if torch.all(targets[i,:,:,j]==0):
-                    num-=1
+        # num=targets.shape[0]*targets.shape[3]
+        # for i in range(targets.shape[0]):
+        #     for j in range(targets.shape[3]):
+        #         if torch.all(targets[i,:,:,j]==0):
+        #             num-=1
+        num=num_stations.sum()
         loss = torch.sum(-targets * F.log_softmax(inputs, dim=1))/(num*targets.shape[2])
 
         return loss
+    
+class Upsample(nn.Module):
+    def __init__(self, scale_factor=2, mode='linear', align_corners=False):
+        super().__init__()
+        self.scale_factor = scale_factor
+        self.mode = mode
+        self.align_corners = align_corners
+        
+    def forward(self, x):
+        return F.interpolate(x, scale_factor=self.scale_factor, mode=self.mode, align_corners=self.align_corners)
