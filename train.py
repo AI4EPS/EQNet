@@ -81,6 +81,7 @@ def train_one_epoch(
     args,
     epoch,
     total_sample,
+    balancer=None,
 ):
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter("lr", utils.SmoothedValue(window_size=1, fmt="{value}"))
@@ -98,6 +99,12 @@ def train_one_epoch(
         except:
             pass
     header = f"Epoch: [{epoch}]"
+    
+    if balancer is not None:
+        print(header, end="\t")
+        for i, k in enumerate(balancer.tasks):
+            print(f"{k}: {balancer.batch_weight[epoch,i]:.4f}", end="\t")
+        print()
 
     # ctx = nullcontext() if scaler is None else torch.amp.autocast(device_type=args.device, dtype=args.ptdtype)
     ctx = nullcontext() if args.device == "cpu" else torch.amp.autocast(device_type=args.device, dtype=args.ptdtype)
@@ -109,7 +116,10 @@ def train_one_epoch(
         with ctx:
             output = model(meta)
 
-        loss = output["loss"]
+        if balancer is None:
+            loss = output["loss"]
+        else:
+            loss = balancer.balance(model=model, output=output, epoch=epoch)
         optimizer.zero_grad()
         if scaler is not None:
             scaler.scale(loss).backward()
@@ -162,6 +172,13 @@ def train_one_epoch(
                         wandb.log({"train/" + k: v.item()})
 
     model.eval()
+    
+    if balancer is not None:
+        balancer.update(meters=metric_logger.meters, epoch=epoch)
+        if args.wandb and utils.is_main_process():
+            if args.mtl=="dwa":
+                for i, k in enumerate(balancer.tasks):
+                    wandb.log({"train/balancer_" + k: balancer.batch_weight[epoch,i]})
     plot_results(meta, model, output, args, epoch, "train_")
     del meta, output, loss
 
@@ -314,16 +331,16 @@ def main(args):
     elif args.model == "eqnet":
         if args.huggingface_dataset:
             try:
-                # Get the directory of the train.py
+            # Get the directory of the train.py
                 code_dir = os.path.dirname(os.path.abspath(__file__))
                 script_dir = os.path.join(code_dir, "eqnet/data/quakeflow_nc.py")
                 dataset = datasets.load_dataset(script_dir, split="train", name=args.dataset_config)
                 dataset_test = datasets.load_dataset(script_dir, split="test", name=args.dataset_config)
-                # TODO: just for testing
-                # dataset = datasets.load_dataset(script_dir, split="test", name=args.dataset_config)
-                # dataset_dict = dataset.train_test_split(test_size=0.2, seed=42)
-                # dataset = dataset_dict["train"]
-                # dataset_test = dataset_dict["test"]
+            # TODO: just for testing
+            # dataset = datasets.load_dataset(script_dir, split="test", name=args.dataset_config)
+            # dataset_dict = dataset.train_test_split(test_size=0.2, seed=42)
+            # dataset = dataset_dict["train"]
+            # dataset_test = dataset_dict["test"]
             except:
                 print("Failed to load dataset from local")
                 dataset = datasets.load_dataset("AI4EPS/quakeflow_nc", split="train", name=args.dataset_config)
@@ -331,7 +348,7 @@ def main(args):
 
             dataset = dataset.with_format("torch")
             dataset_test = dataset_test.with_format("torch")
-            group_ids = create_groups(dataset, args.num_stations_list, is_pad=True, is_train=False)
+            group_ids = create_groups(dataset, args.num_stations_list, is_pad=True, is_train=True)
             if args.distributed and world_size > 1:
                 torch.set_num_threads(1) # fix the multi-processing bug
                 if args.gpu > 0:
@@ -340,6 +357,7 @@ def main(args):
                 print(f"Rank {args.rank}: Gpu {args.gpu} cut_reorder_keys fingerprint {Hasher.hash(lambda x: cut_reorder_keys(x, num_stations_list=args.num_stations_list, is_pad=True, is_train=False))}", force=True)
                 dataset = dataset.map(lambda x: cut_reorder_keys(x, num_stations_list=args.num_stations_list, is_pad=True, is_train=True), num_proc=args.workers, desc="cut_reorder_keys")#, new_fingerprint=Hasher.hash(lambda x: cut_reorder_keys(x, num_stations_list=num_stations_list, is_pad=True, is_train=True)))
                 dataset_test = dataset_test.map(lambda x: cut_reorder_keys(x, num_stations_list=args.num_stations_list, is_pad=True, is_train=False), num_proc=args.workers, desc="cut_reorder_keys")#, new_fingerprint=Hasher.hash(lambda x: cut_reorder_keys(x, num_stations_list=num_stations_list, is_pad=True, is_train=False)))
+                # dataset_test = dataset_test.map(lambda x: reorder_keys(x), num_proc=args.workers, desc="reorder_keys")
                 if args.gpu == 0:
                     print("Mapping finished, loading results from main process")
                     torch.distributed.barrier()
@@ -567,6 +585,14 @@ def main(args):
     #     if scaler:
     #         scaler.load_state_dict(checkpoint["scaler"])
 
+    if args.mtl is not None:
+        if args.model == "eqnet":
+            tasks = ["loss_phase", "loss_event", "loss_offset", "loss_hypocenter"]
+            # pre_weight = args.pre_weight
+            pre_weight = [1.0, 1.5, 0.016, 0.04]
+        
+        balancer = utils.MTLBalance(args.mtl, tasks, pre_weight, args.temp, args.epochs, device)
+    
     start_time = time.time()
     best_loss = float("inf")
     for epoch in range(args.start_epoch, args.epochs):
@@ -584,6 +610,7 @@ def main(args):
             args,
             epoch,
             len(dataset),
+            balancer=None if args.mtl is None else balancer,
         )
         print(f"Training time of epoch {epoch} of rank {args.rank}: {time.time() - tmp_time:.3f}")
 
@@ -792,6 +819,11 @@ def get_args_parser(add_help=True):
         action="store_true",
         help="Use torch.cuda.amp for mixed precision training",
     )
+    
+    # MTL training strategy
+    parser.add_argument("--mtl", default=None, type=str, help="type of mtl training strategy")
+    parser.add_argument("--pre-weight", default=None, type=float, nargs="+", help="pre-factor weight of mtl loss")
+    parser.add_argument("--temp", default=2.0, type=float, help="temperature of dwa")
 
     ## Data Augmentation
     parser.add_argument("--phases", default=["P", "S"], type=str, nargs="+", help="phases to use")
