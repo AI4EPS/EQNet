@@ -1,6 +1,7 @@
 # %%
 import multiprocessing
 import os
+import time
 import warnings
 from datetime import datetime
 from multiprocessing import Manager
@@ -12,7 +13,6 @@ import numpy as np
 import pandas as pd
 from gamma.utils import association
 from pyproj import Proj
-import time
 
 warnings.filterwarnings("ignore")
 

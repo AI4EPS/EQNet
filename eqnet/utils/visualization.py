@@ -1,4 +1,5 @@
 import os
+import random
 from datetime import datetime, timedelta
 
 import matplotlib.pyplot as plt
@@ -6,7 +7,6 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
-import random
 
 
 def normalize(x):
@@ -149,7 +149,7 @@ def visualize_das_train(meta, preds, epoch, figure_dir="figures", dt=0.01, dx=10
 
 
 def visualize_phasenet_train(meta, phase, event, polarity=None, epoch=0, figure_dir="figures"):
-    for i in range(meta["waveform"].shape[0]):
+    for i in range(meta["data"].shape[0]):
         plt.close("all")
         fig, axes = plt.subplots(9, 1, figsize=(10, 10))
         chn_name = ["E", "N", "Z"]
@@ -159,16 +159,16 @@ def visualize_phasenet_train(meta, phase, event, polarity=None, epoch=0, figure_
         #     if torch.max(torch.abs(meta["waveform_raw"][i, j, :, 0])) > 0.1:
         #         axes[0].plot(meta["waveform_raw"][i, j, :, 0], linewidth=0.5, color=f"C{j}", label=f"{chn_name[j]}")
         #         axes[0].legend(loc="upper right")
-        #         axes[1].plot(meta["waveform"][i, j, :, 0], linewidth=0.5, color=f"C{j}", label=f"{chn_name[j]}")
+        #         axes[1].plot(meta["data"][i, j, :, 0], linewidth=0.5, color=f"C{j}", label=f"{chn_name[j]}")
         #         axes[1].legend(loc="upper right")
         #         break
 
         for j in range(3):
-            axes[j].plot(meta["waveform_raw"][i, j, :, 0], linewidth=0.5, color="k", label=f"{chn_name[j]}")
+            axes[j].plot(meta["data_raw"][i, j, :, 0], linewidth=0.5, color="k", label=f"{chn_name[j]}")
             axes[j].set_xticklabels([])
             axes[j].grid("on")
         for j in range(3):
-            axes[j + 3].plot(meta["waveform"][i, j, :, 0], linewidth=0.5, color="k", label=f"{chn_name[j]}")
+            axes[j + 3].plot(meta["data"][i, j, :, 0], linewidth=0.5, color="k", label=f"{chn_name[j]}")
             axes[j + 3].set_xticklabels([])
             axes[j + 3].grid("on")
 
@@ -228,7 +228,7 @@ def plot_phasenet(
     # waveform = normalize(meta["waveform"])
     # waveform = meta["waveform"] / 3.0
 
-    waveform = meta["waveform"]
+    waveform = meta["data"]
     # waveform = normalize(waveform)
     # vmax = torch.std(waveform) * 3
     # vmin = -vmax
@@ -318,11 +318,11 @@ def plot_phasenet(
 
 
 def visualize_eqnet_train(meta, phase, event, epoch, figure_dir="figures"):
-    for i in range(meta["waveform"].shape[0]):
+    for i in range(meta["data"].shape[0]):
         plt.close("all")
         fig, axes = plt.subplots(3, 1, figsize=(10, 10))
         for j in range(phase.shape[-1]):
-            axes[0].plot((meta["waveform"][i, -1, :, j]) / torch.std(meta["waveform"][i, -1, :, j]) / 8 + j)
+            axes[0].plot((meta["data"][i, -1, :, j]) / torch.std(meta["data"][i, -1, :, j]) / 8 + j)
 
             axes[1].plot(phase[i, 1, :, j] + j, "r")
             axes[1].plot(phase[i, 2, :, j] + j, "b")

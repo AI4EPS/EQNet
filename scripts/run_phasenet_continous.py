@@ -7,11 +7,12 @@ import torch
 
 # %%
 protocol = "gs://"
-bucket = "quakeflow_das"
+bucket = "das_mammoth"
 
 # %%
 fs = fsspec.filesystem(protocol.replace("://", ""))
-folders = ["mammoth_north", "mammoth_south", "ridgecrest_north", "ridgecrest_south"]
+folders = ["north", "south"]
+
 for folder in folders:
     h5_list = fs.glob(f"{bucket}/{folder}/data/*h5")
 
@@ -27,7 +28,7 @@ for folder in folders:
 
     # %%
     num_gpu = torch.cuda.device_count()
-    base_cmd = f"../predict.py --model phasenet --add_polarity --add_event --format h5 --data_list {result_path/'h5_list.txt'} --batch_size 1 --result_path {result_path} --dataset=das  --cut_patch --nx=1024"
+    base_cmd = f"../predict.py --model phasenet --add_polarity --add_event --format h5 --data_list {result_path/'h5_list.txt'} --result_path {result_path} --dataset=das --system=optasense --cut_patch --nx=1024 --resample_time --batch_size=1 --workers=0"
     if num_gpu == 0:
         cmd = f"python {base_cmd} --device=cpu"
     elif num_gpu == 1:

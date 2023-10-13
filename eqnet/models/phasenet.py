@@ -206,7 +206,7 @@ class UNetHead(nn.Module):
         else:
             if targets is not None:  ## for validation, but breaks for torch.compile
                 return x, self.losses(x, targets)
-            return x, None
+            return x, 0.0
 
     def losses(self, inputs, targets, mask=None):
         inputs = inputs.float()
@@ -226,7 +226,13 @@ class UNetHead(nn.Module):
 
 class PhaseNet(nn.Module):
     def __init__(
-        self, backbone="unet", add_polarity=True, add_event=True, event_loss_weight=1.0, polarity_loss_weight=1.0
+        self,
+        backbone="unet",
+        log_scale=True,
+        add_polarity=True,
+        add_event=True,
+        event_loss_weight=1.0,
+        polarity_loss_weight=1.0,
     ) -> None:
         super().__init__()
         self.backbone_name = backbone
@@ -236,7 +242,7 @@ class PhaseNet(nn.Module):
         elif backbone == "resnet50":
             self.backbone = ResNet(Bottleneck, [3, 4, 6, 3])  # ResNet50
         elif backbone == "unet":
-            self.backbone = UNet(add_polarity=add_polarity, add_event=add_event)
+            self.backbone = UNet(log_scale=log_scale, add_polarity=add_polarity, add_event=add_event)
         else:
             raise ValueError("backbone only supports resnet18, resnet50, or unet")
 
@@ -311,10 +317,18 @@ class PhaseNet(nn.Module):
 
 
 def build_model(
-    backbone="unet", add_polarity=True, add_event=True, event_loss_weight=1.0, polarity_loss_weight=1.0, *args, **kwargs
+    backbone="unet",
+    log_scale=True,
+    add_polarity=True,
+    add_event=True,
+    event_loss_weight=1.0,
+    polarity_loss_weight=1.0,
+    *args,
+    **kwargs,
 ) -> PhaseNet:
     return PhaseNet(
         backbone=backbone,
+        log_scale=log_scale,
         add_event=add_event,
         add_polarity=add_polarity,
         event_loss_weight=event_loss_weight,

@@ -21,8 +21,8 @@ def get_args_parser():
     import argparse
 
     parser = argparse.ArgumentParser(description="Run GaMMA")
-    parser.add_argument("--bucket", type=str, default="gs://quakeflow_das")
-    parser.add_argument("--folder", type=str, default="mammoth")
+    parser.add_argument("--bucket", type=str, default="gs://das_mammoth")
+    parser.add_argument("--folder", type=str, default="")
     parser.add_argument("--picker", type=str, default="phasenet_das_v1")
     parser.add_argument("--station_csv", type=str, default="das_info.csv")
     parser.add_argument("--plot_figure", type=bool, default=True)
@@ -35,7 +35,7 @@ def get_args_parser():
 def set_config(args):
     # %%
     # stations = pd.read_csv(f"{args.station_csv}")
-    stations = pd.read_csv(f"{args.protocol}{args.bucket}/{args.folder}/das_info.csv")
+    stations = pd.read_csv(f"{args.protocol}{args.bucket}{args.folder}/das_info.csv")
     stations["id"] = stations["index"]
 
     # %% Match data format for GaMMA
@@ -65,7 +65,10 @@ def set_config(args):
     }
     config["dims"] = ["x(km)", "y(km)", "z(km)"]
     config["use_dbscan"] = True
-    config["dbscan_eps"] = 30.0
+    if args.picker == "phasenet":
+        config["dbscan_eps"] = 10.0
+    else:
+        config["dbscan_eps"] = 30.0
     config["dbscan_min_samples"] = 1000  # len(stations) // 5
     config["use_amplitude"] = False
     # config["x(km)"] = (np.array(config["xlim_degree"])-np.array(config["center"][0]))*config["degree2km"]*np.cos(np.deg2rad(config["center"][1]))
@@ -95,8 +98,10 @@ def set_config(args):
     config["min_picks_per_eq"] = 500  # len(stations) // 10
     # config["min_s_picks_per_eq"] = 10
     # config["min_p_picks_per_eq"] = 10
-    config["max_sigma11"] = 1.0  # Used for PhaseNet
-    # config["max_sigma11"] = 0.5  # Used for PhaseNet-DAS
+    if args.picker == "phasenet":
+        config["max_sigma11"] = 1.0  # Used for PhaseNet
+    else:
+        config["max_sigma11"] = 0.5  # Used for PhaseNet-DAS
 
     # Eikonal
     # zz = [0.0, 5.5, 16.0, 32.0]
@@ -170,6 +175,7 @@ def run(files, config, stations, result_path, args, proj):
 
         if args.picker == "phasenet":
             picks = picks[picks["phase_score"] > 0.5]  # used for PhaseNet
+            # picks = picks[picks["phase_score"] > 0.8]
         else:
             picks = picks[picks["phase_score"] > 0.8]  # used for PhaseNet-DAS
         if len(picks) < config["min_picks_per_eq"]:
@@ -283,13 +289,13 @@ if __name__ == "__main__":
     files = sorted(list(pick_path.rglob("*.csv")), key=lambda x: -os.path.getsize(x))
 
     fs = fsspec.filesystem(args.protocol.replace("://", ""))
-    files = fs.glob(f"{args.bucket}/{args.folder}/{args.picker}/picks/*.csv")
-    # files = sorted(files, key=lambda x: -fs.size(x))
+    files = fs.glob(f"{args.bucket}{args.folder}/{args.picker}/picks/*.csv")
+    files = sorted(files, key=lambda x: -fs.size(x))
 
     # files = files[:100]
 
     # %%
-    result_path = Path(f"results/gamma/{args.picker}/{args.folder}")
+    result_path = Path(f"results/gamma_10s/{args.picker}/{args.folder}")
     if not result_path.exists():
         result_path.mkdir(parents=True)
     if not (result_path / "picks").exists():
@@ -304,7 +310,8 @@ if __name__ == "__main__":
     # %%
     manager = Manager()
     jobs = []
-    num_cores = max(1, multiprocessing.cpu_count() // 2)
+    # num_cores = max(1, multiprocessing.cpu_count() // 2)
+    num_cores = max(1, multiprocessing.cpu_count() // 2 - 1)
     with multiprocessing.get_context("spawn").Pool(num_cores) as pool:
         # pool.starmap(run, [(files[i::num_cores], event_list, config, stations, result_path) for i in range(num_cores)])
         pool.starmap(run, [(files[i::num_cores], config, stations, result_path, args, proj) for i in range(num_cores)])

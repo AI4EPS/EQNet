@@ -1,17 +1,18 @@
 # %%
-import pandas as pd
-import matplotlib
-import matplotlib.pyplot as plt
-from matplotlib.colors import LightSource
 import os
 from datetime import datetime, timezone
-import numpy as np
-import seaborn as sns
 from pathlib import Path
-from tqdm import tqdm
-import fsspec
-import pygmt
+
 import cartopy.crs as ccrs
+import fsspec
+import matplotlib
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import pygmt
+import seaborn as sns
+from matplotlib.colors import LightSource
+from tqdm import tqdm
 
 # import pygmt
 
@@ -293,5 +294,174 @@ for i, picker in enumerate(pickers):
     # fig.tight_layout()
     fig.savefig(figure_path / f"catalog_mammoth_{picker}.pdf", dpi=300, bbox_inches="tight")
     fig.savefig(figure_path / f"catalog_mammoth_{picker}.png", dpi=300, bbox_inches="tight")
+
+# %%
+min_longitude = -120
+max_longitude = -117.5
+min_latitude = 37.1
+max_latitude = 38.7
+min_depth = -0.1
+max_depth = 21
+begin_time = pd.to_datetime("2020-11-17T00:00:00+00:00")
+end_time = pd.to_datetime("2020-11-25T00:00:00+00:00")
+cmap = "viridis"
+
+xlim = [-120.0, -117.5]
+ylim = [37.1, 38.7]
+zlim = [30, 0]
+catalog = pd.read_csv(f"{protocol}/das_mammoth/catalog_data.csv")
+catalog["time"] = pd.to_datetime(catalog["event_time"], format="ISO8601")
+catalog = catalog[(catalog["time"] >= begin_time) & (catalog["time"] <= end_time)]
+catalog = catalog[
+    (catalog["latitude"] >= min_latitude)
+    & (catalog["latitude"] <= max_latitude)
+    & (catalog["longitude"] >= min_longitude)
+    & (catalog["longitude"] <= max_longitude)
+]
+pickers = ["phasenet", "phasenet_das", "phasenet_das_v1"]
+
+fig, axes = plt.subplots(
+    1,
+    1,
+    squeeze=False,
+    figsize=(
+        8,
+        8 * (max_latitude - min_latitude) / ((max_longitude - min_longitude) * np.cos(np.deg2rad(min_latitude))),
+    ),
+    # gridspec_kw={"width_ratios": [4, 1], "height_ratios": [4, 1], "wspace": 0.05, "hspace": 0.05},
+    # sharex=True,
+    # sharey=True,
+)
+
+region = [min_longitude, max_longitude, min_latitude, max_latitude]
+topo = pygmt.datasets.load_earth_relief(resolution="15s", region=region).to_numpy() / 1e3  # km
+x = np.linspace(min_longitude, max_longitude, topo.shape[1])
+y = np.linspace(min_latitude, max_latitude, topo.shape[0])
+dx, dy = 1, 1
+xgrid, ygrid = np.meshgrid(x, y)
+axes[0, 0].pcolormesh(
+    xgrid,
+    ygrid,
+    ls.hillshade(topo, vert_exag=10, dx=dx, dy=dy),
+    vmin=-1,
+    shading="gouraud",
+    cmap="gray",
+    alpha=1.0,
+    antialiased=True,
+    rasterized=True,
+)
+
+axes[0, 0].scatter(
+    das_mammoth_north["longitude"],
+    das_mammoth_north["latitude"],
+    s=0.5,
+    c="C0",
+    marker=".",
+    alpha=0.5,
+    rasterized=True,
+)
+
+axes[0, 0].scatter(
+    das_mammoth_south["longitude"],
+    das_mammoth_south["latitude"],
+    s=0.5,
+    c="C0",
+    marker=".",
+    alpha=0.5,
+    rasterized=True,
+    # label="DAS cable",
+)
+
+axes[0, 0].scatter(
+    catalog["longitude"],
+    catalog["latitude"],
+    s=1 * 20,
+    c="k",
+    alpha=0.5,
+    # label="Catalog",
+    rasterized=True,
+)
+
+
+for i, picker in enumerate(pickers):
+    events = pd.read_csv(f"{protocol}/das_mammoth/gamma/{picker}/gamma_events.csv")
+    events["time"] = pd.to_datetime(events["time"], format="ISO8601")
+    events["time"] = events["time"].dt.tz_localize(timezone.utc)
+    events = events[(events["time"] >= begin_time) & (events["time"] <= end_time)]
+    events = events[
+        (events["latitude"] >= min_latitude)
+        & (events["latitude"] <= max_latitude)
+        & (events["longitude"] >= min_longitude)
+        & (events["longitude"] <= max_longitude)
+    ]
+
+    s = 3 * events["gamma_score"] / events["gamma_score"].max() * 10
+
+    axes[0, 0].scatter(
+        events["longitude"],
+        events["latitude"],
+        s=s,
+        c=f"C{i+1}",
+        alpha=0.5,
+        # label="PhaseNet-DAS",
+        # label=f"{picker_name[picker]}",
+        rasterized=True,
+    )
+
+
+axes[0, 0].autoscale(tight=True)
+
+axes[0, 0].scatter([], [], s=3, c="k", label="Catalog")
+for i, picker in enumerate(pickers):
+    axes[0, 0].scatter([], [], s=3, c=f"C{i+1}", label=f"{picker_name[picker]}")
+# axes[0, 0].scatter([], [], s=3, c="r", label=f"{picker_name[picker]}")
+axes[0, 0].scatter([], [], s=3, c="C0", label="DAS cable")
+# move legend a bit higher
+axes[0, 0].legend(markerscale=5, loc="center left", bbox_to_anchor=(0.0, 0.6))
+
+
+axes[0, 0].set_aspect(1.0 / np.cos(np.deg2rad(min_latitude)))
+axes[0, 0].set_xlim(xlim)
+axes[0, 0].set_ylim(ylim)
+axes[0, 0].set_ylabel("Latitude")
+# axes[0, 0].xaxis.set_label_position("top")
+# axes[0, 0].xaxis.tick_top()
+axes[0, 0].set_xlabel("Longitude")
+
+# axes[0, 0].text(
+#     min_longitude + 0.03,
+#     min_latitude + 0.01,
+#     "(i)",
+#     fontsize=16,
+#     fontweight="bold",
+#     horizontalalignment="left",
+#     verticalalignment="bottom",
+# )
+
+# draw a box using
+min_longitude = -119.5
+max_longitude = -118.4
+min_latitude = 37.27
+max_latitude = 38.12
+axes[0, 0].plot(
+    [min_longitude, max_longitude, max_longitude, min_longitude, min_longitude],
+    [min_latitude, min_latitude, max_latitude, max_latitude, min_latitude],
+    c="k",
+    lw=1.0,
+    ls="--",
+)
+# add text label A in the lower left corner
+axes[0, 0].text(
+    min_longitude + 0.03,
+    min_latitude + 0.01,
+    "(i)",
+    fontsize=16,
+    fontweight="bold",
+    horizontalalignment="left",
+    verticalalignment="bottom",
+)
+
+fig.savefig(figure_path / f"catalog_mammoth_continous.pdf", dpi=300, bbox_inches="tight")
+fig.savefig(figure_path / f"catalog_mammoth_continous.png", dpi=300, bbox_inches="tight")
 
 # %%

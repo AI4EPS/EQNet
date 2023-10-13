@@ -115,6 +115,7 @@ class UNet(nn.Module):
         add_polarity=False,
         add_event=False,
         add_stft=False,
+        log_scale=False,
     ):
         super(UNet, self).__init__()
 
@@ -123,6 +124,7 @@ class UNet(nn.Module):
         self.add_event = add_event
         self.add_stft = add_stft
         self.moving_norm = moving_norm
+        self.log_scale = log_scale
         if self.add_polarity:
             self.encoder1_polarity = self.encoder_block(
                 1, features, kernel_size=kernel_size, stride=init_stride, padding=padding, name="enc1_polarity"
@@ -241,6 +243,8 @@ class UNet(nn.Module):
     def forward(self, x):
         bt, ch, nt, nx = x.shape  # batch, channel, time, station
         x = moving_normalize(x, filter=self.moving_norm[0], stride=self.moving_norm[1])
+        if self.log_scale:
+            x = log_transform(x)
 
         #         if self.use_stft:
         #             sgram = torch.squeeze(x, 3)  # bt, ch, nt, 1
