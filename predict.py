@@ -4,25 +4,25 @@ import time
 from contextlib import nullcontext
 from glob import glob
 
+import eqnet
 import matplotlib
 import pandas as pd
 import torch
 import torch.multiprocessing as mp
 import torch.utils.data
-import wandb
-from tqdm.auto import tqdm
-
-import eqnet
 import utils
+import wandb
 from eqnet.data import DASIterableDataset, SeismicTraceIterableDataset
 from eqnet.models.unet import moving_normalize
 from eqnet.utils import (
     detect_peaks,
     extract_picks,
+    merge_csvs,
     merge_patch,
     plot_das,
     plot_phasenet,
 )
+from tqdm.auto import tqdm
 
 # mp.set_start_method("spawn", force=True)
 matplotlib.use("agg")
@@ -95,7 +95,11 @@ def pred_phasenet(args, model, data_loader, pick_path, figure_path, event_path=N
 
             for i in range(len(meta["file_name"])):
                 # filename = meta["file_name"][i].split("//")[-1].replace("/", "_")
-                filename = meta["file_name"][i].split("/")[-1]
+                # filename = meta["file_name"][i].split("/")[-1].replace("*", "")
+                ## filename convention year/jday/station_id
+                tmp = meta["file_name"][i].split("/")
+                parent_dir = "/".join(tmp[-args.folder_depth : -1])
+                filename = tmp[-1].replace("*", "").replace("?", "")
 
                 if len(phase_picks_[i]) == 0:
                     ## keep an empty file for the file with no picks to make it easier to track processed files
@@ -103,9 +107,13 @@ def pred_phasenet(args, model, data_loader, pick_path, figure_path, event_path=N
                         pass
                     continue
                 picks_df = pd.DataFrame(phase_picks_[i])
-                picks_df["phase_time"] = picks_df["phase_time"].apply(lambda x: x.isoformat(timespec="milliseconds"))
+                # picks_df["phase_time"] = picks_df["phase_time"].apply(lambda x: x.isoformat(timespec="milliseconds"))
                 picks_df.sort_values(by=["phase_time"], inplace=True)
-                picks_df.to_csv(os.path.join(pick_path, filename + ".csv"), index=False)
+                try:
+                    picks_df.to_csv(os.path.join(pick_path, parent_dir, filename + ".csv"), index=False)
+                except:
+                    os.makedirs(os.path.join(pick_path, parent_dir), exist_ok=True)
+                    picks_df.to_csv(os.path.join(pick_path, parent_dir, filename + ".csv"), index=False)
 
                 if "event" in output:
                     if len(event_picks_[i]) == 0:
@@ -113,11 +121,15 @@ def pred_phasenet(args, model, data_loader, pick_path, figure_path, event_path=N
                             pass
                         continue
                     picks_df = pd.DataFrame(event_picks_[i])
-                    picks_df["phase_time"] = picks_df["phase_time"].apply(
-                        lambda x: x.isoformat(timespec="milliseconds")
-                    )
+                    # picks_df["phase_time"] = picks_df["phase_time"].apply(
+                    #     lambda x: x.isoformat(timespec="milliseconds")
+                    # )
                     picks_df.sort_values(by=["phase_time"], inplace=True)
-                    picks_df.to_csv(os.path.join(event_path, filename + ".csv"), index=False)
+                    try:
+                        picks_df.to_csv(os.path.join(event_path, parent_dir, filename + ".csv"), index=False)
+                    except:
+                        os.makedirs(os.path.join(event_path, parent_dir), exist_ok=True)
+                        picks_df.to_csv(os.path.join(event_path, parent_dir, filename + ".csv"), index=False)
 
             if args.plot_figure:
                 # meta["waveform_raw"] = meta["waveform"].clone()
@@ -139,11 +151,11 @@ def pred_phasenet(args, model, data_loader, pick_path, figure_path, event_path=N
     if args.distributed:
         torch.distributed.barrier()
         if utils.is_main_process():
-            merge_patch(pick_path, pick_path.replace("_patch", ""))
-            merge_patch(event_path, event_path.replace("_patch", ""))
+            merge_csvs(pick_path)
+            merge_csvs(event_path)
     else:
-        merge_patch(pick_path, pick_path.replace("_patch", ""))
-        merge_patch(event_path, event_path.replace("_patch", ""))
+        merge_csvs(pick_path)
+        merge_csvs(event_path)
     return 0
 
 
@@ -414,6 +426,7 @@ def get_args_parser(add_help=True):
     parser.add_argument("--add_event", action="store_true", help="If use event information")
     parser.add_argument("--highpass_filter", type=float, default=0.0, help="highpass filter; default 0.0 is no filter")
     parser.add_argument("--response_xml", default=None, type=str, help="response xml file")
+    parser.add_argument("--folder_depth", default=0, type=int, help="folder depth for data list")
 
     ## DAS
     parser.add_argument("--cut_patch", action="store_true", help="If cut patch for continuous data")

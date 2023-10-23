@@ -306,14 +306,11 @@ def plot_phasenet(
 
             fig.tight_layout()
 
-            if not os.path.exists(figure_dir):
-                os.makedirs(figure_dir)
             fig.savefig(
                 os.path.join(figure_dir, file_name[i].replace("/", "_") + f"_{ii:06d}.png"),
                 bbox_inches="tight",
                 dpi=300,
             )
-
             plt.close(fig)
 
 
