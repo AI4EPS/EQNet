@@ -8,7 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 from .centernet import convolution, \
-    cross_entropy_loss, focal_loss, smoothl1_reg_loss, weighted_l1_reg_loss, l1_reg_loss
+    cross_entropy_loss, focal_loss, smoothl1_reg_loss, weighted_l1_reg_loss, l1_reg_loss, vector_l1_reg_loss
 
 
 class Sample(nn.Module):
@@ -97,6 +97,7 @@ class UPerNeck(nn.Module, metaclass=ABCMeta):
                  in_index=[0, 1, 2, 3],
                  input_transform="multiple_select",
                  align_corners=False,
+                 kernel_size=5,
                  ):
         super().__init__()
         self._init_inputs(in_channels, in_index, input_transform)
@@ -121,7 +122,7 @@ class UPerNeck(nn.Module, metaclass=ABCMeta):
         self.bottleneck = convolution(
             inp_dim=self.in_channels[-1] + len(pool_scales) * self.channels,
             out_dim=self.channels,
-            k=3,)
+            k=kernel_size,)
         # FPN Module
         self.lateral_convs = nn.ModuleList()
         self.fpn_convs = nn.ModuleList()
@@ -134,7 +135,7 @@ class UPerNeck(nn.Module, metaclass=ABCMeta):
             fpn_conv = convolution(
                 inp_dim=self.channels,
                 out_dim=self.channels,
-                k=3,
+                k=kernel_size,
                 inplace=False)
             self.lateral_convs.append(l_conv)
             self.fpn_convs.append(fpn_conv)
@@ -143,7 +144,7 @@ class UPerNeck(nn.Module, metaclass=ABCMeta):
         self.fpn_bottleneck = convolution(
             inp_dim=len(self.in_channels) * self.channels,
             out_dim=self.channels,
-            k=3,)
+            k=kernel_size,)
         
 
     def psp_forward(self, inputs):
@@ -297,15 +298,17 @@ class EventHead(nn.Module):
                  channels=512,
                  hidden_channels=[256, 128, 64, 32],
                  dilations=[1, 4, 8, 16],
-                 kernel_size = 3,
-                 loss_dict: dict = {"hm_loss": "focal", "hw_loss": "wl1", "reg_loss": "wl1"},
-                 weights=[1.5, 0.016, 0.04],
+                 kernel_size = 7,
+                 loss_dict: dict = {"hm_loss": "focal", "hw_loss": "wl1", "reg_loss": "vl1"},
+                 weights=[1.502, 0.016, 0.043],
                  offset_weight=[5, 1], 
-                 reg_weight=[0.8,1,1,0.8, 10],
+                 reg_weight=[0.7,1.18,1.18,0.72, 6],
                  ):
         super().__init__()
         
         self.channels = channels
+        reg_weight = [reg_w * weights[-1] for reg_w in reg_weight]
+        weights = weights[:-1]+reg_weight
         self.weights = weights
         self.offset_weight = offset_weight
         self.reg_weight = reg_weight
@@ -323,7 +326,7 @@ class EventHead(nn.Module):
             ),
             nn.BatchNorm1d(hidden_channels[2]),
             nn.ReLU(inplace=True),
-            #Upsample(scale_factor=2, mode='linear', align_corners=False),
+            #Sample(scale_factor=2, mode='linear', align_corners=False),
             nn.Conv1d(
                 hidden_channels[2],
                 1,
@@ -346,7 +349,7 @@ class EventHead(nn.Module):
             ),
             nn.BatchNorm1d(hidden_channels[2]),
             nn.ReLU(inplace=True),
-            #Upsample(scale_factor=2, mode='linear', align_corners=False),
+            #Sample(scale_factor=2, mode='linear', align_corners=False),
             nn.Conv1d(
                 hidden_channels[2],
                 2,
@@ -369,7 +372,7 @@ class EventHead(nn.Module):
             ),
             nn.BatchNorm1d(hidden_channels[2]),
             nn.ReLU(inplace=True),
-            #Upsample(scale_factor=2, mode='linear', align_corners=False),
+            #sample(scale_factor=2, mode='linear', align_corners=False),
             nn.Conv1d(
                 hidden_channels[2],
                 4,
@@ -392,7 +395,7 @@ class EventHead(nn.Module):
             ),
             nn.BatchNorm1d(hidden_channels[2]),
             nn.ReLU(inplace=True),
-            #Upsample(scale_factor=2, mode='linear', align_corners=False),
+            #Sample(scale_factor=2, mode='linear', align_corners=False),
             nn.Conv1d(
                 hidden_channels[2],
                 16,
@@ -414,7 +417,7 @@ class EventHead(nn.Module):
         )
 
 
-        loss_factory = {"mse": F.mse_loss, "focal": focal_loss, "l1": l1_reg_loss, "sl1": smoothl1_reg_loss, "wl1": weighted_l1_reg_loss, "cross_entropy": cross_entropy_loss}
+        loss_factory = {"mse": F.mse_loss, "focal": focal_loss, "l1": l1_reg_loss, "sl1": smoothl1_reg_loss, "wl1": weighted_l1_reg_loss, "vl1": vector_l1_reg_loss, "cross_entropy": cross_entropy_loss}
         self.weights = weights
         self.hm_loss = loss_factory[loss_dict["hm_loss"]]
         self.hw_loss = loss_factory[loss_dict["hw_loss"]]
@@ -469,12 +472,18 @@ class EventHead(nn.Module):
         hm_loss = self.hm_loss(outputs["event"], event_center)
         hw_loss = self.hw_loss(outputs["offset"], event_location[:, 5:, :, :], event_location_mask, weights=self.offset_weight)
         
-        #reg_loss = smoothl1_reg_loss(outputs["hypocenter"], event_location[:, :3, :, :], event_location_mask)
-        reg_loss = self.reg_loss(outputs["hypocenter"], event_location[:, :5, :, :], event_location_mask, weights=self.reg_weight)
+        #reg_loss = self.reg_loss(outputs["hypocenter"], event_location[:, :5, :, :], event_location_mask, weights=self.reg_weight)
+        reg_loss = self.reg_loss(outputs["hypocenter"], event_location[:, :5, :, :], event_location_mask)
         
-        loss = hm_loss * self.weights[0] + hw_loss * self.weights[1] + reg_loss * self.weights[2]
+        loss = hm_loss * self.weights[0] + hw_loss * self.weights[1] \
+            + reg_loss[0] * self.weights[2] \
+            + reg_loss[1] * self.weights[3] \
+            + reg_loss[2] * self.weights[4] \
+            + reg_loss[3] * self.weights[5] \
+            + reg_loss[4] * self.weights[6]
         # print(f"loss {loss}, hm_loss {hm_loss}, hw_loss {hw_loss}, reg_loss {reg_loss}", force=True)
-        return {"loss": loss, "loss_event": hm_loss, "loss_offset": hw_loss, "loss_hypocenter": reg_loss}
+        # return {"loss": loss, "loss_event": hm_loss, "loss_offset": hw_loss, "loss_hypocenter": reg_loss}
+        return {"loss": loss, "loss_event": hm_loss, "loss_offset": hw_loss, "loss_origin_time": reg_loss[0], "loss_x": reg_loss[1], "loss_y": reg_loss[2], "loss_depth": reg_loss[3], "loss_magnitude": reg_loss[4]}
     
     
 class PhaseHead(nn.Module):
@@ -482,7 +491,7 @@ class PhaseHead(nn.Module):
                  channels=512,
                  hidden_channels=[256, 128, 64, 32],
                  dilations=[1, 8, 16, 32],
-                 kernel_size = 3,
+                 kernel_size = 7,
                  ):
         super().__init__()
         
@@ -571,13 +580,4 @@ class PhaseHead(nn.Module):
         loss = torch.sum(-targets * F.log_softmax(inputs, dim=1))/(num*targets.shape[2])
 
         return loss
-    
-class Upsample(nn.Module):
-    def __init__(self, scale_factor=2, mode='linear', align_corners=False):
-        super().__init__()
-        self.scale_factor = scale_factor
-        self.mode = mode
-        self.align_corners = align_corners
-        
-    def forward(self, x):
-        return F.interpolate(x, scale_factor=self.scale_factor, mode=self.mode, align_corners=self.align_corners)
+
