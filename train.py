@@ -32,6 +32,7 @@ from eqnet.data.utils import (random_shift)
 from eqnet.models.unet import moving_normalize
 from eqnet.utils.station_sampler import StationSampler, create_groups, cut_reorder_keys, reorder_keys
 
+os.system('export HF_DATASETS_CACHE="/data/cache/huggingface"')
 matplotlib.use("agg")
 logger = logging.getLogger("EQNet")
 
@@ -92,12 +93,14 @@ def train_one_epoch(
     if args.model == "eqnet":
         metric_logger.add_meter("loss_phase", utils.SmoothedValue(window_size=1, fmt="{value}"))
         metric_logger.add_meter("loss_event", utils.SmoothedValue(window_size=1, fmt="{value}"))
-        try:
-            if model.event_detector.__class__.__name__=="CenterNetHead":
-                metric_logger.add_meter("loss_offset", utils.SmoothedValue(window_size=1, fmt="{value}"))
-                metric_logger.add_meter("loss_hypocenter", utils.SmoothedValue(window_size=1, fmt="{value}"))
-        except:
-            pass
+        metric_logger.add_meter("loss_offset", utils.SmoothedValue(window_size=1, fmt="{value}"))
+        #metric_logger.add_meter("loss_hypocenter", utils.SmoothedValue(window_size=1, fmt="{value}"))
+        metric_logger.add_meter("loss_origin_time", utils.SmoothedValue(window_size=1, fmt="{value}"))
+        metric_logger.add_meter("loss_x", utils.SmoothedValue(window_size=1, fmt="{value}"))
+        metric_logger.add_meter("loss_y", utils.SmoothedValue(window_size=1, fmt="{value}"))
+        metric_logger.add_meter("loss_depth", utils.SmoothedValue(window_size=1, fmt="{value}"))
+        metric_logger.add_meter("loss_magnitude", utils.SmoothedValue(window_size=1, fmt="{value}"))
+        
     header = f"Epoch: [{epoch}]"
     
     if balancer is not None:
@@ -334,8 +337,8 @@ def main(args):
             # Get the directory of the train.py
                 code_dir = os.path.dirname(os.path.abspath(__file__))
                 script_dir = os.path.join(code_dir, "eqnet/data/quakeflow_nc.py")
-                dataset = datasets.load_dataset(script_dir, split="train", name=args.dataset_config)
-                dataset_test = datasets.load_dataset(script_dir, split="test", name=args.dataset_config)
+                dataset = datasets.load_dataset(script_dir, split="train", name=args.dataset_config, cache_dir="/data/cache/huggingface")
+                dataset_test = datasets.load_dataset(script_dir, split="test", name=args.dataset_config, cache_dir="/data/cache/huggingface")
             # TODO: just for testing
             # dataset = datasets.load_dataset(script_dir, split="test", name=args.dataset_config)
             # dataset_dict = dataset.train_test_split(test_size=0.2, seed=42)
@@ -555,6 +558,20 @@ def main(args):
         )
     else:
         lr_scheduler = main_lr_scheduler
+        
+    if args.mtl is not None:
+        if args.mtl == "dwa":
+            if args.model == "eqnet":
+                #tasks = ["loss_phase", "loss_event", "loss_offset", "loss_hypocenter"]
+                tasks = ["loss_phase", "loss_event", "loss_offset", "loss_origin_time", "loss_x", "loss_y", "loss_depth", "loss_magnitude"]
+                # pre_weight = args.pre_weight
+                pre_weight = [1.0,]+model.event_detector.weights
+                print(f"{args.model}: {args.mtl} pre_weight: ", end="\t")
+                for i, k in enumerate(tasks):
+                    print(f"{k}: {pre_weight[i]:.4f}", end="\t")
+                print()
+        
+        balancer = utils.MTLBalance(args.mtl, tasks, pre_weight, args.temp, args.epochs, device)
 
     model_without_ddp = model
     # print parameter number
@@ -585,14 +602,6 @@ def main(args):
     #     if scaler:
     #         scaler.load_state_dict(checkpoint["scaler"])
 
-    if args.mtl is not None:
-        if args.model == "eqnet":
-            tasks = ["loss_phase", "loss_event", "loss_offset", "loss_hypocenter"]
-            # pre_weight = args.pre_weight
-            pre_weight = [1.0, 1.5, 0.016, 0.04]
-        
-        balancer = utils.MTLBalance(args.mtl, tasks, pre_weight, args.temp, args.epochs, device)
-    
     start_time = time.time()
     best_loss = float("inf")
     for epoch in range(args.start_epoch, args.epochs):
