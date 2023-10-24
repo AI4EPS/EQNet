@@ -172,6 +172,24 @@ def weighted_l1_reg_loss(output, target, mask, weights=None, type="sl1"):
     return regr_loss / (num + 1e-4)
 
 
+def vector_l1_reg_loss(output, target, mask, type="sl1"):
+    '''
+    return the channel-wise loss
+    '''
+    output = output.float()
+    num = mask.float().sum()
+    mask = mask.unsqueeze(1).float()
+    pred = output * mask
+    ground_truth = target * mask
+    
+    if type == "l1":
+        regr_loss = F.l1_loss(pred, ground_truth, reduction='none')
+    elif type == "sl1":
+        regr_loss = F.smooth_l1_loss(pred, ground_truth, reduction='none')
+    regr_loss = regr_loss.sum(dim=0).sum(dim=-1).sum(dim=-1) / (num + 1e-4)
+    
+    return regr_loss
+
 class CenterNetHead(nn.Module):
     def __init__(self, channels=[768, 256, 64], bn=False, kernel_size=3, hm_loss="focal", hw_loss="wl1", reg_loss="sl1", weights=[1, 0.015, 0.01]):
         super().__init__()
