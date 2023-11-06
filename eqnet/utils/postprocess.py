@@ -159,6 +159,8 @@ def merge_csvs(pick_dir):
         ),
         desc=f"Merging {pick_dir.name}",
     ):
+        if os.stat(file).st_size == 0:
+            continue
         picks_ = pd.read_csv(file)
         num_p += len(picks_[picks_["phase_type"] == "P"])
         num_s += len(picks_[picks_["phase_type"] == "S"])

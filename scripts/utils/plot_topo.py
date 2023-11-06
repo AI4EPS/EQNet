@@ -6,6 +6,7 @@ from pathlib import Path
 import cartopy.crs as ccrs
 import fsspec
 import matplotlib
+import matplotlib.patches as patches
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -13,8 +14,6 @@ import pygmt
 import seaborn as sns
 from matplotlib.colors import LightSource
 from tqdm import tqdm
-
-# import pygmt
 
 # %%
 protocol = "gs://"
@@ -42,6 +41,34 @@ das_ridgecrest_north = pd.read_csv(f"{protocol}{bucket}/ridgecrest_north/das_inf
 das_ridgecrest_south = pd.read_csv(f"{protocol}{bucket}/ridgecrest_south/das_info.csv")
 catalog_ridgecrest_north = pd.read_csv(f"{protocol}{bucket}/ridgecrest_north/catalog_data.csv", index_col="event_id")
 catalog_ridgecrest_south = pd.read_csv(f"{protocol}{bucket}/ridgecrest_south/catalog_data.csv", index_col="event_id")
+
+
+# %%
+def add_scalebar(ax, km=50, linewidth=2):
+    llx0, llx1 = ax.get_xlim()
+    lly0, lly1 = ax.get_ylim()
+    lat_0 = (lly1 + lly0) / 2
+    ll2km = np.cos(np.deg2rad(lat_0)) * 111.32
+
+    bar_x = [llx1 - 0.1 - km / ll2km, llx1 - 0.1]
+    bar_y = [lly0 + 0.1, lly0 + 0.1]
+    ax.plot(bar_x, bar_y, color="k", linewidth=linewidth)
+    ax.plot(
+        [bar_x[0] - 0.005, bar_x[0] - 0.005], [bar_y[0] - 0.025, bar_y[0] + 0.025], color="k", linewidth=linewidth - 1
+    )
+    ax.plot(
+        [bar_x[1] + 0.005, bar_x[1] + 0.005], [bar_y[1] - 0.025, bar_y[1] + 0.025], color="k", linewidth=linewidth - 1
+    )
+    ax.text(
+        np.mean(bar_x),
+        np.mean(bar_y) + 0.01,
+        f"{km} km",
+        color="k",
+        fontsize=12,
+        ha="center",
+        va="bottom",
+    )
+
 
 # %%
 fig, axes = plt.subplots(1, 2, squeeze=False, figsize=(10, 6))
@@ -79,13 +106,14 @@ axes[0, 0].scatter(
     das_mammoth_south["longitude"], das_mammoth_south["latitude"], s=1, label="Mammoth South", rasterized=True
 )
 # axes[0].axis("scaled")
-axes[0, 0].set_aspect(1.0 / np.cos(np.deg2rad(min_latitude)))
+axes[0, 0].set_aspect(1.0 / np.cos(np.deg2rad((min_latitude + max_latitude) / 2)))
 axes[0, 0].set_xlim([min_longitude, max_longitude])
 axes[0, 0].set_ylim([min_latitude, max_latitude])
-axes[0, 0].set_xlabel("Longitude")
-axes[0, 0].set_ylabel("Latitude")
+# axes[0, 0].set_xlabel("Longitude")
+# axes[0, 0].set_ylabel("Latitude")
 axes[0, 0].tick_params(axis="x", labelrotation=15)
-axes[0, 0].legend(markerscale=10, loc="lower center")
+axes[0, 0].legend(markerscale=10, loc="lower left")
+add_scalebar(axes[0, 0])
 
 min_longitude = -119
 max_longitude = -116.5
@@ -131,13 +159,14 @@ axes[0, 1].scatter(
     das_ridgecrest_south["longitude"], das_ridgecrest_south["latitude"], s=1, label="Ridgecrest South", rasterized=True
 )
 # axes[1].axis("scaled")
-axes[0, 1].set_aspect(1.0 / np.cos(np.deg2rad(min_latitude)))
+axes[0, 1].set_aspect(1.0 / np.cos(np.deg2rad((min_latitude + max_latitude) / 2)))
 axes[0, 1].set_xlim([min_longitude, max_longitude])
 axes[0, 1].set_ylim([min_latitude, max_latitude])
 axes[0, 1].set_xlabel("Longitude")
 axes[0, 1].set_ylabel("Latitude")
 axes[0, 1].tick_params(axis="x", labelrotation=15)
-axes[0, 1].legend(markerscale=10, loc="lower center")
+axes[0, 1].legend(markerscale=10, loc="lower left")
+add_scalebar(axes[0, 1])
 
 fig.tight_layout()
 plt.savefig(figure_path / "das_location.png", dpi=300, bbox_inches="tight")
@@ -167,7 +196,9 @@ for i, picker in enumerate(pickers):
         2,
         figsize=(
             10,
-            10 * (max_latitude - min_latitude) / ((max_longitude - min_longitude) * np.cos(np.deg2rad(min_latitude))),
+            10
+            * (max_latitude - min_latitude)
+            / ((max_longitude - min_longitude) * np.cos(np.deg2rad((min_latitude + max_latitude) / 2))),
         ),
         gridspec_kw={"width_ratios": [4, 1], "height_ratios": [4, 1], "wspace": 0.05, "hspace": 0.05},
         # sharex=True,
@@ -238,13 +269,14 @@ for i, picker in enumerate(pickers):
     axes[0, 0].scatter([], [], s=3, c="C0", label="DAS cable")
     axes[0, 0].legend(markerscale=5, loc="center left")
 
-    axes[0, 0].set_aspect(1.0 / np.cos(np.deg2rad(min_latitude)))
+    axes[0, 0].set_aspect(1.0 / np.cos(np.deg2rad((min_latitude + max_latitude) / 2)))
     axes[0, 0].set_xlim(xlim)
     axes[0, 0].set_ylim(ylim)
     axes[0, 0].set_ylabel("Latitude")
     axes[0, 0].xaxis.set_label_position("top")
     axes[0, 0].xaxis.tick_top()
     axes[0, 0].set_xlabel("Longitude")
+    add_scalebar(axes[0, 0])
 
     axes[0, 1].scatter(
         catalog["depth_km"],
@@ -326,7 +358,9 @@ fig, axes = plt.subplots(
     squeeze=False,
     figsize=(
         8,
-        8 * (max_latitude - min_latitude) / ((max_longitude - min_longitude) * np.cos(np.deg2rad(min_latitude))),
+        8
+        * (max_latitude - min_latitude)
+        / ((max_longitude - min_longitude) * np.cos(np.deg2rad((min_latitude + max_latitude) / 2))),
     ),
     # gridspec_kw={"width_ratios": [4, 1], "height_ratios": [4, 1], "wspace": 0.05, "hspace": 0.05},
     # sharex=True,
@@ -420,7 +454,7 @@ axes[0, 0].scatter([], [], s=3, c="C0", label="DAS cable")
 axes[0, 0].legend(markerscale=5, loc="center left", bbox_to_anchor=(0.0, 0.6))
 
 
-axes[0, 0].set_aspect(1.0 / np.cos(np.deg2rad(min_latitude)))
+axes[0, 0].set_aspect(1.0 / np.cos(np.deg2rad((min_latitude + max_latitude) / 2)))
 axes[0, 0].set_xlim(xlim)
 axes[0, 0].set_ylim(ylim)
 axes[0, 0].set_ylabel("Latitude")
@@ -460,6 +494,7 @@ axes[0, 0].text(
     horizontalalignment="left",
     verticalalignment="bottom",
 )
+add_scalebar(axes[0, 0])
 
 fig.savefig(figure_path / f"catalog_mammoth_continous.pdf", dpi=300, bbox_inches="tight")
 fig.savefig(figure_path / f"catalog_mammoth_continous.png", dpi=300, bbox_inches="tight")

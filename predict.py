@@ -99,11 +99,11 @@ def pred_phasenet(args, model, data_loader, pick_path, figure_path, event_path=N
                 ## filename convention year/jday/station_id
                 tmp = meta["file_name"][i].split("/")
                 parent_dir = "/".join(tmp[-args.folder_depth : -1])
-                filename = tmp[-1].replace("*", "").replace("?", "")
+                filename = tmp[-1].replace("*", "").replace("?", "").replace(".mseed", "")
 
                 if len(phase_picks_[i]) == 0:
                     ## keep an empty file for the file with no picks to make it easier to track processed files
-                    with open(os.path.join(pick_path, filename + ".csv"), "a"):
+                    with open(os.path.join(pick_path, parent_dir, filename + ".csv"), "a"):
                         pass
                     continue
                 picks_df = pd.DataFrame(phase_picks_[i])
@@ -117,7 +117,7 @@ def pred_phasenet(args, model, data_loader, pick_path, figure_path, event_path=N
 
                 if "event" in output:
                     if len(event_picks_[i]) == 0:
-                        with open(os.path.join(event_path, filename + ".csv"), "a"):
+                        with open(os.path.join(event_path, parent_dir, filename + ".csv"), "a"):
                             pass
                         continue
                     picks_df = pd.DataFrame(event_picks_[i])
