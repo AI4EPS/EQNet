@@ -15,7 +15,6 @@ from tqdm import tqdm
 
 
 def detect_peaks(scores, vmin=0.3, kernel=101, stride=1, K=0):
-
     nb, nc, nt, nx = scores.shape
     pad = kernel // 2
     smax = F.max_pool2d(scores, (kernel, 1), stride=(stride, 1), padding=(pad, 0))[:, :, :nt, :]
@@ -95,7 +94,7 @@ def extract_picks(
         if begin_time is None:
             begin_i = "1970-01-01T00:00:00.000"
         else:
-            begin_i = begin_time[i] 
+            begin_i = begin_time[i]
             if len(begin_i) == 0:
                 begin_i = "1970-01-01T00:00:00.000"
         begin_i = datetime.fromisoformat(begin_i.rstrip("Z"))
@@ -121,21 +120,25 @@ def extract_picks(
                             timespec="milliseconds"
                         )
                         pick_dict = {
-                                # "file_name": file_i,
-                                "station_id": station_i,
-                                "phase_index": pick_index,
-                                "phase_time": pick_time,
-                                "phase_score": f"{score.item():.3f}",
-                                "phase_type": phases[j],
-                                # "dt": dt[i],
-                            }
-                        
+                            # "file_name": file_i,
+                            "station_id": station_i,
+                            "phase_index": pick_index,
+                            "phase_time": pick_time,
+                            "phase_score": f"{score.item():.3f}",
+                            "phase_type": phases[j],
+                            # "dt": dt[i],
+                        }
+
                         if polarity_score is not None:
                             pick_dict["phase_polarity"] = f"{polarity_score[i, 0, index, k].item():.3f}"
-                        
+
                         if waveform is not None:
                             j1 = topk_index_ijk[ii]
-                            j2 = min(j1 + window_amp_i, topk_index_ijk[ii + 1]) if ii < len(topk_index_ijk) - 1 else j1 + window_amp_i
+                            j2 = (
+                                min(j1 + window_amp_i, topk_index_ijk[ii + 1])
+                                if ii < len(topk_index_ijk) - 1
+                                else j1 + window_amp_i
+                            )
                             pick_dict["phase_amplitude"] = f"{torch.max(waveform_amp[i, j1:j2, k]).item():.3e}"
 
                         picks_per_file.append(pick_dict)
@@ -144,57 +147,67 @@ def extract_picks(
     return picks
 
 
-def merge_das_picks(raw_folder="picks_phasenet_das", merged_folder=None, min_picks=10):
+def merge_csvs(pick_dir):
+    pick_dir = Path(pick_dir)
 
-    in_path = Path(raw_folder)
+    num_p = 0
+    num_s = 0
+    picks = []
+    for file in tqdm(
+        pick_dir.rglob(
+            "*.csv",
+        ),
+        desc=f"Merging {pick_dir.name}",
+    ):
+        if os.stat(file).st_size == 0:
+            continue
+        picks_ = pd.read_csv(file)
+        num_p += len(picks_[picks_["phase_type"] == "P"])
+        num_s += len(picks_[picks_["phase_type"] == "S"])
+        picks.append(picks_)
+    picks = pd.concat(picks)
+    picks = picks.sort_values(["phase_time", "station_id", "phase_type"])
+    picks = picks.reset_index(drop=True)
+    picks.to_csv(str(pick_dir) + ".csv", index=False)
 
-    if merged_folder is None:
-        out_path = Path(raw_folder + "_merged")
-    else:
-        out_path = Path(merged_folder)
-
-    if not out_path.exists():
-        out_path.mkdir()
-
-    files = in_path.glob("*_*_*.csv")
-
-    file_group = defaultdict(list)
-    for file in files:
-        file_group[file.stem.split("_")[0]].append(file)  ## event_id
-
-    num_picks = 0
-    for k in tqdm(file_group, desc=f"{out_path}"):
-        picks = []
-        header = None
-        for i, file in enumerate(sorted(file_group[k])):
-            with open(file, "r") as f:
-                tmp = f.readlines()
-                if (len(tmp) > 0) and (header == None):
-                    header = tmp[0]
-                    picks.append(header)
-                picks.extend(tmp[1:])  ## without header
-
-        if len(picks) > min_picks:
-            with open(out_path.joinpath(f"{k}.csv"), "w") as f:
-                f.writelines(picks)
-
-        num_picks += len(picks)
-
-    print(f"Number of picks: {num_picks}")
+    if (num_p > 0) and (num_s > 0):
+        print(f"Number of P picks: {num_p}")
+        print(f"Number of S picks: {num_s}")
     return 0
 
 
-def merge_seismic_picks(pick_path):
-    csv_files = sorted(glob(os.path.join(pick_path, "*.csv")))
+def merge_patch(patch_dir, merged_dir, return_single_file=False):
+    patch_dir = Path(patch_dir)
+    merged_dir = Path(merged_dir)
+    if not merged_dir.exists():
+        merged_dir.mkdir()
+
+    files = patch_dir.glob("*_*_*.csv")
+    group = defaultdict(list)
+    for file in files:
+        group["_".join(file.stem.split("_")[:-2])].append(file)  ## event_id
+
+    if return_single_file:
+        fp_total = open(str(merged_dir).rstrip("/") + ".csv", "w")
     num_picks = 0
-    with open(pick_path.rstrip("/")+".csv", "w") as fp_out:
-        first_non_empty = True
-        for i, file in enumerate(tqdm(csv_files, desc="Merging picks")):
-            with open(file, "r") as fp_in:
-                lines = fp_in.readlines()
-                if first_non_empty and (len(lines) > 0):
-                    fp_out.writelines(lines[0])
-                    first_non_empty = False
-                fp_out.writelines(lines[1:])
-                num_picks += max(0, len(lines) - 1)
-    print("Total number of picks: {}".format(num_picks))
+    header0 = None
+    for k in tqdm(group, desc=f"Merging {merged_dir}"):
+        header = None
+        with open(merged_dir / f"{k}.csv", "w") as fp_file:
+            for file in sorted(group[k]):
+                with open(file, "r") as f:
+                    lines = f.readlines()
+                    if len(lines) > 0:
+                        if header is None:
+                            header = lines[0]
+                            fp_file.writelines(header)
+                        if return_single_file and (header0 is None):
+                            header = lines[0]
+                            fp_total.writelines(header)
+                        fp_file.writelines(lines[1:])
+                        if return_single_file:
+                            fp_total.writelines(lines[1:])
+                        num_picks += len(lines[1:])
+
+    print(f"Number of detections: {num_picks}")
+    return 0

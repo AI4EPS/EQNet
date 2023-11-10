@@ -1,0 +1,8 @@
+log.txt
+log_phasenet.txt
+log_gamma.txt
+results/
+debug_figures/
+wandb/
+torch_compile_debug
+*.csv

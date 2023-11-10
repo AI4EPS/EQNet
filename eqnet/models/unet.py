@@ -12,48 +12,33 @@ def log_transform(x):
     return x
 
 
-def normalize_local(data, filter=1024, stride=128):
-
+def moving_normalize(data, filter=1024, stride=128):
     nb, nch, nt, nx = data.shape
 
-    if nt % stride == 0:
-        pad = max(filter - stride, 0)
-    else:
-        pad = max(filter - (nt % stride), 0)
-    pad1 = pad // 2
-    pad2 = pad - pad1
+    # if nt % stride == 0:
+    #     pad = max(filter - stride, 0)
+    # else:
+    #     pad = max(filter - (nt % stride), 0)
+    # pad1 = pad // 2
+    # pad2 = pad - pad1
+    padding = filter // 2
 
     with torch.no_grad():
-
-        data_ = F.pad(data, (0, 0, pad1, pad2), mode="reflect")
+        # data_ = F.pad(data, (0, 0, pad1, pad2), mode="reflect")
+        data_ = F.pad(data, (0, 0, padding, padding), mode="reflect")
         mean = F.avg_pool2d(data_, kernel_size=(filter, 1), stride=(stride, 1))
-        mean = F.interpolate(mean, scale_factor=(stride, 1), mode="bilinear", align_corners=False)[:, :, :nt, :]
+        mean = F.interpolate(mean, scale_factor=(stride, 1), mode="bilinear", align_corners=False)[:, :, :nt, :nx]
         data -= mean
 
-        data_ = F.pad(data, (0, 0, pad1, pad2), mode="reflect")
+        # data_ = F.pad(data, (0, 0, pad1, pad2), mode="reflect")
+        data_ = F.pad(data, (0, 0, padding, padding), mode="reflect")
         # std = (F.lp_pool2d(data_, norm_type=2, kernel_size=(filter, 1), stride=(stride, 1)) / ((filter) ** 0.5))
         std = F.avg_pool2d(torch.abs(data_), kernel_size=(filter, 1), stride=(stride, 1))
-        std = F.interpolate(std, scale_factor=(stride, 1), mode="bilinear", align_corners=False)[:, :, :nt, :]
+        std = F.interpolate(std, scale_factor=(stride, 1), mode="bilinear", align_corners=False)[:, :, :nt, :nx]
         std[std == 0.0] = 1.0
         data = data / std
 
-        data = log_transform(data)
-
-    return data
-
-
-def pad_input(data, min_w=1024, min_h=None):
-
-    nb, nch, nt, nx = data.shape
-    pad_w = (min_w - nt % min_w) % min_w
-    if min_h is not None:
-        pad_h = (min_h - nx % min_h) % min_h
-    else:
-        pad_h = 0
-
-    if (pad_w > 0) or (pad_h >= 0):
-        with torch.no_grad():
-            data = F.pad(data, (0, pad_h, 0, pad_w), mode="constant")
+        # data = log_transform(data)
 
     return data
 
@@ -126,11 +111,11 @@ class UNet(nn.Module):
         kernel_size=(7, 1),
         stride=(4, 1),
         padding=(3, 0),
-        pad_input=(256, None),
-        local_norm=(1024, 128),
+        moving_norm=(1024, 128),
         add_polarity=False,
         add_event=False,
         add_stft=False,
+        log_scale=False,
     ):
         super(UNet, self).__init__()
 
@@ -138,8 +123,8 @@ class UNet(nn.Module):
         self.add_polarity = add_polarity
         self.add_event = add_event
         self.add_stft = add_stft
-        self.local_norm = local_norm
-        self.pad_input = pad_input
+        self.moving_norm = moving_norm
+        self.log_scale = log_scale
         if self.add_polarity:
             self.encoder1_polarity = self.encoder_block(
                 1, features, kernel_size=kernel_size, stride=init_stride, padding=padding, name="enc1_polarity"
@@ -256,10 +241,10 @@ class UNet(nn.Module):
             self.output_upsample = None
 
     def forward(self, x):
-
         bt, ch, nt, nx = x.shape  # batch, channel, time, station
-        x = normalize_local(x, filter=self.local_norm[0], stride=self.local_norm[1])
-        x = pad_input(x, min_w=self.pad_input[0], min_h=self.pad_input[1])
+        x = moving_normalize(x, filter=self.moving_norm[0], stride=self.moving_norm[1])
+        if self.log_scale:
+            x = log_transform(x)
 
         #         if self.use_stft:
         #             sgram = torch.squeeze(x, 3)  # bt, ch, nt, 1
@@ -287,10 +272,10 @@ class UNet(nn.Module):
         dec2 = torch.cat((dec2, enc2), dim=1)
         dec1 = self.decoder21(dec2)
         dec1 = torch.cat((dec1, enc1), dim=1)
-        out = self.output_conv(dec1)
+        out_phase = self.output_conv(dec1)
         if self.output_upsample is not None:
-            out = self.output_upsample(out)
-        out = out[:, :, :nt, :nx]
+            out_phase = self.output_upsample(out_phase)
+        out_phase = out_phase[:, :, :nt, :nx]
 
         if self.add_polarity:
             dec1_polarity = torch.cat((dec1, enc1_polarity), dim=1)
@@ -309,22 +294,9 @@ class UNet(nn.Module):
         else:
             out_event = None
 
-        result = {"out": out, "polarity": out_polarity, "event": out_event}
+        result = {"phase": out_phase, "polarity": out_polarity, "event": out_event}
 
         return result
-
-    #     @staticmethod
-    #     def _cat(enc, dec):  # size encoder > decoder
-
-    #         # diffY = enc.size()[2] - dec.size()[2]
-    #         # diffX = enc.size()[3] - dec.size()[3]
-    #         # if (diffX < 0) or (diffY < 0):
-    #         #     print(f"{diffY = }, {diffX = }, {enc.size() = }, {dec.size() = }")
-    #         # dec = F.pad(dec, [diffX // 2, diffX - diffX // 2, diffY // 2, diffY - diffY // 2])
-
-    #         x1 = torch.cat((enc, dec), dim=1)
-
-    #         return x1
 
     @staticmethod
     def encoder_block(in_channels, out_channels, kernel_size=(7, 7), stride=(4, 4), padding=(3, 3), name=""):

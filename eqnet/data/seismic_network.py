@@ -5,7 +5,6 @@ from torch.utils.data import Dataset, IterableDataset
 
 
 def generate_label(phase_list, label_width=[150, 150], nt=8192):
-
     target = np.zeros([len(phase_list) + 1, nt], dtype=np.float32)
 
     for i, (picks, w) in enumerate(zip(phase_list, label_width)):
@@ -21,7 +20,6 @@ def generate_label(phase_list, label_width=[150, 150], nt=8192):
 
 
 class SeismicNetworkIterableDataset(IterableDataset):
-
     degree2km = 111.32
     nt = 8192  ## 8992
     feature_nt = 512  ##560
@@ -47,10 +45,8 @@ class SeismicNetworkIterableDataset(IterableDataset):
         return len(self.event_ids)
 
     def sample(self, event_ids):
-
         num_station = 10
         while True:
-
             idx = np.random.randint(0, len(event_ids))
             event_id = event_ids[idx]
             station_ids = list(self.hdf5_fp[event_id].keys())
@@ -59,21 +55,20 @@ class SeismicNetworkIterableDataset(IterableDataset):
             else:
                 station_ids = np.random.choice(station_ids, num_station, replace=False)
 
-            waveforms = np.zeros([3, self.nt, len(station_ids)])
+            data = np.zeros([3, self.nt, len(station_ids)])
             phase_pick = np.zeros([3, self.nt, len(station_ids)])
             event_center = np.zeros([self.nt, len(station_ids)])
             event_location = np.zeros([4, self.nt, len(station_ids)])
             event_location_mask = np.zeros([self.nt, len(station_ids)])
-            station_location = np.zeros([len(station_ids), 2])
+            station_location = np.zeros([len(station_ids), 3])
 
             for i, sta_id in enumerate(station_ids):
-
                 trace_id = event_id + "/" + sta_id
 
                 # if self.hdf5_fp[trace_id][()].shape != (9000, 3):
                 #     continue
 
-                waveforms[:, :, i] = self.hdf5_fp[trace_id][: self.nt, :].T
+                data[:, :, i] = self.hdf5_fp[trace_id][: self.nt, :].T
                 attrs = self.hdf5_fp[trace_id].attrs
                 p_picks = attrs["phase_index"][attrs["phase_type"] == "P"]
                 s_picks = attrs["phase_index"][attrs["phase_type"] == "S"]
@@ -144,33 +139,32 @@ class SeismicNetworkIterableDataset(IterableDataset):
                     2,
                 )
                 station_location[i, 1] = round(self.hdf5_fp[trace_id].attrs["latitude"] * self.degree2km, 2)
+                station_location[i, 2] = round(-self.hdf5_fp[trace_id].attrs["elevation_m"] / 1e3, 2)
 
-            std = np.std(waveforms, axis=1, keepdims=True)
+            std = np.std(data, axis=1, keepdims=True)
             std[std == 0] = 1.0
-            waveforms = (waveforms - np.mean(waveforms, axis=1, keepdims=True)) / std
-            waveforms = waveforms.astype(np.float32)
+            data = (data - np.mean(data, axis=1, keepdims=True)) / std
+            data = data.astype(np.float32)
 
             yield {
-                "waveform": torch.from_numpy(waveforms).float(),
+                "data": torch.from_numpy(data).float(),
                 "phase_pick": torch.from_numpy(phase_pick).float(),
-                "event_center": torch.from_numpy(event_center[:: self.feature_scale]).float(),
-                "event_location": torch.from_numpy(event_location[:: self.feature_scale]).float(),
-                "event_location_mask": torch.from_numpy(event_location_mask[:: self.feature_scale]).float(),
+                "event_center": torch.from_numpy(event_center[::self.feature_scale]).float(),
+                "event_location": torch.from_numpy(event_location[:, ::self.feature_scale]).float(),
+                "event_location_mask": torch.from_numpy(event_location_mask[::self.feature_scale]).float(),
                 "station_location": torch.from_numpy(station_location).float(),
             }
 
 
 if __name__ == "__main__":
-
     import matplotlib.pyplot as plt
 
     dataset = SeismicNetworkIterableDataset("/Users/weiqiang/Research/EQNet/datasets/NCEDC/ncedc_event.h5")
     for x in dataset:
         # print(x)
         fig, axes = plt.subplots(1, 5, figsize=(15, 5))
-        for i in range(x["waveforms"].shape[-1]):
-
-            axes[0].plot((x["waveforms"][-1, :, i]) / torch.std(x["waveforms"][-1, :, i]) / 10 + i)
+        for i in range(x["data"].shape[-1]):
+            axes[0].plot((x["data"][-1, :, i]) / torch.std(x["data"][-1, :, i]) / 10 + i)
 
             axes[1].plot(x["phase_pick"][1, :, i] + i)
             axes[1].plot(x["phase_pick"][2, :, i] + i)

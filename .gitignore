@@ -1,3 +1,5 @@
+
+.DS_Store
 *.pyc
 *.pth
 *.h5
@@ -42,3 +44,8 @@ Mammoth_north
 Mammoth_south
 tests/phasenet_das/association/picks_phasenet_das/
 tests/phasenet_das/association/figures_phasenet_filtered/
+ridgecrest_south
+Ridgecrest_DAS
+*/figures_phasenet_das_raw/
+*/picks_phasenet_das_raw/
+**/paper_figures/
