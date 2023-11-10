@@ -31,7 +31,9 @@ torchrun --standalone --nproc_per_node 4 predict.py --model phasenet --batch_siz
 ### [PhaseNet-DAS](https://arxiv.org/abs/2302.08747)
 PhaseNet for Distributed Acoustic Sensing (DAS) data.
 
+- Example: [notebook](https://ai4eps.github.io/EQNet/phasenet_das)
 
+<!-- 
 *Test data*
 ```
 wget https://huggingface.co/datasets/AI4EPS/quakeflow_das/resolve/main/data/ridgecrest_north/ci37280444.h5
@@ -71,8 +73,8 @@ python ../train.py --model phasenet_das --batch-size=4 --stack-event --stack-noi
 
 e.g.,
 ```
-python train.py --nt 5000 --nx 1280 -b 3 --phases P S SP --output Utah
-```
+python train.py --nt 5000 --nx 1280 -b 3 --phases P S SP --output Utah -->
+<!-- ``` -->
 
 <!-- ### Training PhaseNet
 ```
