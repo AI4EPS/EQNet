@@ -6,7 +6,7 @@ repo_name: 'AI4EPS/EQNet'
 repo_url: 'https://github.com/ai4eps/EQNet'
 nav:
     - Overview: README.md
-    - Reference: reference.md
+    - PhaseNet-DAS: phasenet_das.ipynb
 
 theme:
   name: 'material'
