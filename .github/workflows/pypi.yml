@@ -1,13 +1,13 @@
 name: pypi
 on:
-  push:
-    branches:
-      - master
-  # workflow_dispatch:
-  #   inputs:
-  #     version:
-  #       description: 'Version upload to pypi'
-  #       required: true
+  # push:
+  #   branches:
+  #     - master
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version upload to pypi'
+        required: true
   #     pypi_repo:
   #       description: 'Repo to upload to (testpypi or pypi)'
   #       default: 'pypi'
