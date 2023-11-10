@@ -1,9 +1,5 @@
-## Install
-```
-pip install -r requirements.txt
-```
+## EQNet: An End‐To‐End Earthquake Monitoring Framework
 
-## Prediction
 ### [PhaseNet](https://github.com/AI4EPS/PhaseNet)
 Orginal PhaseNet for picking arrival time.
 
@@ -17,6 +13,13 @@ python predict.py --model phasenet --add_polarity --add_event --data_path /path_
 ### [PhaseNet-TF](https://ziyixi.science/researchprojects/phasenet-tf/)
 PhaseNet in time-frequency domain for deep earthquakes
 
+
+### [PhaseNet-DAS](https://arxiv.org/abs/2302.08747)
+PhaseNet for Distributed Acoustic Sensing (DAS) data.
+
+- Example: [notebook](https://ai4eps.github.io/EQNet/phasenet_das)
+
+
 <!-- e.g.,
 ```
 python predict.py --model phasenet --add_polarity --add_event --format mseed --data_path /kuafu/jxli/Data/SeismicEventData/mammoth_south/data/ --data_list mammoth_south.txt --batch_size 1 --result_path mammoth_south 
@@ -28,10 +31,12 @@ torchrun --standalone --nproc_per_node 8 predict.py --model phasenet --data_path
 torchrun --standalone --nproc_per_node 4 predict.py --model phasenet --batch_size=32 --hdf5-file datasets/NCEDC/ncedc_event_dataset.h5 --result_path results_ncedc_event_dataset_0.1 --add_polarity --add_event  --dataset=seismic_trace --min_prob 0.1
 ``` -->
 
-### [PhaseNet-DAS](https://arxiv.org/abs/2302.08747)
-PhaseNet for Distributed Acoustic Sensing (DAS) data.
+<!-- ## Install
+```
+pip install -r requirements.txt
+```
 
-- Example: [notebook](https://ai4eps.github.io/EQNet/phasenet_das)
+## Prediction -->
 
 <!-- 
 *Test data*
