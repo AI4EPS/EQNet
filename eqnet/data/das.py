@@ -819,14 +819,23 @@ class DASIterableDataset(IterableDataset):
             elif (self.format == "h5") and (self.system == "optasense"):
                 with fsspec.open(file, "rb") as fs:
                     with h5py.File(fs, "r") as fp:
-                        dataset = fp["Data"]
-                        nx, nt = dataset.shape
-                        if "startTime" in dataset.attrs:
+                        # dataset = fp["Data"]
+                        if "Data" in fp:  # converted format by Ettore Biondi
+                            dataset = fp["Data"]
                             sample["begin_time"] = datetime.fromisoformat(dataset.attrs["startTime"].rstrip("Z"))
-                        if "dt" in dataset.attrs:
                             sample["dt_s"] = dataset.attrs["dt"]
-                        if "dCh" in dataset.attrs:
                             sample["dx_m"] = dataset.attrs["dCh"]
+                        else:
+                            dataset = fp["Acquisition/Raw[0]/RawData"]
+                            dx = fp["Acquisition"].attrs["SpatialSamplingInterval"]
+                            fs = fp["Acquisition/Raw[0]"].attrs["OutputDataRate"]
+                            begin_time = dataset.attrs["PartStartTime"].decode()
+
+                            sample["dx_m"] = dx
+                            sample["dt_s"] = 1.0 / fs
+                            sample["begin_time"] = datetime.fromisoformat(begin_time.rstrip("Z"))
+
+                        nx, nt = dataset.shape
                         sample["nx"] = nx
                         sample["nt"] = nt
 

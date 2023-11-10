@@ -4,17 +4,20 @@ pip install -r requirements.txt
 ```
 
 ## Prediction
-### PhaseNet
-```
-python predict.py --model phasenet --data_path /path_to_data --result_path ./results --batch_size=1
-```
+### [PhaseNet](https://github.com/AI4EPS/PhaseNet)
+Orginal PhaseNet for picking arrival time.
 
-### PhaseNet-Polarity
+
+### PhaseNet-P
+PhaseNet for picking arrival time and polarity.
 ```
 python predict.py --model phasenet --add_polarity --add_event --data_path /path_to_data --result_path ./results --batch_size=1 --format mseed
 ```
 
-e.g.,
+### [PhaseNet-TF](https://ziyixi.science/researchprojects/phasenet-tf/)
+PhaseNet in time-frequency domain for deep earthquakes
+
+<!-- e.g.,
 ```
 python predict.py --model phasenet --add_polarity --add_event --format mseed --data_path /kuafu/jxli/Data/SeismicEventData/mammoth_south/data/ --data_list mammoth_south.txt --batch_size 1 --result_path mammoth_south 
 ```
@@ -23,9 +26,17 @@ torchrun --standalone --nproc_per_node 8 predict.py --model phasenet --data_path
 ```
 ```
 torchrun --standalone --nproc_per_node 4 predict.py --model phasenet --batch_size=32 --hdf5-file datasets/NCEDC/ncedc_event_dataset.h5 --result_path results_ncedc_event_dataset_0.1 --add_polarity --add_event  --dataset=seismic_trace --min_prob 0.1
-```
+``` -->
 
 ### PhaseNet-DAS
+PhaseNet for Distributed Acoustic Sensing (DAS) data.
+
+
+*Test data*
+```
+wget https://huggingface.co/datasets/AI4EPS/quakeflow_das/resolve/main/data/ridgecrest_north/ci37280444.h5
+```
+
 ```
 python predict.py --model phasenet_das --amp --data_path /path_to_data --result_path ./results --cut_patch
 ```
@@ -63,7 +74,7 @@ e.g.,
 python train.py --nt 5000 --nx 1280 -b 3 --phases P S SP --output Utah
 ```
 
-### Training PhaseNet
+<!-- ### Training PhaseNet
 ```
 torchrun --standalone --nproc_per_node 4 train.py --model phasenet --batch-size=256 --hdf5-file /scratch/zhuwq/EQNet_update2/datasets/NCEDC/ncedc_event_dataset_3c.h5 --lr 0.01 --workers=32 --stack-event --flip-polarity --drop-channel --output model_phasenet
 ```
@@ -90,4 +101,4 @@ python train.py --output-dir output
 - Using Multi-GPUs
 ```bash
 torchrun --standalone --nproc_per_node=4 train.py --output-dir output
-```
+``` -->
