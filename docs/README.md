@@ -1,4 +1,4 @@
-## EQNet: An End‐To‐End Earthquake Monitoring Framework
+## EQNet: an End‐to‐End EarthQuake Nerual NETwork
 
 ### [PhaseNet](https://github.com/AI4EPS/PhaseNet)
 Orginal PhaseNet for picking arrival time.

@@ -1,5 +1,5 @@
 site_name: "EQNet"
-site_description: 'EQNet: Neural Network Models for Earthquakes'
+site_description: 'EQNet: an End‐to‐End EarthQuake Nerual NETwork'
 site_author: 'Weiqiang Zhu'
 docs_dir: docs/
 repo_name: 'AI4EPS/EQNet'
