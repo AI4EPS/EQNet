@@ -8,7 +8,7 @@ pip install -r requirements.txt
 Orginal PhaseNet for picking arrival time.
 
 
-### PhaseNet-P
+### PhaseNet+
 PhaseNet for picking arrival time and polarity.
 ```
 python predict.py --model phasenet --add_polarity --add_event --data_path /path_to_data --result_path ./results --batch_size=1 --format mseed
