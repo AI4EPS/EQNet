@@ -221,8 +221,14 @@ def pred_eqnet(args, model, data_loader, pick_path, figure_path, event_path=None
     ctx = nullcontext() if args.device == "cpu" else torch.amp.autocast(device_type=args.device, dtype=args.ptdtype)
     with torch.inference_mode():
         for meta in metric_logger.log_every(data_loader, 1, header):
+            num_stations = len(meta["station_id"])
             with ctx:
                 output = model(meta)
+            output["phase"] = output["phase"][:, :, :, :num_stations]
+            output["event"] = output["event"][:, :, :num_stations]
+            output["offset"] = output["offset"][:, :, :, :num_stations]
+            output["hypocenter"] = output["hypocenter"][:, :, :, :num_stations]
+            
             if "phase" in output:
                 phase_scores = F.softmax(output["phase"], dim=1)  # [batch, nch, nt, nsta]
                 topk_phase_scores, topk_phase_inds = detect_peaks(phase_scores, vmin=args.min_prob, kernel=128)
@@ -243,7 +249,8 @@ def pred_eqnet(args, model, data_loader, pick_path, figure_path, event_path=None
             if ("event" in output) and (output["event"] is not None):
                 event_scores = torch.sigmoid(output["event"])
                 event_scores = event_scores.unsqueeze(1)  # [batch, 1, nt, nsta]
-                topk_event_scores, topk_event_inds = detect_peaks(event_scores, vmin=args.min_prob, kernel=128)
+                topk_event_scores, topk_event_inds, event_mask = detect_peaks(event_scores, vmin=args.min_prob, kernel=128, if_mask=True)
+                event_scores = event_scores.squeeze(1)  # [batch, nt, nsta]
                 event_picks_ = extract_picks(
                     topk_event_inds,
                     topk_event_scores,
@@ -255,6 +262,7 @@ def pred_eqnet(args, model, data_loader, pick_path, figure_path, event_path=None
                     dt=meta["dt_s"] * feature_scale if "dt_s" in meta else 0.01 * feature_scale,
                     vmin=args.min_prob,
                     phases=["event"],
+                    scores_mask=event_mask,
                 )
                 
             for i in range(len(meta["file_name"])):
@@ -277,13 +285,17 @@ def pred_eqnet(args, model, data_loader, pick_path, figure_path, event_path=None
                     sta_order = pick_dict["station_index"]
                     station_loc = meta["station_location"][sta_order[1], sta_order[0]]
                     time_shift = meta["begin_time_index"][sta_order[1]] if "begin_time_index" in meta.keys() else 0
-                    offset = output["offset"][i, 0, pick_dict["phase_index"]-time_shift, sta_order[0]].float().item()
-                    width = output["offset"][i, 1, pick_dict["phase_index"]-time_shift, sta_order[0]].float().item()
-                    dt = output["hypocenter"][i, 0, pick_dict["phase_index"]-time_shift, sta_order[0]].float().item()
+                    # offset = output["offset"][i, 0, pick_dict["phase_index"]-time_shift, sta_order[0]].float().item()
+                    # width = output["offset"][i, 1, pick_dict["phase_index"]-time_shift, sta_order[0]].float().item()
+                    # dt = output["hypocenter"][i, 0, pick_dict["phase_index"]-time_shift, sta_order[0]].float().item()
+                    offset = output["offset"][i, 0, pick_dict["phase_mask"], sta_order[0]].float().mean().item()
+                    # assert 0, f"phase_mask: {pick_dict['phase_mask']}, phase_index: {pick_dict['phase_index']}, offset: {offset}"
+                    width = output["offset"][i, 1, pick_dict["phase_mask"], sta_order[0]].float().mean().item()
+                    dt = output["hypocenter"][i, 0, pick_dict["phase_mask"], sta_order[0]].float().mean().item()
                     # dx = output["hypocenter"][i, 1, pick_dict["phase_index"]-time_shift, sta_order[0]].float().item()
                     # dy = output["hypocenter"][i, 2, pick_dict["phase_index"]-time_shift, sta_order[0]].float().item()
                     # dz = output["hypocenter"][i, 3, pick_dict["phase_index"]-time_shift, sta_order[0]].float().item()
-                    event_center_index = pick_dict["phase_index"]+offset
+                    event_center_index = pick_dict["phase_index"]#+offset
                     event_index = event_center_index - dt/(meta["dt_s"][i].item())/feature_scale
                     p_index = event_center_index - width
                     s_index = event_center_index + width
@@ -292,14 +304,15 @@ def pred_eqnet(args, model, data_loader, pick_path, figure_path, event_path=None
                     pick_dict["p_index"] = p_index
                     pick_dict["s_index"] = s_index
                     pick_dict["event_original_time"] = (datetime.fromisoformat(pick_dict["phase_time"])
-                                                        + timedelta(seconds=(offset*meta["dt_s"][i].item()*feature_scale - dt))).isoformat(
+                                                        + timedelta(seconds=(-dt))).isoformat(
                             timespec="milliseconds"
                     )
                     # TODO: return to lat/lon
-                    pick_dict["event_location_x"] = (station_loc[0] + output["hypocenter"][i, 1, pick_dict["phase_index"]-time_shift, sta_order[0]]).item()
-                    pick_dict["event_location_y"] = (station_loc[1] + output["hypocenter"][i, 2, pick_dict["phase_index"]-time_shift, sta_order[0]]).item()
-                    pick_dict["event_location_z"] = (station_loc[2] + output["hypocenter"][i, 3, pick_dict["phase_index"]-time_shift, sta_order[0]]).item()
-                    # TODO: find real events    
+                    pick_dict["event_location_x"] = (station_loc[0] + output["hypocenter"][i, 1, pick_dict["phase_mask"], sta_order[0]].mean()).item() #output["hypocenter"][i, 1, pick_dict["phase_index"]-time_shift, sta_order[0]]).item()
+                    pick_dict["event_location_y"] = (station_loc[1] + output["hypocenter"][i, 2, pick_dict["phase_mask"], sta_order[0]].mean()).item() #output["hypocenter"][i, 2, pick_dict["phase_index"]-time_shift, sta_order[0]]).item()
+                    pick_dict["event_location_z"] = (station_loc[2] + output["hypocenter"][i, 3, pick_dict["phase_mask"], sta_order[0]].mean()).item() #output["hypocenter"][i, 3, pick_dict["phase_index"]-time_shift, sta_order[0]]).item()
+                    pick_dict["magnitude"] = output["hypocenter"][i, 4, pick_dict["phase_mask"], sta_order[0]].mean().float().item()#output["hypocenter"][i, 4, pick_dict["phase_index"]-time_shift, sta_order[0]].float().item()
+                    pick_dict["phase_mask"] = [int(pick_dict["phase_mask"].item()), int(pick_dict["phase_mask"].item())]    
                     
                 picks_df = pd.DataFrame(event_picks_[i])
                 picks_df.sort_values(by=["phase_time"], inplace=True)
@@ -430,6 +443,8 @@ def main(args):
         nt_cut=args.nt,
         rank=rank,
         world_size=world_size,
+        is_pad=args.is_pad,
+        num_stations=args.num_stations,
         )
         sampler = None
     else:
@@ -557,6 +572,8 @@ def get_args_parser(add_help=True):
     parser.add_argument("--result_path", type=str, default="results", help="path to result directory")
     parser.add_argument("--plot_figure", action="store_true", help="If plot figure for test")
     parser.add_argument("--min_prob", default=0.3, type=float, help="minimum probability for picking")
+    parser.add_argument("--is_pad", action="store_true", help="If pad the data to at least num_stations for eqnet")
+    parser.add_argument("--num_stations", default=10, type=int, help="number of stations for eqnet")
 
     ## Seismic
     parser.add_argument("--add_polarity", action="store_true", help="If use polarity information")
