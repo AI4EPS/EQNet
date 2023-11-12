@@ -14,12 +14,16 @@ import torch.nn.functional as F
 from tqdm import tqdm
 
 
-def detect_peaks(scores, vmin=0.3, kernel=101, stride=1, K=0):
+def detect_peaks(scores, vmin=0.3, kernel=101, stride=1, K=0, if_mask=False):
 
     nb, nc, nt, nx = scores.shape
     pad = kernel // 2
     smax = F.max_pool2d(scores, (kernel, 1), stride=(stride, 1), padding=(pad, 0))[:, :, :nt, :]
     keep = (smax == scores).float()
+    # remove the adjacent peaks
+    keep[:, :, 1:, :] *= (scores[:, :, 1:, :] != scores[:, :, :-1, :]).float()
+    if if_mask:
+        scores_mask = torch.transpose(scores, 2, 3) > vmin
     scores = scores * keep
 
     batch, chn, nt, ns = scores.size()
@@ -32,7 +36,10 @@ def detect_peaks(scores, vmin=0.3, kernel=101, stride=1, K=0):
         topk_scores, topk_inds = torch.topk(scores[:, 1:, :, :].view(batch, chn - 1, ns, -1), K)
     topk_inds = topk_inds % nt
 
-    return topk_scores.detach().cpu(), topk_inds.detach().cpu()
+    if if_mask:
+        return topk_scores.detach().cpu(), topk_inds.detach().cpu(), scores_mask.detach().cpu()
+    else:
+        return topk_scores.detach().cpu(), topk_inds.detach().cpu()
 
 
 def extract_picks(
@@ -47,6 +54,7 @@ def extract_picks(
     polarity_score=None,
     waveform=None,
     window_amp=[10, 5],
+    scores_mask=None,
     **kwargs,
 ):
     """Extract picks from prediction results.
@@ -130,6 +138,16 @@ def extract_picks(
                                 "phase_type": phases[j],
                                 # "dt": dt[i],
                             }
+                        if scores_mask is not None:
+                            #mask = scores_mask[i, j, k]
+                            #mask = mask^mask.roll(1)
+                            #ind = torch.nonzero(mask, as_tuple=True)[0]
+                            #left = ind[ind < index][-1] if len(ind[ind < index]) > 0 else max(0, index)
+                            #right = ind[ind > index][0] if len(ind[ind > index]) > 0 else min(len(mask), index+1)
+                            #phase_mask = torch.arange(left, right) 
+                            phase_mask = index
+                            pick_dict["phase_mask"] = phase_mask
+                            #assert 0, f"pick_index: {pick_index}, phase_mask: {phase_mask}"
                         
                         if polarity_score is not None:
                             pick_dict["phase_polarity"] = f"{polarity_score[i, 0, index, k].item():.3f}"
