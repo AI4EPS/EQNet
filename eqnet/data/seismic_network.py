@@ -57,6 +57,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
         sort=False,
         num_stations=None,
         ## for prediction
+        is_pad=False,
         sampling_rate=100,
         response_xml=None,
         highpass_filter=False,
@@ -122,6 +123,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
         self.training = training
 
         ## prediction
+        self.is_pad = is_pad
         self.cut_patch = cut_patch
         self.nt_cut = nt_cut
         self.nx = nx
@@ -525,6 +527,12 @@ class SeismicNetworkIterableDataset(IterableDataset):
                 amplitude = amplitude[:, :, index]
                 station_ids = [station_ids[i] for i in index]
                 station_location = station_location[index]
+            
+            if self.is_pad and len(station_ids) < self.num_stations:
+                pad_indices = np.random.choice(len(station_ids), self.num_stations-len(station_ids), replace=True)
+                waveforms = np.concatenate([waveforms, waveforms[:, :, pad_indices]], axis=-1)
+                amplitude = np.concatenate([amplitude, amplitude[:, :, pad_indices]], axis=-1)
+                station_location = np.concatenate([station_location, station_location[pad_indices]], axis=0)
 
         return {
             "data": torch.from_numpy(waveforms).float(),
