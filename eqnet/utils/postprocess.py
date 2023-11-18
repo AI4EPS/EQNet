@@ -182,17 +182,21 @@ def merge_patch(patch_dir, merged_dir, return_single_file=False):
     if not merged_dir.exists():
         merged_dir.mkdir()
 
-    files = patch_dir.glob("*_*_*.csv")
+    files = list(patch_dir.rglob("*_*_*.csv"))
     group = defaultdict(list)
     for file in files:
-        group["_".join(file.stem.split("_")[:-2])].append(file)  ## event_id
+        key = "_".join((str(file).replace(f"{patch_dir}/", "")).split("_")[:-2])
+        group[key].append(file)  ## event_id
 
     if return_single_file:
         fp_total = open(str(merged_dir).rstrip("/") + ".csv", "w")
+
     num_picks = 0
     header0 = None
     for k in tqdm(group, desc=f"Merging {merged_dir}"):
         header = None
+        if not (merged_dir / f"{k}.csv").parent.exists():
+            (merged_dir / f"{k}.csv").parent.mkdir()
         with open(merged_dir / f"{k}.csv", "w") as fp_file:
             for file in sorted(group[k]):
                 with open(file, "r") as f:

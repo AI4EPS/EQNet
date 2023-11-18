@@ -184,22 +184,25 @@ def pred_phasenet_das(args, model, data_loader, pick_path, figure_path):
             )
 
             for i in range(len(meta["file_name"])):
+                tmp = meta["file_name"][i].split("/")
+                parent_dir = "/".join(tmp[-args.folder_depth : -1])
+                filename = tmp[-1].replace("*", "").replace(f".{args.format}", "")
+                if not os.path.exists(os.path.join(pick_path, parent_dir)):
+                    os.makedirs(os.path.join(pick_path, parent_dir), exist_ok=True)
+
                 if len(picks_[i]) == 0:
                     ## keep an empty file for the file with no picks to make it easier to track processed files
-                    with open(os.path.join(pick_path, meta["file_name"][i] + ".csv"), "a"):
+                    with open(os.path.join(pick_path, parent_dir, filename + ".csv"), "a"):
                         pass
                     continue
                 picks_df = pd.DataFrame(picks_[i])
                 picks_df["channel_index"] = picks_df["station_id"].apply(lambda x: int(x))
                 picks_df.sort_values(by=["channel_index", "phase_index"], inplace=True)
                 picks_df.to_csv(
-                    os.path.join(pick_path, meta["file_name"][i] + ".csv"),
+                    os.path.join(pick_path, parent_dir, filename + ".csv"),
                     columns=["channel_index", "phase_index", "phase_time", "phase_score", "phase_type"],
                     index=False,
                 )
-
-            # if len(picks_[0]) < 1000:
-            #     continue
 
             if args.plot_figure:
                 plot_das(

@@ -620,14 +620,19 @@ class DASIterableDataset(IterableDataset):
                 with fsspec.open(self.data_list[0], "rb") as fs:
                     with h5py.File(fs, "r") as meta:
                         if self.system == "optasense":
-                            nx, nt = meta["Data"].shape
-                            attrs = dict(meta["Data"].attrs)
-                            if "fs" in attrs:
-                                attrs["dt_s"] = 1.0 / attrs["fs"]
-                            if "dt" in attrs:
-                                attrs["dt_s"] = attrs["dt"]
+                            attrs = {}
+                            if "Data" in meta:
+                                nx, nt = meta["Data"].shape
+                                attrs["dt_s"] = meta["Data"].attrs["dt"]
+                                attrs["dx_m"] = meta["Data"].attrs["dCh"]
+                            else:
+                                nx, nt = meta["Acquisition/Raw[0]/RawData"].shape
+                                dx = meta["Acquisition"].attrs["SpatialSamplingInterval"]
+                                fs = meta["Acquisition/Raw[0]"].attrs["OutputDataRate"]
+                                attrs["dx_m"] = dx
+                                attrs["dt_s"] = 1.0 / fs
                         else:
-                            nt, nx = meta["data"].shape
+                            nx, nt = meta["data"].shape
                             attrs = dict(meta["data"].attrs)
                 if self.resample_time and ("dt_s" in attrs):
                     if (attrs["dt_s"] != 0.01) and (int(round(1.0 / attrs["dt_s"])) % 100 == 0):
@@ -888,7 +893,8 @@ class DASIterableDataset(IterableDataset):
                     "data": data,
                     "nt": nt,
                     "nx": nx,
-                    "file_name": os.path.splitext(file.split("/")[-1])[0],
+                    # "file_name": os.path.splitext(file.split("/")[-1])[0],
+                    "file_name": file,
                     "begin_time": sample["begin_time"].isoformat(timespec="milliseconds"),
                     "begin_time_index": 0,
                     "begin_channel_index": 0,
@@ -920,7 +926,8 @@ class DASIterableDataset(IterableDataset):
                             "data": data_patch,
                             "nt": nt_,
                             "nx": nx_,
-                            "file_name": os.path.splitext(file.split("/")[-1])[0] + f"_{i:04d}_{j:04d}",
+                            # "file_name": os.path.splitext(file.split("/")[-1])[0] + f"_{i:04d}_{j:04d}",
+                            "file_name": os.path.splitext(file)[0] + f"_{i:04d}_{j:04d}",
                             "begin_time": (sample["begin_time"] + timedelta(seconds=i * sample["dt_s"])).isoformat(
                                 timespec="milliseconds"
                             ),
