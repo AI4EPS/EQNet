@@ -101,6 +101,8 @@ def pred_phasenet(args, model, data_loader, pick_path, figure_path, event_path=N
                 parent_dir = "/".join(tmp[-args.folder_depth : -1])
                 filename = tmp[-1].replace("*", "").replace("?", "").replace(".mseed", "")
 
+                if not os.path.exists(os.path.join(pick_path, parent_dir)):
+                    os.makedirs(os.path.join(pick_path, parent_dir), exist_ok=True)
                 if len(phase_picks_[i]) == 0:
                     ## keep an empty file for the file with no picks to make it easier to track processed files
                     with open(os.path.join(pick_path, parent_dir, filename + ".csv"), "a"):
@@ -109,13 +111,11 @@ def pred_phasenet(args, model, data_loader, pick_path, figure_path, event_path=N
                 picks_df = pd.DataFrame(phase_picks_[i])
                 # picks_df["phase_time"] = picks_df["phase_time"].apply(lambda x: x.isoformat(timespec="milliseconds"))
                 picks_df.sort_values(by=["phase_time"], inplace=True)
-                try:
-                    picks_df.to_csv(os.path.join(pick_path, parent_dir, filename + ".csv"), index=False)
-                except:
-                    os.makedirs(os.path.join(pick_path, parent_dir), exist_ok=True)
-                    picks_df.to_csv(os.path.join(pick_path, parent_dir, filename + ".csv"), index=False)
+                picks_df.to_csv(os.path.join(pick_path, parent_dir, filename + ".csv"), index=False)
 
                 if "event" in output:
+                    if not os.path.exists(os.path.join(event_path, parent_dir)):
+                        os.makedirs(os.path.join(event_path, parent_dir), exist_ok=True)
                     if len(event_picks_[i]) == 0:
                         with open(os.path.join(event_path, parent_dir, filename + ".csv"), "a"):
                             pass
@@ -125,11 +125,7 @@ def pred_phasenet(args, model, data_loader, pick_path, figure_path, event_path=N
                     #     lambda x: x.isoformat(timespec="milliseconds")
                     # )
                     picks_df.sort_values(by=["phase_time"], inplace=True)
-                    try:
-                        picks_df.to_csv(os.path.join(event_path, parent_dir, filename + ".csv"), index=False)
-                    except:
-                        os.makedirs(os.path.join(event_path, parent_dir), exist_ok=True)
-                        picks_df.to_csv(os.path.join(event_path, parent_dir, filename + ".csv"), index=False)
+                    picks_df.to_csv(os.path.join(event_path, parent_dir, filename + ".csv"), index=False)
 
             if args.plot_figure:
                 # meta["waveform_raw"] = meta["waveform"].clone()
