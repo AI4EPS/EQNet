@@ -251,8 +251,12 @@ def main(args):
     utils.init_distributed_mode(args)
     print(args)
 
-    rank = utils.get_rank()
-    world_size = utils.get_world_size()
+    if args.distributed:
+        rank = utils.get_rank()
+        world_size = utils.get_world_size()
+    else:
+        rank = args.rank
+        world_size = args.world_size
 
     device = torch.device(args.device)
     dtype = "bfloat16" if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else "float16"
