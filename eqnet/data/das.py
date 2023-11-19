@@ -502,6 +502,7 @@ class DASIterableDataset(IterableDataset):
         resample_space=False,
         skip_existing=False,
         pick_path="./",
+        folder_depth=1,  # parent folder depth of pick_path
         num_patch=2,
         masking=False,
         highpass_filter=0.0,
@@ -594,6 +595,7 @@ class DASIterableDataset(IterableDataset):
         self.resample_time = resample_time
         self.skip_existing = skip_existing
         self.pick_path = pick_path
+        self.folder_depth = folder_depth
         self.num_patch = num_patch
         self.masking = masking
         self.highpass_filter = highpass_filter
@@ -847,6 +849,7 @@ class DASIterableDataset(IterableDataset):
                         ## check existing
                         existing = self.check_existing(file, sample)
                         if self.skip_existing and existing:
+                            print(f"Skip existing file {file}")
                             continue
 
                         data = dataset[()]  # (nx, nt)
@@ -942,6 +945,7 @@ class DASIterableDataset(IterableDataset):
         if self.resample_time:
             if (sample["dt_s"] != 0.01) and (int(round(1.0 / sample["dt_s"])) % 100 == 0):
                 nt = int(nt / round(0.01 / sample["dt_s"]))
+        parent_dir = "/".join(file.split("/")[-self.folder_depth : -1])
         existing = True
         if self.cut_patch:
             for i in list(range(0, nt, self.nt)):
@@ -949,10 +953,18 @@ class DASIterableDataset(IterableDataset):
                     if not os.path.exists(
                         os.path.join(
                             self.pick_path,
+                            parent_dir,
                             os.path.splitext(file.split("/")[-1])[0] + f"_{i:04d}_{j:04d}.csv",
                         )
                     ):
                         existing = False
+        else:
+            if not os.path.exists(
+                os.path.join(
+                    os.path.join(self.pick_path, parent_dir, os.path.splitext(file.split("/")[-1])[0] + ".csv")
+                )
+            ):
+                existing = False
         return existing
 
 

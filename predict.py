@@ -255,7 +255,13 @@ def main(args):
         rank = utils.get_rank()
         world_size = utils.get_world_size()
     else:
-        rank, world_size = 0, 1
+        if "RANK" in os.environ and "WORLD_SIZE" in os.environ:
+            rank = int(os.environ["RANK"])
+            world_size = int(os.environ["WORLD_SIZE"])
+        else:
+            rank = 0
+            world_size = 1
+
     device = torch.device(args.device)
     dtype = "bfloat16" if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else "float16"
     ptdtype = {"float32": torch.float32, "bfloat16": torch.bfloat16, "float16": torch.float16}[dtype]
@@ -303,6 +309,7 @@ def main(args):
             resample_space=args.resample_space,
             skip_existing=args.skip_existing,
             pick_path=pick_path,
+            folder_depth=args.folder_depth,
             rank=rank,
             world_size=world_size,
         )
