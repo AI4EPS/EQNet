@@ -238,14 +238,14 @@ def is_dist_avail_and_initialized():
 
 
 def get_world_size():
-    if not is_dist_avail_and_initialized():
-        return 1
+    # if not is_dist_avail_and_initialized():
+    #     return 1
     return dist.get_world_size()
 
 
 def get_rank():
-    if not is_dist_avail_and_initialized():
-        return 0
+    # if not is_dist_avail_and_initialized():
+    #     return 0
     return dist.get_rank()
 
 
