@@ -797,6 +797,13 @@ class DASIterableDataset(IterableDataset):
 
     def sample(self, file_list):
         for file in file_list:
+
+            if not self.cut_patch:
+                existing = self.check_existing(file)
+                if self.skip_existing and existing:
+                    print(f"Skip existing file {file}")
+                    continue
+
             sample = {}
 
             if self.format == "npz":
@@ -940,14 +947,21 @@ class DASIterableDataset(IterableDataset):
                             "dx_m": sample["dx_m"] if "dx_m" in sample else self.dx,
                         }
 
-    def check_existing(self, file, sample):
-        nx, nt = sample["nx"], sample["nt"]
-        if self.resample_time:
-            if (sample["dt_s"] != 0.01) and (int(round(1.0 / sample["dt_s"])) % 100 == 0):
-                nt = int(nt / round(0.01 / sample["dt_s"]))
+    def check_existing(self, file, sample=None):
         parent_dir = "/".join(file.split("/")[-self.folder_depth : -1])
         existing = True
-        if self.cut_patch:
+        if not self.cut_patch:
+            if not os.path.exists(
+                os.path.join(
+                    os.path.join(self.pick_path, parent_dir, os.path.splitext(file.split("/")[-1])[0] + ".csv")
+                )
+            ):
+                existing = False
+        else:
+            nx, nt = sample["nx"], sample["nt"]
+            if self.resample_time:
+                if (sample["dt_s"] != 0.01) and (int(round(1.0 / sample["dt_s"])) % 100 == 0):
+                    nt = int(nt / round(0.01 / sample["dt_s"]))
             for i in list(range(0, nt, self.nt)):
                 for j in list(range(0, nx, self.nx)):
                     if not os.path.exists(
@@ -958,13 +972,8 @@ class DASIterableDataset(IterableDataset):
                         )
                     ):
                         existing = False
-        else:
-            if not os.path.exists(
-                os.path.join(
-                    os.path.join(self.pick_path, parent_dir, os.path.splitext(file.split("/")[-1])[0] + ".csv")
-                )
-            ):
-                existing = False
+
+                        
         return existing
 
 
