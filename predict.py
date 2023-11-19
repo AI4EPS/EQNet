@@ -251,11 +251,9 @@ def main(args):
     utils.init_distributed_mode(args)
     print(args)
 
-    if args.distributed:
-        rank = utils.get_rank()
-        world_size = utils.get_world_size()
-    else:
-        rank, world_size = 0, 1
+    rank = utils.get_rank()
+    world_size = utils.get_world_size()
+
     device = torch.device(args.device)
     dtype = "bfloat16" if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else "float16"
     ptdtype = {"float32": torch.float32, "bfloat16": torch.bfloat16, "float16": torch.float16}[dtype]
