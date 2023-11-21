@@ -22,7 +22,7 @@ from eqnet.utils import (
     plot_das,
     plot_phasenet,
 )
-import tqdm
+from tqdm import tqdm
 
 # mp.set_start_method("spawn", force=True)
 matplotlib.use("agg")
