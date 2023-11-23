@@ -503,6 +503,7 @@ class DASIterableDataset(IterableDataset):
         skip_existing=False,
         pick_path="./",
         folder_depth=1,  # parent folder depth of pick_path
+        folder_depth=1,  # parent folder depth of pick_path
         num_patch=2,
         masking=False,
         highpass_filter=0.0,
@@ -595,6 +596,7 @@ class DASIterableDataset(IterableDataset):
         self.resample_time = resample_time
         self.skip_existing = skip_existing
         self.pick_path = pick_path
+        self.folder_depth = folder_depth
         self.folder_depth = folder_depth
         self.num_patch = num_patch
         self.masking = masking
@@ -797,7 +799,6 @@ class DASIterableDataset(IterableDataset):
 
     def sample(self, file_list):
         for file in file_list:
-
             if not self.cut_patch:
                 existing = self.check_existing(file)
                 if self.skip_existing and existing:
@@ -968,12 +969,12 @@ class DASIterableDataset(IterableDataset):
                         os.path.join(
                             self.pick_path,
                             parent_dir,
+                            parent_dir,
                             os.path.splitext(file.split("/")[-1])[0] + f"_{i:04d}_{j:04d}.csv",
                         )
                     ):
                         existing = False
 
-                        
         return existing
 
 
