@@ -54,7 +54,7 @@ def add_scalebar(ax, km=50, linewidth=2):
     bar_y = [lly0 + 0.1, lly0 + 0.1]
     ax.plot(bar_x, bar_y, color="k", linewidth=linewidth)
     ax.plot(
-        [bar_x[0] - 0.005, bar_x[0] - 0.005], [bar_y[0] - 0.025, bar_y[0] + 0.025], color="k", linewidth=linewidth - 1
+        [bar_x[0] - 0.006, bar_x[0] - 0.006], [bar_y[0] - 0.025, bar_y[0] + 0.025], color="k", linewidth=linewidth - 1
     )
     ax.plot(
         [bar_x[1] + 0.005, bar_x[1] + 0.005], [bar_y[1] - 0.025, bar_y[1] + 0.025], color="k", linewidth=linewidth - 1
@@ -100,19 +100,30 @@ axes[0, 0].scatter(
     catalog_mammoth_south["longitude"], catalog_mammoth_south["latitude"], s=3, c="k", linewidth=0, rasterized=True
 )
 axes[0, 0].scatter(
-    das_mammoth_north["longitude"], das_mammoth_north["latitude"], s=1, label="Mammoth North", rasterized=True
+    das_mammoth_north["longitude"], das_mammoth_north["latitude"], s=1, label="Mammoth north", rasterized=True
 )
 axes[0, 0].scatter(
-    das_mammoth_south["longitude"], das_mammoth_south["latitude"], s=1, label="Mammoth South", rasterized=True
+    das_mammoth_south["longitude"], das_mammoth_south["latitude"], s=1, label="Mammoth south", rasterized=True
 )
 # axes[0].axis("scaled")
 axes[0, 0].set_aspect(1.0 / np.cos(np.deg2rad((min_latitude + max_latitude) / 2)))
 axes[0, 0].set_xlim([min_longitude, max_longitude])
 axes[0, 0].set_ylim([min_latitude, max_latitude])
-# axes[0, 0].set_xlabel("Longitude")
-# axes[0, 0].set_ylabel("Latitude")
+axes[0, 0].set_xlabel("Longitude")
+axes[0, 0].set_ylabel("Latitude")
 axes[0, 0].tick_params(axis="x", labelrotation=15)
 axes[0, 0].legend(markerscale=10, loc="lower left")
+# add (a) to top upper left corner in a nice way
+# add background rectangle
+axes[0, 0].text(
+    min_longitude + 0.07,
+    max_latitude - 0.06,
+    "(a)",
+    fontsize=13,
+    horizontalalignment="left",
+    verticalalignment="top",
+    bbox=dict(boxstyle='round', facecolor='white', edgecolor="none", alpha=0.7),
+)
 add_scalebar(axes[0, 0])
 
 min_longitude = -119
@@ -153,10 +164,10 @@ axes[0, 1].scatter(
     rasterized=True,
 )
 axes[0, 1].scatter(
-    das_ridgecrest_north["longitude"], das_ridgecrest_north["latitude"], s=1, label="Ridgecrest North", rasterized=True
+    das_ridgecrest_north["longitude"], das_ridgecrest_north["latitude"], s=1, label="Ridgecrest north", rasterized=True
 )
 axes[0, 1].scatter(
-    das_ridgecrest_south["longitude"], das_ridgecrest_south["latitude"], s=1, label="Ridgecrest South", rasterized=True
+    das_ridgecrest_south["longitude"], das_ridgecrest_south["latitude"], s=1, label="Ridgecrest south", rasterized=True
 )
 # axes[1].axis("scaled")
 axes[0, 1].set_aspect(1.0 / np.cos(np.deg2rad((min_latitude + max_latitude) / 2)))
@@ -166,6 +177,15 @@ axes[0, 1].set_xlabel("Longitude")
 axes[0, 1].set_ylabel("Latitude")
 axes[0, 1].tick_params(axis="x", labelrotation=15)
 axes[0, 1].legend(markerscale=10, loc="lower left")
+axes[0, 1].text(
+    min_longitude + 0.07,
+    max_latitude - 0.06,
+    "(b)",
+    fontsize=13,
+    horizontalalignment="left",
+    verticalalignment="top",
+    bbox=dict(boxstyle='round', facecolor='white', edgecolor="none", alpha=0.7),
+)
 add_scalebar(axes[0, 1])
 
 fig.tight_layout()
