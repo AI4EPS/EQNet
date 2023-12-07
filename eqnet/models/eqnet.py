@@ -1,8 +1,7 @@
+from typing import Optional, Dict
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 from torch import nn, Tensor
-from typing import Optional, Dict
 from .unet import moving_normalize
 from .resnet1d import ResNet, BasicBlock, Bottleneck
 from .swin_transformer import SwinTransformer
@@ -368,13 +367,13 @@ class EQNet(nn.Module):
             event_center = batched_inputs["event_center"].to(self.device)
             event_location = batched_inputs["event_location"].to(self.device)
             event_location_mask = batched_inputs["event_location_mask"].to(self.device)
-            num_stations = batched_inputs["num_stations"].to(self.device)
+            num_stations = (event_location_mask.sum(axis=1) > 0).float().to(self.device)
         elif "phase_pick" in batched_inputs.keys(): # validation
             phase_pick = batched_inputs["phase_pick"].to(self.device)
             event_center = batched_inputs["event_center"].to(self.device)
             event_location = batched_inputs["event_location"].to(self.device)
             event_location_mask = batched_inputs["event_location_mask"].to(self.device)
-            num_stations = batched_inputs["num_stations"].to(self.device)
+            num_stations = (event_location_mask.sum(axis=1) > 0).float().to(self.device)
         else:
             phase_pick, event_center, event_location, event_location_mask, num_stations = None, None, None, None, None
 
