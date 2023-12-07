@@ -318,6 +318,7 @@ def plot_phasenet(
 
 
 def visualize_eqnet_train(meta, phase, event, epoch, figure_dir="figures", prefix="", offset=None, hypocenter=None):
+    degree2km = 111.19
     data = normalize(meta["data"])
     flag=True if (offset is not None) and (hypocenter is not None) else False
     for i in range(meta["data"].shape[0]):
@@ -370,6 +371,13 @@ def visualize_eqnet_train(meta, phase, event, epoch, figure_dir="figures", prefi
             offset_ground_truth = (meta["event_location"][i, 5,:,:]*mask)
             offset_ground_truth = offset_ground_truth.sum(axis=-2)/mask_divide
             dt_ground_truth = dt_ground_truth + offset_ground_truth*feature_scale
+            cut_idx = (dt_ground_truth!=0)
+            # we only plot the event that is not the 0 padding
+            event_center = event_center[cut_idx]
+            dt = dt[cut_idx]
+            dt_ground_truth = dt_ground_truth[cut_idx]
+            offset_pred = offset_pred[cut_idx]
+            offset_ground_truth = offset_ground_truth[cut_idx]
             
             #axes[2].scatter((feature_scale*(event_center+offset_ground_truth))/feature_scale, np.arange(event_center.shape[-1]), c=np.arange(event_center.shape[-1]), s=50, marker=".")
             axes[2].scatter((feature_scale*(event_center+offset_pred)-dt)/feature_scale, np.arange(event_center.shape[-1]), c=np.arange(event_center.shape[-1]), s=50, marker="^")
@@ -381,6 +389,9 @@ def visualize_eqnet_train(meta, phase, event, epoch, figure_dir="figures", prefi
             width_pred = width_pred.sum(axis=-2)/mask_divide
             width_ground_truth = (meta["event_location"][i, 6,:,:]*mask)
             width_ground_truth = width_ground_truth.sum(axis=-2)/mask_divide
+            # we only plot the event that is not the 0 padding
+            width_pred = width_pred[cut_idx]
+            width_ground_truth = width_ground_truth[cut_idx]
             
             for k in range(len(event_center)):
                 # use arrow to show the prediction
@@ -401,6 +412,19 @@ def visualize_eqnet_train(meta, phase, event, epoch, figure_dir="figures", prefi
             distance_ground_truth = (meta["event_location"][i, 1:4,:,:]*mask[None, :, :])
             distance_ground_truth = distance_ground_truth.sum(axis=-2)/mask_divide[None, :]
             station_location = meta["station_location"][i]
+            station_location[:, 0] = station_location[:, 0] * torch.cos(torch.deg2rad(station_location[:, 1])) * degree2km
+            station_location[:, 1] = station_location[:, 1] * degree2km
+            x = distance[0] * torch.cos(distance[1])
+            y = distance[0] * torch.sin(distance[1])
+            x_ground_truth = distance_ground_truth[0] * torch.cos(distance_ground_truth[1])
+            y_ground_truth = distance_ground_truth[0] * torch.sin(distance_ground_truth[1])
+            distance = torch.stack([x, y, distance[2]], dim=0)
+            distance_ground_truth = torch.stack([x_ground_truth, y_ground_truth, distance_ground_truth[2]], dim=0)
+            
+            # we only plot the event that is not the 0 padding
+            distance = distance[:, cut_idx]
+            distance_ground_truth = distance_ground_truth[:, cut_idx]
+            station_location = station_location[cut_idx]
             
             axes[3].scatter(station_location[:, 0], station_location[:, 1], c=np.arange(station_location.shape[0]), s=50, marker="^")
             axes[3].scatter(distance[0]+station_location[:, 0], distance[1]+station_location[:, 1], c=np.arange(station_location.shape[0]), s=50, marker=".", alpha=0.5)
@@ -424,6 +448,9 @@ def visualize_eqnet_train(meta, phase, event, epoch, figure_dir="figures", prefi
             magnitude = magnitude.sum(axis=-2)/mask_divide
             magnitude_ground_truth = (meta["event_location"][i, 4,:,:]*mask)
             magnitude_ground_truth = magnitude_ground_truth.sum(axis=-2)/mask_divide
+            # we only plot the event that is not the 0 padding
+            magnitude = magnitude[cut_idx]
+            magnitude_ground_truth = magnitude_ground_truth[cut_idx]
             
             axes[6].scatter(magnitude, np.zeros_like(magnitude), c=np.arange(magnitude.shape[0]), s=50, marker=".", alpha=0.7)
             axes[6].scatter(magnitude.sum()/true_station_number, 0, c=magnitude.shape[0], s=150, marker=".")
@@ -713,6 +740,7 @@ def plot_eqnet(meta, pred_phase, pred_event, phase_picks=None, event_picks=None,
     nt=60000
     nb0, nc0, nt0, ns0 = pred_phase.shape
     chn_name = ["E", "N", "Z"]
+    degree2km = 111.19
     # normalize = lambda x: (x - torch.mean(x, dim=2, keepdim=True)) / torch.std(x, dim=2, keepdim=True) / 10
     # waveform_raw = normalize(meta["waveform_raw"])
     # waveform = normalize(meta["waveform"])
@@ -761,6 +789,8 @@ def plot_eqnet(meta, pred_phase, pred_event, phase_picks=None, event_picks=None,
 
                 axes[1].plot(t_event, pred_event[i, ii//feature_scale : (ii + nt)//feature_scale, k] + k, "-C1", linewidth=1.0)
 
+            meta["station_location"][i, :, 0] = meta["station_location"][i, :, 0] * torch.cos(torch.deg2rad(meta["station_location"][i, :, 1])) * degree2km
+            meta["station_location"][i, :, 1] = meta["station_location"][i, :, 1] * degree2km
             axes[2].scatter(meta["station_location"][i, :, 0], meta["station_location"][i, :, 1], c=np.arange(ns0), s=50, marker="^")
             axes[3].scatter(meta["station_location"][i, :, 0], meta["station_location"][i, :, 2], c=np.arange(ns0), s=50, marker="^")
             for pick_dict in event_picks[i]:

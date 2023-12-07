@@ -182,7 +182,6 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
         elif (
             (self.config.name == "event") 
             or (self.config.name == "event_train") 
-            or (self.config.name == "event_test")
             or (self.config.name == "event_large")
         ):
             features=datasets.Features(
@@ -194,6 +193,22 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                     "event_location_mask": datasets.Array2D(shape=(None, self.feature_nt), dtype='float32'),
                     "station_location": datasets.Array2D(shape=(None, 3), dtype="float32"),
                     "amplitude": datasets.Array3D(shape=(None, 3, self.nt), dtype="float32"),
+                    # "reference_point": datasets.Sequence(datasets.Value("float32")),
+                }
+            )
+        elif (
+            self.config.name == "event_test"
+        ):
+            features=datasets.Features(
+                {
+                    "data": datasets.Array3D(shape=(None, 3, self.nt), dtype='float32'),
+                    "phase_pick": datasets.Array3D(shape=(None, 3, self.nt), dtype='float32'),
+                    "event_center" : datasets.Array2D(shape=(None, self.feature_nt), dtype='float32'),
+                    "event_location": datasets.Array3D(shape=(None, 7, self.feature_nt), dtype='float32'),
+                    "event_location_mask": datasets.Array2D(shape=(None, self.feature_nt), dtype='float32'),
+                    "station_location": datasets.Array2D(shape=(None, 3), dtype="float32"),
+                    "amplitude": datasets.Array3D(shape=(None, 3, self.nt), dtype="float32"),
+                    "file_name": datasets.Value("string"),
                     # "reference_point": datasets.Sequence(datasets.Value("float32")),
                 }
             )
@@ -235,7 +250,7 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                     name=datasets.Split.TRAIN,
                     # These kwargs will be passed to _generate_examples
                     gen_kwargs={
-                        "filepath": files[:-1],
+                        "filepath": files[-7:-1],
                         "split": "train",
                     },
                 ),
@@ -384,7 +399,7 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                             reference_latitude/=len(station_ids)
                             reference_longitude/=len(station_ids)
                             
-                            b, a = butter(4, 0.1, btype="highpass", analog=False)
+                            b, a = butter(10, 0.1, btype="highpass", analog=False)
                             
                             waveforms = np.zeros([len(station_ids), 3, self.nt], dtype="float32")
                             amplitude = np.zeros_like(waveforms)
@@ -406,12 +421,12 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                                 if attrs["unit"][-6:] == "m/s**2":
                                     # integrate acceleration to velocity
                                     amplitude[i] = np.cumsum(amplitude[i]*attrs["dt_s"], axis=-1)
-                                    for j in range(3): 
-                                        spline_i = LSQUnivariateSpline(np.arange(self.nt), amplitude[i, j, :], t=np.arange(self.nt, step=self.nt/2048)[1:], k=3)
-                                        amplitude[i, j, :] -= spline_i(np.arange(self.nt))
-                                    amplitude[i] = filtfilt(b, a, amplitude[i], axis=-1)
                                 elif attrs["unit"][-3:] == "m/s":
                                     amplitude[i] = amplitude[i] * 10e4 #TODO: temp
+                                for j in range(3): 
+                                    spline_i = LSQUnivariateSpline(np.arange(self.nt), amplitude[i, j, :], t=np.arange(self.nt, step=self.nt/2048)[1:], k=3)
+                                    amplitude[i, j, :] -= spline_i(np.arange(self.nt))
+                                amplitude[i] = filtfilt(b, a, amplitude[i], axis=-1)
                                     
 
                                 ## TODO: how to deal with multiple phases
@@ -419,24 +434,36 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                                 ## assuming only one event with both P and S picks
                                 assert len(p_picks)==len(s_picks), f'{event_id} {sta_id}: p_picks:{p_picks}, s_picks:{s_picks}'
                                 c0 = ((p_picks) + (s_picks)) / 2.0 # phase center
-                                c0_width = max(((s_picks - p_picks) * self.sampling_rate / 200.0).max(), 0)
+                                c0_width = max(((s_picks - p_picks) * self.sampling_rate / 200.0).max(), 10)
                                 # c0_width = ((s_picks - p_picks) * self.sampling_rate / 200.0).max() # min=160
                                 assert c0_width>0
-                                dx = round(
-                                    (event_attrs["longitude"] - attrs["longitude"])
-                                    * np.cos(np.radians(reference_latitude))
-                                    * self.degree2km,
-                                    2,
-                                )
-                                dy = round(
-                                    (event_attrs["latitude"] - attrs["latitude"])
-                                    * self.degree2km,
-                                    2,
-                                )
+                                # cartesian
+                                # dx = round(
+                                #     (event_attrs["longitude"] - attrs["longitude"])
+                                #     * np.cos(np.radians(reference_latitude))
+                                #     * self.degree2km,
+                                #     4,
+                                # )
+                                # dy = round(
+                                #     (event_attrs["latitude"] - attrs["latitude"])
+                                #     * self.degree2km,
+                                #     4,
+                                # )
                                 dz = round(
                                     event_attrs["depth_km"] + attrs["elevation_m"] / 1e3,
                                     2,
                                 )
+                                # dist = np.sqrt(dx**2 + dy**2)
+                                # azimuth = np.arctan2(dy, dx)
+                                dlon = event_attrs["longitude"] - attrs["longitude"]
+                                dlat = event_attrs["latitude"] - attrs["latitude"]
+                                a = np.sin(np.radians(dlat) / 2) ** 2 \
+                                    + np.cos(np.radians(attrs["latitude"])) * np.cos(np.radians(event_attrs["latitude"])) * np.sin(np.radians(dlon) / 2) ** 2
+                                dist = round(2 * np.arcsin(np.sqrt(a)) * 6371, 4)
+                                y = np.sin(np.radians(dlon)) * np.cos(np.radians(event_attrs["latitude"]))
+                                x = np.cos(np.radians(attrs["latitude"])) * np.sin(np.radians(event_attrs["latitude"])) \
+                                    - np.sin(np.radians(attrs["latitude"])) * np.cos(np.radians(event_attrs["latitude"])) * np.cos(np.radians(dlon))
+                                azimuth = round(np.arctan2(y, x), 4)
                                 magnitude = round(event_attrs["magnitude"], 2)
 
                                 assert c0[0]<self.nt
@@ -453,12 +480,12 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                                         # [c0 / self.feature_scale],
                                         c0_int,
                                     ],
+                                    # label_width=[
+                                    #     c0_width,
+                                    # ],
                                     label_width=[
                                         10,
                                     ],
-                                    # label_width=[
-                                    #     10,
-                                    # ],
                                     nt=self.feature_nt,
                                     # nt=self.nt,
                                 )[1, :]
@@ -468,18 +495,23 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                                 ) / self.sampling_rate
                                 # event_location[0, :, i] = (np.arange(self.feature_nt) - 3000 / self.feature_scale) / self.sampling_rate
                                 # print(event_location[i, 1:, mask].shape, event_location.shape, event_location[i][1:, mask].shape)
-                                event_location[i][1:, mask] = np.array([dx, dy, dz, magnitude, (c0-c0_int)[0], c0_width])[:, np.newaxis]
+                                event_location[i][1:, mask] = np.array([dist, azimuth, dz, magnitude, (c0-c0_int)[0], c0_width])[:, np.newaxis]
                                 event_location_mask[i, :] = mask
 
                                 ## station location
-                                station_location[i, 0] = round(
-                                    (attrs["longitude"] - reference_longitude)
-                                    * np.cos(np.radians(reference_latitude))
-                                    * self.degree2km,
-                                    2,
-                                )
-                                station_location[i, 1] = round((attrs["latitude"] - reference_latitude)
-                                                               * self.degree2km, 2)
+                                # cartesian coordinate
+                                # station_location[i, 0] = round(
+                                #     (attrs["longitude"] - reference_longitude)
+                                #     * np.cos(np.radians(reference_latitude))
+                                #     * self.degree2km,
+                                #     4,
+                                # )
+                                # station_location[i, 1] = round((attrs["latitude"] - reference_latitude)
+                                #                                * self.degree2km, 4)
+                                # polar coordinate
+                                station_location[i, 0] = round(attrs["longitude"], 4)
+                                station_location[i, 1] = round(attrs["latitude"], 4)
+                                
                                 station_location[i, 2] =  round(-attrs["elevation_m"]/1e3, 2)
 
                             # std = np.std(waveforms, axis=-1, keepdims=True)
@@ -499,7 +531,7 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                                 event_location_mask = event_location_mask[index]
                                 station_location = station_location[index]
 
-                            yield event_id, {
+                            meta = {
                                 "data": torch.from_numpy(waveforms).float(),
                                 "phase_pick": torch.from_numpy(phase_pick).float(),
                                 "event_center": torch.from_numpy(event_center).float(),
@@ -509,6 +541,11 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                                 "amplitude": torch.from_numpy(amplitude).float(),
                                 # "reference_point": torch.from_numpy(reference_point).float(),
                             }
+                            
+                            if (self.config.name == "event_test"):
+                                meta["file_name"] = event_id
+                            
+                            yield event_id, meta
 
 
 def generate_label(phase_list, label_width=[150, 150], nt=8192):

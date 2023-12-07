@@ -747,12 +747,13 @@ class ShiftedWindowAttentionV2(ShiftedWindowAttention):
             use_station_location=use_station_location,
         )
 
-        # give up us logit_scale because the length of time dimension won't be too far from the original length
+        self.earth_radius = 6371
+        # give up use logit_scale because the length of time dimension won't be too far from the original length
         # self.logit_scale = None
         self.logit_scale = nn.Parameter(torch.log(10 * torch.ones((num_heads, 1, 1))))
         ## https://github.com/microsoft/Swin-Transformer/blob/b720b4191588c19222ccf129860e905fb02373a7/models/swin_transformer_v2.py#L92
         # mlp to generate continuous relative position bias
-        coords_dim = 4 if self.use_station_location else 2
+        coords_dim = 5 if self.use_station_location else 2
         self.cpb_mlp = nn.Sequential(nn.Linear(coords_dim, 512, bias=True),
                                      nn.ReLU(inplace=True),
                                      nn.Linear(512, num_heads, bias=False))
@@ -763,8 +764,9 @@ class ShiftedWindowAttentionV2(ShiftedWindowAttention):
 
     def define_relative_position_bias_table_and_index(self):
         if self.use_station_location:
-            coords_t = torch.arange(self.window_size[0]).unsqueeze(-1).unsqueeze(-1).repeat(1, 1, 1) # nt, 1, 1
-            self.register_buffer("coords_t", coords_t)
+            coords_t = torch.arange(self.window_size[0]).unsqueeze(-1)#.repeat(1, 1) # nt, 1
+            relative_coords_t = coords_t[:, None, :] - coords_t[None, :, :] # nt, nt, 1
+            self.register_buffer("relative_coords_t", relative_coords_t)
         else:
             # get relative_coords_table
             relative_coords_h = torch.arange(-(self.window_size[0] - 1), self.window_size[0], dtype=torch.float32)
@@ -796,15 +798,30 @@ class ShiftedWindowAttentionV2(ShiftedWindowAttention):
 
     def get_relative_position_bias(self, loc: Union[Tensor, None]) -> Tensor:
         if self.use_station_location:
-            coords_t = self.coords_t.repeat(loc.shape[0], 1, loc.shape[1], 1) #bt, nt, nx 1
-            coords_x = loc.unsqueeze(-3).repeat(1, self.coords_t.shape[0], 1, 1) #bt, nt, nx, 3
-            coords = torch.cat((coords_t, coords_x), dim=-1) #bt, nt, nx, 4
-            coords_flatten = torch.flatten(coords, 1, 2)  # bt, nt * nx, 4
-            relative_coords = coords_flatten[:, :, None, :] - coords_flatten[:, None, :, :]  # bt, Wh*Ww, Wh*Ww, 4
-            relative_position_bias = self.cpb_mlp(relative_coords) #bt, Wh*Ww, Wh*Ww, nH
+            relative_coords_t = self.relative_coords_t.repeat(loc.shape[0], loc.shape[1], loc.shape[1], 1) # B, nt*nx, nt*nx, 1
+            dtype = loc.dtype
+            loc = loc.float() # to avoid round error
+            loc[...,:2] = torch.deg2rad(loc[...,:2]) # to radians
+            relative_coords_sta = loc[:, :, None, :] - loc[:, None, :, :] # B, nx, nx, 3 (lon, lat, z)
+            a = torch.sin(relative_coords_sta[:, :, :, 1]/2)**2 + torch.cos(loc[:, :, None, 1]) * torch.cos(loc[:, None, :, 1]) * torch.sin(relative_coords_sta[:, :, :, 0]/2)**2
+            relative_dist = 2 * torch.atan2(torch.sqrt(a), torch.sqrt(1-a))*self.earth_radius # B, nx, nx
+            # y = torch.sin(relative_coords_sta[:, :, :, 0]) * torch.cos(loc[:, None, :, 1]) # B, nx, nx, 1
+            # x = torch.cos(loc[:, :, None, 0]) * torch.sin(loc[:, None, :, 0]) - torch.sin(loc[:, :, None, 0]) * torch.cos(loc[:, None, :, 0]) * torch.cos(relative_coords_sta[:, :, :, 0]) # B, nx, nx, 1
+            # relative_azi = torch.atan2(y, x) # B, nx, nx
+            relative_azi = torch.atan2(torch.sin(relative_coords_sta[:, :, :, 0]) * torch.cos(loc[:, None, :, 1]), 
+                                       torch.cos(loc[:, :, None, 0]) * torch.sin(loc[:, None, :, 0]) - torch.sin(loc[:, :, None, 0]) * torch.cos(loc[:, None, :, 0]) * torch.cos(relative_coords_sta[:, :, :, 0])
+                                       ) # B, nx, nx
+            relative_coords_sta = torch.cat((relative_dist.unsqueeze(-1), 
+                                            torch.sin(relative_azi).unsqueeze(-1), 
+                                            torch.cos(relative_azi).unsqueeze(-1),
+                                            relative_coords_sta[:, :, :, 2:]), dim=-1) # B, nx, nx, 4
+            relative_coords_sta = relative_coords_sta.to(dtype) # recover to previous data type
+            relative_coords_sta = relative_coords_sta.repeat(1, self.window_size[0], self.window_size[0], 1) # B, nt*nx, nt*nx, 4
+            # relative_coords = torch.cat((relative_coords_t, relative_coords_sta), dim=-1) # B, nt*nx, nt*nx, 5
+            # relative_position_bias = self.cpb_mlp(relative_coords) #bt, Wh*Ww, Wh*Ww, nH
+            relative_position_bias = self.cpb_mlp(torch.cat((relative_coords_t, relative_coords_sta), dim=-1)) #bt, Wh*Ww, Wh*Ww, nH
             relative_position_bias = relative_position_bias.permute(0, 3, 1, 2).view(loc.shape[0], self.num_heads, self.window_size[0], loc.shape[1], self.window_size[0], loc.shape[1]) #bt, nH, nt, nx, nt, nx
         else:
-            
             N = self.window_size[0] * self.window_size[1]
             relative_position_bias = (self.cpb_mlp(self.relative_coords_table).view(-1, self.num_heads))[self.relative_position_index]  # type: ignore[index]
             relative_position_bias = relative_position_bias.view(N, N, -1)

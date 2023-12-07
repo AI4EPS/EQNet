@@ -126,9 +126,9 @@ class UPerNeck(nn.Module, metaclass=ABCMeta):
         # FPN Module
         self.lateral_convs = nn.ModuleList()
         self.fpn_convs = nn.ModuleList()
-        for in_channels in self.in_channels[:-1]:  # skip the top layer
+        for in_channel in self.in_channels[:-1]:  # skip the top layer
             l_conv = convolution(
-                inp_dim=in_channels,
+                inp_dim=in_channel,
                 out_dim=self.channels,
                 k=1,
                 inplace=False)
@@ -298,11 +298,11 @@ class EventHead(nn.Module):
                  channels=512,
                  hidden_channels=[256, 128, 64, 32],
                  dilations=[1, 4, 8, 16],
-                 kernel_size = 7,
+                 kernel_size=7,
                  loss_dict: dict = {"hm_loss": "focal", "hw_loss": "wl1", "reg_loss": "vl1"},
-                 weights=[1.502, 0.016, 0.043],
-                 offset_weight=[5, 1], 
-                 reg_weight=[0.7,1.18,1.18,0.72, 6],
+                 weights=[1.495, 0.018, 0.043],
+                 offset_weight=[3, 1], 
+                 reg_weight=[0.75,1.7,16,1.2, 1],
                  ):
         super().__init__()
         
@@ -424,6 +424,19 @@ class EventHead(nn.Module):
         self.reg_loss = loss_factory[loss_dict["reg_loss"]]
         
     def forward(self, features, event_center, event_location, event_location_mask, amplitude):
+        """
+        Forward pass of the EventHead module.
+
+        Args:
+            features (dict): Dictionary of input features.
+            event_center (torch.Tensor): Tensor of event center labels.
+            event_location (torch.Tensor): Tensor of event location labels.
+            event_location_mask (torch.Tensor): Tensor of event location masks.
+            amplitude (torch.Tensor): Tensor of amplitude values.
+
+        Returns:
+            tuple: Tuple containing the predicted outputs and the loss values (if in training mode).
+        """
         x = features['ppm']
         bt, st, ch, nt = x.shape
         x = x.view(bt*st, ch, nt)
@@ -455,9 +468,15 @@ class EventHead(nn.Module):
         # downsample amplitude
         amplitude = F.interpolate(amplitude, size=x.shape[-1], mode='linear', align_corners=False)
         
+        #print(f"amplitude scale: avg {amplitude.mean()}, abs avg {torch.abs(amplitude).mean()}, std {amplitude.std()}", force=True)
+        #print(f"amplitude scale: min {amplitude.min()}, max {amplitude.max()}", force=True)
+        #print(f"feature scale: avg {x.mean()}, abs avg {torch.abs(x).mean()}, std {x.std()}", force=True)
+        #print(f"feature scale: min {x.min()}, max {x.max()}", force=True)
+        
         magnitude = self.magnitude(torch.cat([x, amplitude], dim=1))
         magnitude = magnitude.view(bt, st, magnitude.shape[1], magnitude.shape[2]).permute(0, 2, 3, 1)
         hypocenter = torch.cat([hypocenter, magnitude], dim=1)
+        #hypocenter[:, 2, :, :] = torch.rad2deg(hypocenter[:, 2, :, :])
         
         if self.training:            
             return None, self.losses({"event": heatmap, "offset": offset, "hypocenter": hypocenter}, event_center, event_location, event_location_mask)
@@ -468,22 +487,41 @@ class EventHead(nn.Module):
             return {"event": heatmap, "offset": offset, "hypocenter": hypocenter}, {}
     
     def losses(self, outputs, event_center, event_location, event_location_mask):
+        """
+        Compute the loss values for the predicted outputs.
+
+        Args:
+            outputs (dict): Dictionary of predicted outputs.
+            event_center (torch.Tensor): Tensor of event center labels.
+            event_location (torch.Tensor): Tensor of event location labels.
+            event_location_mask (torch.Tensor): Tensor of event location masks.
+
+        Returns:
+            dict: Dictionary containing the loss values.
+        """
         #hm_loss = cross_entropy_loss(outputs["event"], event_center)
         hm_loss = self.hm_loss(outputs["event"], event_center)
         hw_loss = self.hw_loss(outputs["offset"], event_location[:, 5:, :, :], event_location_mask, weights=self.offset_weight)
         
+        outputs["hypocenter"] = outputs["hypocenter"].float()
         #reg_loss = self.reg_loss(outputs["hypocenter"], event_location[:, :5, :, :], event_location_mask, weights=self.reg_weight)
-        reg_loss = self.reg_loss(outputs["hypocenter"], event_location[:, :5, :, :], event_location_mask)
+        hypocenter = torch.cat([outputs["hypocenter"][:, :2, :, :], 
+                                torch.sin(outputs["hypocenter"][:, 2:3, :, :]), torch.cos(outputs["hypocenter"][:, 2:3, :, :]), 
+                                outputs["hypocenter"][:, 3:, :, :]], dim=1)
+        hypo_ground_truth = torch.cat([event_location[:, :2, :, :],
+                                        torch.sin(event_location[:, 2:3, :, :]), torch.cos(event_location[:, 2:3, :, :]),
+                                        event_location[:, 3:5, :, :]], dim=1)
+        reg_loss = self.reg_loss(hypocenter, hypo_ground_truth, event_location_mask)
         
         loss = hm_loss * self.weights[0] + hw_loss * self.weights[1] \
             + reg_loss[0] * self.weights[2] \
             + reg_loss[1] * self.weights[3] \
-            + reg_loss[2] * self.weights[4] \
-            + reg_loss[3] * self.weights[5] \
-            + reg_loss[4] * self.weights[6]
+            + (reg_loss[2] + reg_loss[3]) * self.weights[4] \
+            + reg_loss[4] * self.weights[5] \
+            + reg_loss[5] * self.weights[6]
         # print(f"loss {loss}, hm_loss {hm_loss}, hw_loss {hw_loss}, reg_loss {reg_loss}", force=True)
         # return {"loss": loss, "loss_event": hm_loss, "loss_offset": hw_loss, "loss_hypocenter": reg_loss}
-        return {"loss": loss, "loss_event": hm_loss, "loss_offset": hw_loss, "loss_origin_time": reg_loss[0], "loss_x": reg_loss[1], "loss_y": reg_loss[2], "loss_depth": reg_loss[3], "loss_magnitude": reg_loss[4]}
+        return {"loss": loss, "loss_event": hm_loss, "loss_offset": hw_loss, "loss_origin_time": reg_loss[0], "loss_x": reg_loss[1], "loss_y": reg_loss[2]+reg_loss[3], "loss_depth": reg_loss[4], "loss_magnitude": reg_loss[5]}
     
     
 class PhaseHead(nn.Module):
@@ -577,7 +615,8 @@ class PhaseHead(nn.Module):
         #         if torch.all(targets[i,:,:,j]==0):
         #             num-=1
         num=num_stations.sum()
-        loss = torch.sum(-targets * F.log_softmax(inputs, dim=1))/(num*targets.shape[2])
+        #mask = num_stations.unsqueeze(1).unsqueeze(1)
+        loss = torch.sum(-targets * F.log_softmax(inputs, dim=1) * num_stations.unsqueeze(1).unsqueeze(1))/(num*targets.shape[2])
 
         return loss
 

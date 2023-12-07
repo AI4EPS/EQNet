@@ -214,7 +214,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
         reference_latitude/=len(station_ids)
         reference_longitude/=len(station_ids)
         
-        b, a = butter(4, 0.1, btype="highpass", analog=False)
+        b, a = butter(10, 0.1, btype="highpass", analog=False)
         waveforms = np.zeros([len(station_ids), 3, self.nt], dtype="float32")
         amplitude = np.zeros_like(waveforms)
         phase_pick = np.zeros_like(waveforms)
@@ -232,12 +232,12 @@ class SeismicNetworkIterableDataset(IterableDataset):
             if attrs["unit"][-6:] == "m/s**2":
                 # integrate acceleration to velocity
                 amplitude[:, :, i] = np.cumsum(amplitude[:, :, i]*attrs["dt_s"], axis=1)
-                for j in range(3): 
-                    spline_i = LSQUnivariateSpline(np.arange(amplitude.shape[1]), amplitude[j, :, i], t=np.arange(amplitude.shape[1], step=amplitude.shape[1]/2048)[1:], k=3)
-                    amplitude[j, :, i] -= spline_i(np.arange(amplitude.shape[1]))
-                amplitude[:, :, i] = filtfilt(b, a, amplitude[:, :, i], axis=1)
             elif attrs["unit"][-3:] == "m/s": #TODO: temp
                 amplitude[:, :, i] = amplitude[:, :, i] * 10e4
+            for j in range(3): 
+                spline_i = LSQUnivariateSpline(np.arange(amplitude.shape[1]), amplitude[j, :, i], t=np.arange(amplitude.shape[1], step=amplitude.shape[1]/2048)[1:], k=3)
+                amplitude[j, :, i] -= spline_i(np.arange(amplitude.shape[1]))
+            amplitude[:, :, i] = filtfilt(b, a, amplitude[:, :, i], axis=1)
             
             p_picks = attrs["phase_index"][attrs["phase_type"] == "P"]
             s_picks = attrs["phase_index"][attrs["phase_type"] == "S"]
@@ -250,21 +250,33 @@ class SeismicNetworkIterableDataset(IterableDataset):
             c0_width = max(((s_picks - p_picks) * self.sampling_rate / 200.0).max(), 80)
             # c0_width = ((s_picks - p_picks) * self.sampling_rate / 200.0).max() # min=160
             assert c0_width>0
-            dx = round(
-                (event_attrs["longitude"] - attrs["longitude"])
-                * np.cos(np.radians(reference_latitude))
-                * self.degree2km,
-                2,
-            )
-            dy = round(
-                (event_attrs["latitude"] - attrs["latitude"])
-                * self.degree2km,
-                2,
-            )
+            # cartesian
+            # dx = round(
+            #     (event_attrs["longitude"] - attrs["longitude"])
+            #     * np.cos(np.radians(reference_latitude))
+            #     * self.degree2km,
+            #     4,
+            # )
+            # dy = round(
+            #     (event_attrs["latitude"] - attrs["latitude"])
+            #     * self.degree2km,
+            #     4,
+            # )
             dz = round(
                 event_attrs["depth_km"] + attrs["elevation_m"] / 1e3,
                 2,
             )
+            
+            dlon = event_attrs["longitude"] - attrs["longitude"]
+            dlat = event_attrs["latitude"] - attrs["latitude"]
+            a = np.sin(np.radians(dlat) / 2) ** 2 \
+                + np.cos(np.radians(attrs["latitude"])) * np.cos(np.radians(event_attrs["latitude"])) * np.sin(np.radians(dlon) / 2) ** 2
+            dist = round(2 * np.arcsin(np.sqrt(a)) * 6371, 4)
+            y = np.sin(np.radians(dlon)) * np.cos(np.radians(event_attrs["latitude"]))
+            x = np.cos(np.radians(attrs["latitude"])) * np.sin(np.radians(event_attrs["latitude"])) \
+                - np.sin(np.radians(attrs["latitude"])) * np.cos(np.radians(event_attrs["latitude"])) * np.cos(np.radians(dlon))
+            azimuth = round(np.arctan2(y, x), 4)
+            magnitude = round(event_attrs["magnitude"], 2)
 
             assert c0[0]<self.nt
             c0 = c0/self.feature_scale
@@ -280,12 +292,12 @@ class SeismicNetworkIterableDataset(IterableDataset):
                     # [c0 / self.feature_scale],
                     c0_int,
                 ],
-                label_width=[
-                    c0_width,
-                ],
                 # label_width=[
-                #     10,
+                #     c0_width,
                 # ],
+                label_width=[
+                    10,
+                ],
                 nt=self.feature_nt,
                 # nt=self.nt,
             )[1, :]
@@ -295,18 +307,23 @@ class SeismicNetworkIterableDataset(IterableDataset):
             ) / self.sampling_rate
             # event_location[0, :, i] = (np.arange(self.feature_nt) - 3000 / self.feature_scale) / self.sampling_rate
             # print(event_location[i, 1:, mask].shape, event_location.shape, event_location[i][1:, mask].shape)
-            event_location[i][1:, mask] = np.array([dx, dy, dz, (c0-c0_int)[0], c0_width])[:, np.newaxis]
+            event_location[i][1:, mask] = np.array([dist, azimuth, dz, magnitude, (c0-c0_int)[0], c0_width])[:, np.newaxis]
             event_location_mask[i, :] = mask
 
             ## station location
-            station_location[i, 0] = round(
-                (attrs["longitude"] - reference_longitude)
-                * np.cos(np.radians(reference_latitude))
-                * self.degree2km,
-                2,
-            )
-            station_location[i, 1] = round((attrs["latitude"] - reference_latitude)
-                                           * self.degree2km, 2)
+            # cartesian coordinate
+            # station_location[i, 0] = round(
+            #     (attrs["longitude"] - reference_longitude)
+            #     * np.cos(np.radians(reference_latitude))
+            #     * self.degree2km,
+            #     4,
+            # )
+            # station_location[i, 1] = round((attrs["latitude"] - reference_latitude)
+            #                                * self.degree2km, 4)
+            # polar coordinate
+            station_location[i, 0] = round(attrs["longitude"], 4)
+            station_location[i, 1] = round(attrs["latitude"], 4)
+            
             station_location[i, 2] =  round(-attrs["elevation_m"]/1e3, 2)
 
         # std = np.std(waveforms, axis=-1, keepdims=True)
@@ -416,14 +433,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
             station_location[i, 0] = self.station_info[sta]["longitude"]
             station_location[i, 1] = self.station_info[sta]["latitude"]
             station_location[i, 2] = round(-self.station_info[sta]["elevation_m"]/1e3, 2)
-        reference_latitude = np.mean(station_location[:, 1])
-        station_location[:, 0] = np.round(
-                (station_location[:, 0])
-                * np.cos(np.radians(reference_latitude))
-                * self.degree2km,
-                2,
-            )
-        station_location[:, 1] = np.round(station_location[:, 1] * self.degree2km, 2)
+
         nx = len(station_ids)
         nt = len(stream[0].data)
         data = np.zeros([3, nt+((32- nt%32)%32), nx], dtype=np.float32) # the length of data should be multiple of 32
@@ -479,14 +489,10 @@ class SeismicNetworkIterableDataset(IterableDataset):
             # data shape
             nt = event[station_ids[0]].shape[1]
             nt_feature = 32
-            b, a = butter(4, 0.1, btype="highpass", analog=False)
+            b, a = butter(10, 0.1, btype="highpass", analog=False)
             waveforms = np.zeros([3, nt+((nt_feature-(nt%nt_feature))%nt_feature), len(station_ids)], dtype="float32")
             amplitude = np.zeros_like(waveforms)
             station_location = np.zeros([len(station_ids), 3])
-            reference_latitude = 0
-            for sta_id in station_ids:
-                reference_latitude += event[sta_id].attrs["latitude"]
-            reference_latitude/=len(station_ids)
             for i, sta_id in enumerate(station_ids):
                 # trace_id = event_id + "/" + sta_id
                 waveforms[:, :nt, i] = event[sta_id][:, :]
@@ -495,22 +501,27 @@ class SeismicNetworkIterableDataset(IterableDataset):
                 if attrs["unit"][-6:] == "m/s**2":
                     # integrate acceleration to velocity
                     amplitude[:, :, i] = np.cumsum(amplitude[:, :, i]*attrs["dt_s"], axis=1)
-                    for j in range(3): 
-                        spline_i = LSQUnivariateSpline(np.arange(amplitude.shape[1]), amplitude[j, :, i], t=np.arange(amplitude.shape[1], step=amplitude.shape[1]/2048)[1:], k=3)
-                        amplitude[j, :, i] -= spline_i(np.arange(amplitude.shape[1]))
-                    amplitude[:, :, i] = filtfilt(b, a, amplitude[:, :, i], axis=1)
                 elif attrs["unit"][-3:] == "m/s": #TODO: temp
                     amplitude[:, :, i] = amplitude[:, :, i] * 10e4
+                for j in range(3): 
+                    spline_i = LSQUnivariateSpline(np.arange(amplitude.shape[1]), amplitude[j, :, i], t=np.arange(amplitude.shape[1], step=amplitude.shape[1]/2048)[1:], k=3)
+                    amplitude[j, :, i] -= spline_i(np.arange(amplitude.shape[1]))
+                amplitude[:, :, i] = filtfilt(b, a, amplitude[:, :, i], axis=1)
 
                 ## station location
-                station_location[i, 0] = round(
-                    (attrs["longitude"])
-                    * np.cos(np.radians(reference_latitude))
-                    * self.degree2km,
-                    2,
-                )
-                station_location[i, 1] = round((attrs["latitude"])
-                                               * self.degree2km, 2)
+                # cartesian coordinate
+                # station_location[i, 0] = round(
+                #     (attrs["longitude"] - reference_longitude)
+                #     * np.cos(np.radians(reference_latitude))
+                #     * self.degree2km,
+                #     4,
+                # )
+                # station_location[i, 1] = round((attrs["latitude"] - reference_latitude)
+                #                                * self.degree2km, 4)
+                # polar coordinate
+                station_location[i, 0] = round(attrs["longitude"], 4)
+                station_location[i, 1] = round(attrs["latitude"], 4)
+
                 station_location[i, 2] =  round(-attrs["elevation_m"]/1e3, 2)
 
             # std = np.std(waveforms, axis=1, keepdims=True)
@@ -530,6 +541,9 @@ class SeismicNetworkIterableDataset(IterableDataset):
             
             if self.is_pad and len(station_ids) < self.num_stations:
                 pad_indices = np.random.choice(len(station_ids), self.num_stations-len(station_ids), replace=True)
+                # waveforms = np.concatenate([waveforms, np.zeros_like(waveforms[:, :, pad_indices])], axis=-1)
+                # amplitude = np.concatenate([amplitude, np.zeros_like(amplitude[:, :, pad_indices])], axis=-1)
+                # station_location = np.concatenate([station_location, np.zeros_like(station_location[pad_indices])], axis=0)
                 waveforms = np.concatenate([waveforms, waveforms[:, :, pad_indices]], axis=-1)
                 amplitude = np.concatenate([amplitude, amplitude[:, :, pad_indices]], axis=-1)
                 station_location = np.concatenate([station_location, station_location[pad_indices]], axis=0)
