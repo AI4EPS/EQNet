@@ -99,29 +99,29 @@ def _repeat_to_at_least(iterable, n):
     repeated = chain.from_iterable(repeat(iterable, repeat_times))
     return list(repeated)    
     
-def create_groups(dataset, num_stations_list=[5, 10, 20], is_pad=False, is_train=True):
+def create_groups(dataset: datasets.Dataset, num_stations_list=[5, 10, 20], is_pad=False):
     '''
     create groups of data with different number of stations
     '''
     group_ids = []
-    for data in dataset:
-        num_stations = data["station_location"].shape[0]
-        num_stations_list = np.array(sorted(num_stations_list))
-        if is_train and num_stations < 5:
-            group_id = 0
-        elif is_pad:
-            if num_stations >= num_stations_list[-1]:
-                group_id = num_stations_list[-1]
-            else:
-                group_id = num_stations_list[num_stations_list>=num_stations][0]
-        else:
-            if num_stations < num_stations_list[0]:
-                group_id = 0
-            else:
-                group_id = num_stations_list[num_stations_list<=num_stations][-1]
-            
-        group_ids.append(group_id)
-    group_ids=np.array(group_ids)
+    num_stations_list = np.array(sorted(num_stations_list))
+    
+    group_ids = np.zeros(len(dataset))
+    temp_dataset = dataset.select_columns(["num_stations", "num_manual_stations"]).with_format("numpy")
+    num_stations = temp_dataset["num_stations"]
+    num_manual_stations = temp_dataset["num_manual_stations"]
+    
+    if is_pad:
+        group_ids[num_stations > num_stations_list[-1]] = num_stations_list[-1]
+        for j in range(len(num_stations_list)-1, 0, -1):
+            group_ids[np.logical_and((num_stations <= num_stations_list[j]),  (num_stations > num_stations_list[j-1]))] = num_stations_list[j]
+        group_ids[num_stations <= num_stations_list[0]] = num_stations_list[0]
+    else:
+        group_ids[num_stations < num_stations_list[0]] = 0
+        for j in range(len(num_stations_list)-1):
+            group_ids[np.logical_and((num_stations >= num_stations_list[j]),  (num_stations < num_stations_list[j+1]))] = num_stations_list[j]
+        group_ids[num_stations >= num_stations_list[-1]] = num_stations_list[-1]
+    
     counts = np.unique(group_ids, return_counts=True)[1]
     if len(counts) > len(num_stations_list):
         counts = counts[1:]
@@ -130,27 +130,34 @@ def create_groups(dataset, num_stations_list=[5, 10, 20], is_pad=False, is_train
     return group_ids
 
 
-def cut_reorder_keys(example, num_stations_list=[5, 10, 20], is_pad=False, is_train=True, padding_mode="zeros"):
+def cut_reorder_keys(example, num_stations_list=[5, 10, 20], is_pad=False, padding_mode="zeros"):
     '''
     Args:
         num_stations_list: a list of number of stations
         padding_mode: "zeros" or "random_duplicate", if "zeros", pad the data with zeros, if "random_duplicate", randomly duplicate some stations
     '''
-    num_stations = example["station_location"].shape[0]
-    num_stations_list = np.array(sorted(num_stations_list))
-    if is_train and num_stations < 5:
-        #example["num_stations"] = num_stations
-        return reorder_keys(example)
+    #num_stations = example["station_location"].shape[0]
+    #num_manual_stations = torch.any(example["event_location_mask"]>0, axis=1).int().sum().item()
+    num_stations = example["num_stations"]
+    num_manual_stations = example["num_manual_stations"]
+    num_stations_list = torch.tensor(sorted(num_stations_list))
+    # if is_train and num_manual_stations < 5:
+    #     #example["num_stations"] = num_stations
+    #     assert 0, f"dataset filter did not work, num_manual_stations: {num_manual_stations}"
+    #     return reorder_keys(example)
     if is_pad:
         if num_stations >= num_stations_list[-1]:
             group_id = num_stations_list[-1]
-            cut = np.sort(np.random.permutation(num_stations)[:group_id])
-            assert example["data"].shape[0]==example["amplitude"].shape[0], f"data: {example['data'].shape}, amplitude: {example['amplitude'].shape}"
+            # cut = np.sort(np.random.permutation(num_stations)[:group_id])
+            # cut = np.concatenate([np.sort(np.random.permutation(num_manual_stations)), np.arange(num_manual_stations, num_stations)])[:group_id]
+            #assert example["data"].shape[0]==example["amplitude"].shape[0], f"data: {example['data'].shape}, amplitude: {example['amplitude'].shape}"
             for keys in example.keys():
-                if keys == "file_name":
-                    continue
-                example[keys] = example[keys][cut]
-            assert example["data"].shape[0]==example["amplitude"].shape[0], f"data: {example['data'].shape}, amplitude: {example['amplitude'].shape}"
+                try:
+                    #example[keys] = example[keys][cut]
+                    example[keys] = example[keys][:group_id]
+                except:
+                    assert (not keys in ["data", "amplitude", "phase_pick", "event_location_mask", "event_location", "event_center", "station_location"]), f"key: {keys}"
+            #assert example["data"].shape[0]==example["amplitude"].shape[0], f"data: {example['data'].shape}, amplitude: {example['amplitude'].shape}"
         else:
             group_id = num_stations_list[num_stations_list>=num_stations][0]
             # randomly choose a subset of stations to pad the batch
@@ -159,33 +166,40 @@ def cut_reorder_keys(example, num_stations_list=[5, 10, 20], is_pad=False, is_tr
             # patch the data
             if pad_size > 0:
                 if padding_mode == "random_duplicate":
-                    pad_indices = np.random.choice(num_stations, pad_size, replace=True)
+                    if num_manual_stations == num_stations:
+                        pad_indices = np.random.choice(num_stations, pad_size, replace=True)
+                    else:
+                        pad_indices = np.random.choice(num_stations-num_manual_stations, pad_size, replace=True) + num_manual_stations
                     for keys in example.keys():
-                        if keys == "file_name":
-                            continue
-                        example[keys] = torch.cat([example[keys], example[keys][pad_indices]], dim=0)
+                        try:
+                            example[keys] = torch.cat([example[keys], example[keys][pad_indices]], dim=0)
+                        except:
+                            assert (not keys in ["data", "amplitude", "phase_pick", "event_location_mask", "event_location", "event_center", "station_location"]), f"key: {keys}"
                 elif padding_mode == "zeros":
                     # zero padding
-                    assert example["data"].shape[0]==example["amplitude"].shape[0], f"data: {example['data'].shape}, amplitude: {example['amplitude'].shape}"
+                    # assert example["data"].shape[0]==example["amplitude"].shape[0], f"data: {example['data'].shape}, amplitude: {example['amplitude'].shape}"
                     for keys in example.keys():
-                        if keys == "file_name":
-                            continue
-                        example[keys] = torch.cat([example[keys], torch.zeros(pad_size, *example[keys].shape[1:])], dim=0)
+                        try:
+                            example[keys] = torch.cat([example[keys], torch.zeros(pad_size, *example[keys].shape[1:])], dim=0)
+                        except:
+                            assert (not keys in ["data", "amplitude", "phase_pick", "event_location_mask", "event_location", "event_center", "station_location"]), f"key: {keys}"
                     # example["data"] = torch.clamp(torch.randn(*example["data"].shape), -3, 3)*30
                     # example["amplitude"] = example["data"].clone()
-                    example["phase_pick"][:, 0, :] = 1 # the data is noise
-                    assert example["data"].shape[0]==example["amplitude"].shape[0], f"data: {example['data'].shape}, amplitude: {example['amplitude'].shape}"
+                    example["phase_pick"][num_stations:, 0, :] = 1 # the data is noise
+                    #assert example["data"].shape[0]==example["amplitude"].shape[0], f"data: {example['data'].shape}, amplitude: {example['amplitude'].shape}"
     else:
         if num_stations < num_stations_list[0]:
             #example["num_stations"] = num_stations
             return reorder_keys(example)
         else:
             group_id = num_stations_list[num_stations_list<=num_stations][-1]
-            cut = np.sort(np.random.permutation(num_stations)[:group_id])
+            # cut = np.sort(np.random.permutation(num_stations)[:group_id])
+            cut = np.concatenate([np.sort(np.random.permutation(num_manual_stations)), np.arange(num_manual_stations, num_stations)])[:group_id]
             for keys in example.keys():
-                if keys == "file_name":
-                    continue
-                example[keys] = example[keys][cut]
+                try:
+                    example[keys] = example[keys][cut]
+                except:
+                    assert (not keys in ["data", "amplitude", "phase_pick", "event_location_mask", "event_location", "event_center", "station_location"]), f"key: {keys}"
 
     #example["num_stations"] = min(num_stations, example["station_location"].shape[0])
     return reorder_keys(example)
