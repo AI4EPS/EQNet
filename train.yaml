@@ -87,4 +87,4 @@ run: |
     --master_addr=$master_addr \
     --master_port=8008 \
     train.py --model $MODEL_NAME --batch-size=1024 --hdf5-file /dataset/train.h5 --test-hdf5-file /dataset/test.h5 \
-    --stack-event --flip-polarity --drop-channel --output model_$MODEL_NAME --wandb --wandb-project $MODEL_NAME  --resume True
+    --workers 16 --stack-event --flip-polarity --drop-channel --output model_$MODEL_NAME --wandb --wandb-project $MODEL_NAME  --resume True
