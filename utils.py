@@ -4,7 +4,7 @@ import errno
 import hashlib
 import os
 import time
-from collections import defaultdict, deque, OrderedDict
+from collections import OrderedDict, defaultdict, deque
 from typing import List, Optional, Tuple
 
 import torch
@@ -150,7 +150,7 @@ class MetricLogger:
                             time=str(iter_time),
                             data=str(data_time),
                             memory=torch.cuda.max_memory_allocated() / MB,
-                            datetime=time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime()),
+                            datetime=datetime.datetime.now().strftime("%m-%dT%H:%M:%S"),
                         )
                     )
                 else:
@@ -162,7 +162,7 @@ class MetricLogger:
                             meters=str(self),
                             time=str(iter_time),
                             data=str(data_time),
-                            datetime=time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime()),
+                            datetime=datetime.datetime.now().strftime("%m-%dT%H:%M:%S"),
                         )
                     )
             i += 1
@@ -306,8 +306,7 @@ def average_checkpoints(inputs):
     for fpath in inputs:
         with open(fpath, "rb") as f:
             state = torch.load(
-                f,
-                map_location=(lambda s, _: torch.serialization.default_restore_location(s, "cpu")),
+                f, map_location=(lambda s, _: torch.serialization.default_restore_location(s, "cpu")), weights_only=True
             )
         # Copies over the settings from the first checkpoint
         if new_state is None:
@@ -386,7 +385,7 @@ def store_model_weights(model, checkpoint_path, checkpoint_key="model", strict=T
 
     # Deep copy to avoid side effects on the model object.
     model = copy.deepcopy(model)
-    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
 
     # Load the weights to the model to validate that everything works
     # and remove unnecessary weights (such as auxiliaries, etc.)

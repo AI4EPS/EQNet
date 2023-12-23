@@ -19,7 +19,6 @@ import eqnet
 import utils
 from eqnet.data import (
     AutoEncoderIterableDataset,
-    DASDataset,
     DASIterableDataset,
     SeismicNetworkIterableDataset,
     SeismicTraceIterableDataset,
@@ -31,29 +30,29 @@ matplotlib.use("agg")
 logger = logging.getLogger("EQNet")
 
 
-def evaluate(model, data_loader, scaler, args, epoch=0, total_sample=1):
+def evaluate(model, data_loader, scaler, args, epoch=0, total_samples=1):
     model.eval()
     metric_logger = utils.MetricLogger(delimiter="  ")
     header = f"Test: "
 
-    num_processed_samples = 0
+    processed_samples = 0
     with torch.inference_mode():
         for meta in metric_logger.log_every(data_loader, args.print_freq, header):
             output = model(meta)
             loss = output["loss"]
             batch_size = meta["data"].shape[0]
             metric_logger.meters["loss"].update(loss.item(), n=batch_size)
-            num_processed_samples += batch_size
-            if num_processed_samples > total_sample:
+            processed_samples += batch_size
+            if processed_samples > total_samples:
                 break
-
-    plot_results(meta, model, output, args, epoch, "test_")
-    del meta, output, loss
 
     metric_logger.synchronize_between_processes()
     print(f"Test loss = {metric_logger.loss.global_avg:.3e}")
     if args.wandb and utils.is_main_process():
         wandb.log({"test/test_loss": metric_logger.loss.global_avg, "test/epoch": epoch})
+
+    plot_results(meta, model, output, args, epoch, "test_")
+    del meta, output, loss
 
     return metric_logger
 
@@ -67,25 +66,29 @@ def train_one_epoch(
     scaler,
     args,
     epoch,
-    total_sample,
+    total_samples,
 ):
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter("lr", utils.SmoothedValue(window_size=1, fmt="{value}"))
-    if args.model == "phasenet":
+    if args.model == "phasenet_plus":
         metric_logger.add_meter("loss_phase", utils.SmoothedValue(window_size=1, fmt="{value}"))
         metric_logger.add_meter("loss_event", utils.SmoothedValue(window_size=1, fmt="{value}"))
         metric_logger.add_meter("loss_polarity", utils.SmoothedValue(window_size=1, fmt="{value}"))
     header = f"Epoch: [{epoch}]"
 
-    # ctx = nullcontext() if scaler is None else torch.amp.autocast(device_type=args.device, dtype=args.ptdtype)
-    ctx = nullcontext() if args.device == "cpu" else torch.amp.autocast(device_type=args.device, dtype=args.ptdtype)
+    ctx = (
+        nullcontext()
+        if args.device in ["cpu", "mps"]
+        else torch.amp.autocast(device_type=args.device, dtype=args.ptdtype)
+    )
     model.train()
-    num_processed_samples = 0
+    processed_samples = 0
     for i, meta in enumerate(metric_logger.log_every(data_loader, args.print_freq, header)):
         with ctx:
             output = model(meta)
 
         loss = output["loss"]
+
         optimizer.zero_grad()
         if scaler is not None:
             scaler.scale(loss).backward()
@@ -107,13 +110,15 @@ def train_one_epoch(
                 model_ema.n_averaged.fill_(0)
 
         batch_size = meta["data"].shape[0]
-        num_processed_samples += batch_size
-        if num_processed_samples >= total_sample:
+        processed_samples += batch_size
+        if processed_samples >= total_samples:
             break
-        # break
 
-        metric_logger.update(lr=optimizer.param_groups[0]["lr"], loss=loss.item())
-
+        metric_logger.update(loss=loss.item(), lr=optimizer.param_groups[0]["lr"])
+        if args.model == "phasenet_plus":
+            metric_logger.update(loss_phase=output["loss_phase"].item())
+            metric_logger.update(loss_event=output["loss_event"].item())
+            metric_logger.update(loss_polarity=output["loss_polarity"].item())
         if args.wandb and utils.is_main_process():
             wandb.log(
                 {
@@ -133,35 +138,42 @@ def plot_results(meta, model, output, args, epoch, prefix=""):
     with torch.inference_mode():
         if args.model == "phasenet":
             phase = torch.softmax(output["phase"], dim=1).cpu().float()
-            event = torch.sigmoid(output["event"]).cpu().float()
-            polarity = torch.sigmoid(output["polarity"]).cpu().float()
-            # meta["raw"] = meta["data"].clone()
             meta["data"] = moving_normalize(meta["data"])
             print("Plotting...")
-            eqnet.utils.visualize_phasenet_train(meta, phase, event, polarity, epoch=epoch, figure_dir=args.figure_dir)
+            eqnet.utils.plot_phasenet_train(meta, phase, epoch=epoch, figure_dir=args.figure_dir, prefix=prefix)
+            del phase
+        elif args.model == "phasenet_plus":
+            phase = torch.softmax(output["phase"], dim=1).cpu().float()
+            event = torch.sigmoid(output["event"]).cpu().float()
+            polarity = torch.sigmoid(output["polarity"]).cpu().float()
+            meta["data"] = moving_normalize(meta["data"])
+            print("Plotting...")
+            eqnet.utils.plot_phasenet_plus_train(
+                meta, phase, event, polarity, epoch=epoch, figure_dir=args.figure_dir, prefix=prefix
+            )
             del phase, event, polarity
 
-        if args.model == "deepdenoiser":
+        elif args.model == "deepdenoiser":
             pass
 
         elif args.model == "phasenet_das":
             phase = torch.softmax(output["phase"], dim=1).cpu().float()
             meta["data"] = moving_normalize(meta["data"], filter=2048, stride=256)
             print("Plotting...")
-            eqnet.utils.visualize_das_train(meta, phase, epoch=epoch, figure_dir=args.figure_dir, prefix=prefix)
+            eqnet.utils.plot_das_train(meta, phase, epoch=epoch, figure_dir=args.figure_dir, prefix=prefix)
             del phase
 
         elif args.model == "autoencoder":
             preds = model(meta)
             print("Plotting...")
-            eqnet.utils.visualize_autoencoder_das_train(meta, preds, epoch=epoch, figure_dir=args.figure_dir)
+            eqnet.utils.plot_autoencoder_das_train(meta, preds, epoch=epoch, figure_dir=args.figure_dir)
             del preds
 
         elif args.model == "eqnet":
             phase = F.softmax(output["phase"], dim=1).cpu().float()
             event = torch.sigmoid(output["event"]).cpu().float()
             print("Plotting...")
-            eqnet.utils.visualize_eqnet_train(meta, phase, event, epoch=epoch, figure_dir=args.figure_dir)
+            eqnet.utils.plot_eqnet_train(meta, phase, event, epoch=epoch, figure_dir=args.figure_dir)
             del phase, event
 
 
@@ -186,8 +198,9 @@ def main(args):
     np.random.seed(1337 + rank)
 
     device = torch.device(args.device)
-    dtype = "bfloat16" if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else "float16"
+    dtype = "bfloat16" if (torch.cuda.is_available() and torch.cuda.is_bf16_supported()) else "float16"
     ptdtype = {"float32": torch.float32, "bfloat16": torch.bfloat16, "float16": torch.float16}[dtype]
+    scaler = torch.cuda.amp.GradScaler(enabled=((dtype == "float16") & torch.cuda.is_available()))
     args.dtype, args.ptdtype = dtype, ptdtype
     torch.backends.cuda.matmul.allow_tf32 = True  # allow tf32 on matmul
     torch.backends.cudnn.allow_tf32 = True  # allow tf32 on cudnn
@@ -197,7 +210,7 @@ def main(args):
     else:
         torch.backends.cudnn.benchmark = True
 
-    if args.model == "phasenet":
+    if args.model in ["phasenet", "phasenet_plus"]:
         dataset = SeismicTraceIterableDataset(
             data_path=args.data_path,
             data_list=args.data_list,
@@ -211,7 +224,18 @@ def main(args):
             world_size=world_size,
         )
         train_sampler = None
-        dataset_test = dataset
+        dataset_test = SeismicTraceIterableDataset(
+            data_path=args.test_data_path,
+            data_list=args.test_data_list,
+            hdf5_file=args.test_hdf5_file,
+            format="h5",
+            training=True,
+            stack_event=False,
+            flip_polarity=False,
+            drop_channel=False,
+            rank=rank,
+            world_size=world_size,
+        )
         test_sampler = None
     elif args.model == "phasenet_das":
         dataset = DASIterableDataset(
@@ -292,8 +316,8 @@ def main(args):
         else:
             dataset = SeismicNetworkIterableDataset(args.dataset)
             train_sampler = None
-            test_sampler = None
             dataset_test = dataset
+            test_sampler = None
     else:
         raise ("Unknown model")
 
@@ -303,7 +327,6 @@ def main(args):
             batch_sampler=train_batch_sampler,
             num_workers=args.workers,
         )
-
         data_loader_test = torch.utils.data.DataLoader(
             dataset_test,
             batch_size=1,
@@ -337,9 +360,9 @@ def main(args):
         backbone=args.backbone,
         in_channels=1,
         out_channels=(len(args.phases) + 1),
-        ## phasenet-das
+        ## phasenet_das
         reg=args.reg,
-        ## phasenet
+        ## phasenet_plus
         polarity_loss_weight=args.polarity_loss_weight,
     )
     logger.info("Model:\n{}".format(model))
@@ -409,9 +432,6 @@ def main(args):
         optimizer = torch.optim.AdamW(parameters, lr=args.lr, weight_decay=args.weight_decay)
     else:
         raise RuntimeError(f"Invalid optimizer {args.opt}. Only SGD, RMSprop and AdamW are supported.")
-
-    # scaler = torch.cuda.amp.GradScaler() if args.amp else None
-    scaler = torch.cuda.amp.GradScaler(enabled=(dtype == "float16"))
 
     iters_per_epoch = len(data_loader)
     args.lr_scheduler = args.lr_scheduler.lower()
@@ -496,13 +516,13 @@ def main(args):
             epoch,
             len(dataset),
         )
-        print(f"Training time of epoch {epoch} of rank {args.rank}: {time.time() - tmp_time:.3f}")
+        print(f"Training time of epoch {epoch} of rank {rank}: {time.time() - tmp_time:.3f}")
 
         tmp_time = time.time()
         metric = evaluate(model, data_loader_test, scaler, args, epoch, len(dataset_test))
         if model_ema:
             metric = evaluate(model_ema, data_loader_test, scaler, args, epoch, len(dataset_test))
-        print(f"Testing time of epoch {epoch} of rank {args.rank}: {time.time() - tmp_time:.3f}")
+        print(f"Testing time of epoch {epoch} of rank {rank}: {time.time() - tmp_time:.3f}")
 
         tmp_time = time.time()
         checkpoint = {
@@ -553,6 +573,7 @@ def get_args_parser(add_help=True):
     parser.add_argument("--test-label-path", default="+", type=None, help="test label path")
     parser.add_argument("--test-label-list", default="+", type=None, help="test label path")
     parser.add_argument("--test-noise-list", default="+", type=None, help="test noise list")
+    parser.add_argument("--test-hdf5-file", default=None, type=str, help="hdf5 file for testing")
     parser.add_argument("--dataset", default="", type=str, help="dataset name")
     parser.add_argument("--model", default="phasenet_das", type=str, help="model name")
     parser.add_argument("--backbone", default="unet", type=str, help="model backbone")

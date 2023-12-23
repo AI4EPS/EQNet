@@ -1,0 +1,86 @@
+name: quakeflow
+
+workdir: .
+
+num_nodes: 1
+
+resources:
+
+  cloud: gcp
+
+  region: us-west1
+
+  zone: us-west1-b
+
+  # instance_type: n2-highmem-16
+
+  accelerators: V100:1
+
+  cpus: 8+
+
+  disk_size: 500
+
+  use_spot: True
+
+  # image_id: docker:zhuwq0/quakeflow:latest
+
+envs:
+  JOB: quakeflow
+  NCPU: 1
+  ROOT_PATH: /data
+  MODEL_NAME: phasenet
+
+file_mounts:
+
+  # /data:
+  #   # source: s3://scedc-pds/
+  #   # source: s3://ncedc-pds/
+  #   source: gs://quakeflow_dataset/
+  #   # source: gs://quakeflow_share/
+  #   # source: gs://das_arcata/
+  #   mode: MOUNT
+
+  # /dataset:
+  #   source: gs://quakeflow_dataset
+  #   mode: MOUNT
+
+  # /dataset/waveform_ps:
+  #   source: gs://quakeflow_dataset/NC/waveform_ps
+  #   mode: COPY
+
+  /dataset/train.h5:
+    source: gs://quakeflow_dataset/NC/waveform_ps/2021.h5
+    mode: COPY
+
+  /dataset/test.h5:
+    source: gs://quakeflow_dataset/NC/waveform_ps/2022.h5
+    mode: COPY
+
+  ~/.ssh/id_rsa.pub: ~/.ssh/id_rsa.pub
+  ~/.ssh/id_rsa: ~/.ssh/id_rsa
+  ~/.config/rclone/rclone.conf: ~/.config/rclone/rclone.conf
+
+setup: |
+  echo "Begin setup."
+  # sudo apt install rclone
+  pip install fsspec gcsfs
+  pip install obspy pyproj
+  pip install h5py tqdm wandb
+  # pip install torch torchvision torchaudio
+  pip install torch==2.1.0 torchvision==0.16.0 torchaudio==2.1.0 --index-url https://download.pytorch.org/whl/cu121
+
+run: |
+  num_nodes=`echo "$SKYPILOT_NODE_IPS" | wc -l`
+  master_addr=`echo "$SKYPILOT_NODE_IPS" | head -n1`
+  [[ ${SKYPILOT_NUM_GPUS_PER_NODE} -gt $NCPU ]] && nproc_per_node=${SKYPILOT_NUM_GPUS_PER_NODE} || nproc_per_node=$NCPU
+  if [ "${SKYPILOT_NODE_RANK}" == "0" ]; then
+    ls -al /dataset
+  fi
+  torchrun \
+    --nproc_per_node=${nproc_per_node} \
+    --node_rank=${SKYPILOT_NODE_RANK} \
+    --nnodes=$num_nodes \
+    --master_addr=$master_addr \
+    --master_port=8008 \
+    train.py --model $MODEL_NAME --batch-size=256 --hdf5-file /dataset/train.h5 --test-hdf5-file /dataset/test.h5 \
+    --stack-event --flip-polarity --drop-channel --output model_$MODEL_NAME

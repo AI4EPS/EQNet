@@ -229,14 +229,18 @@ class PhaseNet(nn.Module):
         self,
         backbone="unet",
         log_scale=True,
-        add_polarity=True,
-        add_event=True,
+        add_polarity=False,
+        add_event=False,
         event_loss_weight=1.0,
         polarity_loss_weight=1.0,
     ) -> None:
         super().__init__()
         self.backbone_name = backbone
+        self.add_event = add_event
         self.add_polarity = add_polarity
+        self.event_loss_weight = event_loss_weight
+        self.polarity_loss_weight = polarity_loss_weight
+
         if backbone == "resnet18":
             self.backbone = ResNet(BasicBlock, [2, 2, 2, 2])  # ResNet18
         elif backbone == "resnet50":
@@ -253,14 +257,10 @@ class PhaseNet(nn.Module):
                 self.polarity_picker = UNetHead(16, 1, feature_names="polarity")
         else:
             self.phase_picker = DeepLabHead(128, 3, scale_factor=32)
-            self.event_detector = DeepLabHead(128, 1, scale_factor=2)
+            if self.add_event:
+                self.event_detector = DeepLabHead(128, 1, scale_factor=2)
             if self.add_polarity:
                 self.polarity_picker = DeepLabHead(128, 1, scale_factor=32)
-            # self.phase_picker = FCNHead(128, 3)
-            # self.event_detector = FCNHead(128, 1)
-
-        self.event_loss_weight = event_loss_weight
-        self.polarity_loss_weight = polarity_loss_weight
 
     @property
     def device(self):
@@ -269,21 +269,14 @@ class PhaseNet(nn.Module):
     def forward(self, batched_inputs: Tensor) -> Dict[str, Tensor]:
         data = batched_inputs["data"].to(self.device)
 
-        if self.training:
-            phase_pick = batched_inputs["phase_pick"].to(self.device)
-            event_center = batched_inputs["event_center"].to(self.device)
-            event_location = batched_inputs["event_location"].to(self.device)
-            event_mask = batched_inputs["event_mask"].to(self.device)
-            if self.add_polarity:
-                polarity = batched_inputs["polarity"].to(self.device)
-                polarity_mask = batched_inputs["polarity_mask"].to(self.device)
-        else:
-            phase_pick = None
-            event_center = None
-            event_location = None
-            event_mask = None
-            polarity = None
-            polarity_mask = None
+        phase_pick = batched_inputs["phase_pick"].to(self.device) if "phase_pick" in batched_inputs else None
+        event_center = batched_inputs["event_center"].to(self.device) if "event_center" in batched_inputs else None
+        event_location = (
+            batched_inputs["event_location"].to(self.device) if "event_location" in batched_inputs else None
+        )
+        event_mask = batched_inputs["event_mask"].to(self.device) if "event_mask" in batched_inputs else None
+        polarity = batched_inputs["polarity"].to(self.device) if "polarity" in batched_inputs else None
+        polarity_mask = batched_inputs["polarity_mask"].to(self.device) if "polarity_mask" in batched_inputs else None
 
         if self.backbone_name == "swin2":
             station_location = batched_inputs["station_location"].to(self.device)
@@ -292,45 +285,29 @@ class PhaseNet(nn.Module):
             features = self.backbone(data)
         # features: (batch, station, channel, time)
 
+        output = {"loss": 0.0}
         output_phase, loss_phase = self.phase_picker(features, phase_pick)
-        output_event, loss_event = self.event_detector(features, event_center)
+        output["phase"] = output_phase
+        output["loss_phase"] = loss_phase
+        output["loss"] += loss_phase
+        if self.add_event:
+            output_event, loss_event = self.event_detector(features, event_center)
+            output["event"] = output_event
+            output["loss_event"] = loss_event
+            output["loss"] += loss_event * self.event_loss_weight
         if self.add_polarity:
             output_polarity, loss_polarity = self.polarity_picker(features, polarity, mask=polarity_mask)
-        else:
-            output_polarity, loss_polarity = None, 0.0
+            output["polarity"] = output_polarity
+            output["loss_polarity"] = loss_polarity
+            output["loss"] += loss_polarity * self.polarity_loss_weight
 
-        # print(f"{data.shape = }")
-        # print(f"{phase_pick.shape = }")
-        # print(f"{event_center.shape = }")
-        # print(f"{output_phase.shape = }")
-        # print(f"{output_event.shape = }")
-
-        return {
-            "loss": loss_phase + loss_event * self.event_loss_weight + loss_polarity * self.polarity_loss_weight,
-            "loss_phase": loss_phase,
-            "loss_event": loss_event,
-            "loss_polarity": loss_polarity,
-            "phase": output_phase,
-            "event": output_event,
-            "polarity": output_polarity,
-        }
+        return output
 
 
 def build_model(
     backbone="unet",
     log_scale=True,
-    add_polarity=True,
-    add_event=True,
-    event_loss_weight=1.0,
-    polarity_loss_weight=1.0,
     *args,
     **kwargs,
 ) -> PhaseNet:
-    return PhaseNet(
-        backbone=backbone,
-        log_scale=log_scale,
-        add_event=add_event,
-        add_polarity=add_polarity,
-        event_loss_weight=event_loss_weight,
-        polarity_loss_weight=polarity_loss_weight,
-    )
+    return PhaseNet(backbone=backbone, log_scale=log_scale)

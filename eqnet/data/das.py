@@ -17,8 +17,7 @@ import torch.nn.functional as F
 from scipy.interpolate import interp1d
 from torch.utils.data import Dataset, IterableDataset
 
-mp.set_start_method("spawn", force=True)
-
+# mp.set_start_method("spawn", force=True)
 
 def normalize(data: torch.Tensor):
     """channel-wise normalization

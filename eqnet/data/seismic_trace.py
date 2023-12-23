@@ -15,6 +15,7 @@ import torch
 import torch.nn.functional as F
 from scipy import signal
 from torch.utils.data import Dataset, IterableDataset
+from tqdm import tqdm
 
 # import warnings
 # warnings.filterwarnings("error")
@@ -298,17 +299,19 @@ class SeismicTraceIterableDataset(IterableDataset):
         super().__init__()
         self.rank = rank
         self.world_size = world_size
-        self.hdf5_fp = None
         if hdf5_file is not None:
-            fp = h5py.File(hdf5_file, "r")
-            self.hdf5_fp = fp
             tmp_hdf5_keys = f"/tmp/{hdf5_file.split('/')[-1]}.txt"
             if not os.path.exists(tmp_hdf5_keys):
-                self.data_list = [event + "/" + station for event in fp.keys() for station in list(fp[event].keys())]
-                with open(tmp_hdf5_keys, "w") as f:
-                    for x in self.data_list:
-                        f.write(x + "\n")
+                with h5py.File(hdf5_file, "r", libver="latest", swmr=True) as fp:
+                    self.data_list = []
+                    for event in tqdm(list(fp.keys()), desc="Caching HDF5 keys"):
+                        for station in list(fp[event].keys()):
+                            self.data_list.append(event + "/" + station)
+                    with open(tmp_hdf5_keys, "w") as f:
+                        f.write("\n".join(self.data_list))
+                    print(f"Saved {tmp_hdf5_keys}")
             else:
+                print(f"Reading {tmp_hdf5_keys}")
                 self.data_list = pd.read_csv(tmp_hdf5_keys, header=None, names=["trace_id"])["trace_id"].values.tolist()
         elif data_list is not None:
             with open(data_list, "r") as f:
@@ -450,8 +453,9 @@ class SeismicTraceIterableDataset(IterableDataset):
     #         picks_.append(tmp)
     #     return data_, picks_, noise_
 
-    def _read_training_h5(self, trace_id):
-        if self.hdf5_fp is None:
+    def read_training_h5(self, trace_id, hdf5_fp=None):
+        close_hdf5 = False
+        if hdf5_fp is None:
             hdf5_fp = h5py.File(os.path.join(self.data_path, trace_id), "r")
             event_id = "data"
             sta_ids = list(hdf5_fp["data"].keys())
@@ -464,14 +468,13 @@ class SeismicTraceIterableDataset(IterableDataset):
                 tmp_max = np.max(np.abs(waveform), axis=1)
                 if np.all(tmp_max > 0):  ## three component data
                     break
+            close_hdf5 = True
         else:
-            hdf5_fp = self.hdf5_fp
             event_id, sta_id = trace_id.split("/")
             waveform = hdf5_fp[trace_id][:, :]
             if waveform.shape[1] == 3:
                 waveform = waveform.T  # [3, Nt]
 
-        # waveform = hdf5_fp[trace_id][:, :].T  # [3, Nt]
         waveform = normalize(waveform)
         nch, nt = waveform.shape
 
@@ -495,11 +498,12 @@ class SeismicTraceIterableDataset(IterableDataset):
         ## phase polarity
         up = attrs["phase_index"][attrs["phase_polarity"] == "U"]
         dn = attrs["phase_index"][attrs["phase_polarity"] == "D"]
-        ## assuming having both P and S picks
-        mask_width = (
-            attrs["phase_index"][attrs["phase_type"] == "S"] - attrs["phase_index"][attrs["phase_type"] == "P"]
-        ) // 2
-        mask_width = int(min(mask_width))
+        ## using the minimum P-S
+        mask_width = np.min(
+            attrs["phase_index"][attrs["phase_type"] == "S"][:, np.newaxis]
+            - attrs["phase_index"][attrs["phase_type"] == "P"][np.newaxis, :]
+        )
+        mask_width = max(100, int(mask_width / 2.0))
         phase_up, mask_up = generate_label(
             [up], nt=nt, label_width=self.polarity_width, mask_width=mask_width, return_mask=True
         )
@@ -555,7 +559,7 @@ class SeismicTraceIterableDataset(IterableDataset):
         # event_location[0, :] = np.arange(nt) - hdf5_fp[event_id].attrs["time_index"]
         event_location[1:, event_mask >= 1.0] = np.array([dx, dy, dz])[:, np.newaxis]
 
-        if self.hdf5_fp is None:
+        if close_hdf5:
             hdf5_fp.close()
 
         return {
@@ -577,11 +581,11 @@ class SeismicTraceIterableDataset(IterableDataset):
         }
 
     def sample_train(self, data_list):
+        hdf5_fp = h5py.File(self.hdf5_file, "r", libver="latest", swmr=True)
         while True:
             trace_id = np.random.choice(data_list)
-            # if True:
             try:
-                meta = self._read_training_h5(trace_id)
+                meta = self.read_training_h5(trace_id, hdf5_fp)
             except Exception as e:
                 print(f"Error reading {trace_id}:\n{e}")
                 continue
@@ -591,10 +595,9 @@ class SeismicTraceIterableDataset(IterableDataset):
 
             # if self.stack_event and (random.random() < 0.6):
             if self.stack_event:
-                # if True:
                 try:
                     trace_id2 = np.random.choice(self.data_list)
-                    meta2 = self._read_training_h5(trace_id2)
+                    meta2 = self.read_training_h5(trace_id2, hdf5_fp)
                     if meta2 is not None:
                         meta = stack_event(meta, meta2)
                 except Exception as e:
@@ -638,6 +641,8 @@ class SeismicTraceIterableDataset(IterableDataset):
                 "polarity": torch.from_numpy(polarity).float(),
                 "polarity_mask": torch.from_numpy(polarity_mask).float(),
             }
+
+        hdf5_fp.close()
 
     def taper(stream):
         for tr in stream:
