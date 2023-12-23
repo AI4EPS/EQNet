@@ -14,13 +14,15 @@ resources:
 
   # instance_type: n2-highmem-16
 
-  accelerators: V100:1
+  accelerators: P100:1
 
-  cpus: 8+
+  cpus: 16+
 
-  disk_size: 500
+  disk_size: 200
 
   use_spot: True
+
+  # spot_recovery: FAILOVER
 
   # image_id: docker:zhuwq0/quakeflow:latest
 
@@ -29,6 +31,7 @@ envs:
   NCPU: 1
   ROOT_PATH: /data
   MODEL_NAME: phasenet
+  WANDB_API_KEY: cb014c63ac451036ca406582b41d32ae83154289
 
 file_mounts:
 
@@ -53,7 +56,7 @@ file_mounts:
     mode: COPY
 
   /dataset/test.h5:
-    source: gs://quakeflow_dataset/NC/waveform_ps/2022.h5
+    source: gs://quakeflow_dataset/NC/waveform_ps/2020.h5
     mode: COPY
 
   ~/.ssh/id_rsa.pub: ~/.ssh/id_rsa.pub
@@ -62,6 +65,7 @@ file_mounts:
 
 setup: |
   echo "Begin setup."
+  echo export WANDB_API_KEY=$WANDB_API_KEY >> ~/.bashrc
   # sudo apt install rclone
   pip install fsspec gcsfs
   pip install obspy pyproj
@@ -82,5 +86,5 @@ run: |
     --nnodes=$num_nodes \
     --master_addr=$master_addr \
     --master_port=8008 \
-    train.py --model $MODEL_NAME --batch-size=256 --hdf5-file /dataset/train.h5 --test-hdf5-file /dataset/test.h5 \
-    --stack-event --flip-polarity --drop-channel --output model_$MODEL_NAME
+    train.py --model $MODEL_NAME --batch-size=1024 --hdf5-file /dataset/train.h5 --test-hdf5-file /dataset/test.h5 \
+    --stack-event --flip-polarity --drop-channel --output model_$MODEL_NAME --wandb --wandb-project $MODEL_NAME  --resume True

@@ -12,11 +12,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.data
-import wandb
 
 import datasets
 import eqnet
 import utils
+import wandb
 from eqnet.data import (
     AutoEncoderIterableDataset,
     DASIterableDataset,
@@ -380,12 +380,16 @@ def main(args):
     # logging
     if args.wandb and utils.is_main_process():
         wandb.init(
-            project=args.wandb_project, name=args.wandb_name, entity=args.wandb_group, dir=args.wandb_dir, config=args
+            project=args.wandb_project if args.wandb_project else args.model,
+            name=args.wandb_name,
+            entity=args.wandb_group,
+            dir=args.wandb_dir,
+            config=args,
         )
         if args.wandb_watch:
             wandb.watch(model, log="all", log_freq=args.print_freq)
 
-    if args.resume:
+    if args.resume_wandb:
         if utils.is_main_process():
             if args.model == "phasenet_das":
                 model_url = "ai4eps/model-registry/PhaseNet-DAS:latest"
@@ -393,14 +397,6 @@ def main(args):
                 artifact_dir = artifact.download()
                 checkpoint = torch.load(glob(os.path.join(artifact_dir, "*.pth"))[0], map_location="cpu")
                 model.load_state_dict(checkpoint["model"], strict=True)
-                # if model_ema:
-                #     model_ema.load_state_dict(checkpoint["model_ema"])
-                # if not args.test_only:
-                #     optimizer.load_state_dict(checkpoint["optimizer"])
-                #     lr_scheduler.load_state_dict(checkpoint["lr_scheduler"])
-                # args.start_epoch = checkpoint["epoch"] + 1
-                # if scaler:
-                #     scaler.load_state_dict(checkpoint["scaler"])
 
     custom_keys_weight_decay = []
     if args.bias_weight_decay is not None:
@@ -476,7 +472,7 @@ def main(args):
 
     model_without_ddp = model
     if args.distributed:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=True)
         model_without_ddp = model.module
 
     model_ema = None
@@ -486,17 +482,25 @@ def main(args):
         alpha = min(1.0, alpha * adjust)
         model_ema = utils.ExponentialMovingAverage(model_without_ddp, device=device, decay=1.0 - alpha)
 
-    # if args.resume:
-    #     checkpoint = torch.load(args.resume, map_location="cpu")
-    #     model_without_ddp.load_state_dict(checkpoint["model"])
-    #     if not args.test_only:
-    #         optimizer.load_state_dict(checkpoint["optimizer"])
-    #         lr_scheduler.load_state_dict(checkpoint["lr_scheduler"])
-    #     args.start_epoch = checkpoint["epoch"] + 1
-    #     if model_ema:
-    #         model_ema.load_state_dict(checkpoint["model_ema"])
-    #     if scaler:
-    #         scaler.load_state_dict(checkpoint["scaler"])
+    if args.resume:
+        checkpoint = None
+        if os.path.isfile(args.resume):
+            print(f"Loading model and optimizer from checkpoint '{args.resume}'")
+            checkpoint = torch.load(args.resume, map_location="cpu")
+        elif os.path.isfile(args.output_dir + "/checkpoint.pth"):
+            print(f"Loading model and optimizer from checkpoint '{args.output_dir}/checkpoint.pth'")
+            checkpoint = torch.load(args.output_dir + "/checkpoint.pth", map_location="cpu")
+        else:
+            print(f"No checkpoint found")
+        if checkpoint is not None:
+            model_without_ddp.load_state_dict(checkpoint["model"])
+            optimizer.load_state_dict(checkpoint["optimizer"])
+            lr_scheduler.load_state_dict(checkpoint["lr_scheduler"])
+            args.start_epoch = checkpoint["epoch"] + 1
+            if model_ema:
+                model_ema.load_state_dict(checkpoint["model_ema"])
+            if scaler:
+                scaler.load_state_dict(checkpoint["scaler"])
 
     start_time = time.time()
     best_loss = float("inf")
@@ -674,6 +678,7 @@ def get_args_parser(add_help=True):
     parser.add_argument("--print-freq", default=10, type=int, help="print frequency")
     parser.add_argument("--output-dir", default="./output", type=str, help="path to save outputs")
     parser.add_argument("--resume", default="", type=str, help="path of checkpoint")
+    parser.add_argument("--resume_wandb", action="store_true", help="resume from wandb")
     parser.add_argument("--start-epoch", default=0, type=int, metavar="N", help="start epoch")
     parser.add_argument(
         "--sync-bn",
@@ -742,7 +747,7 @@ def get_args_parser(add_help=True):
 
     # wandb
     parser.add_argument("--wandb", action="store_true", help="use wandb")
-    parser.add_argument("--wandb-project", default="phasenet-das", type=str, help="wandb project name")
+    parser.add_argument("--wandb-project", default=None, type=str, help="wandb project name")
     parser.add_argument("--wandb-name", default=None, type=str, help="wandb run name")
     parser.add_argument("--wandb-group", default=None, type=str, help="wandb group name")
     parser.add_argument("--wandb-dir", default="./", type=str, help="wandb dir")
