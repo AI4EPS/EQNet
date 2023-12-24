@@ -190,7 +190,15 @@ def plot_phasenet_train(meta, phase, epoch=0, figure_dir="figures", prefix=""):
             break
 
 
-def plot_phasenet_plus_train(meta, phase, event, polarity=None, epoch=0, figure_dir="figures", prefix=""):
+def plot_phasenet_plus_train(
+    meta, phase, polarity=None, event_center=None, event_time=None, epoch=0, figure_dir="figures", prefix=""
+):
+    nb, nc, nt, ns = meta["data"].shape
+    dt = 0.01
+    scale = 16
+    nt_scaled = event_center.shape[2]
+    dt_scaled = dt * scale
+
     for i in range(meta["data"].shape[0]):
         plt.close("all")
 
@@ -199,8 +207,10 @@ def plot_phasenet_plus_train(meta, phase, event, polarity=None, epoch=0, figure_
         if "raw_data" in meta:
             shift = 3
             fig, axes = plt.subplots(9, 1, figsize=(10, 10))
+            t = torch.arange(nt) * dt
             for j in range(3):
-                axes[j].plot(meta["raw_data"][i, j, :, 0], linewidth=0.5, color="k", label=f"{chn_name[j]}")
+                axes[j].plot(t, meta["raw_data"][i, j, :, 0], linewidth=0.5, color="k", label=f"{chn_name[j]}")
+                axes[j].set_xlim(t[0], t[-1])
                 axes[j].set_xticklabels([])
                 axes[j].grid("on")
         else:
@@ -208,33 +218,43 @@ def plot_phasenet_plus_train(meta, phase, event, polarity=None, epoch=0, figure_
             shift = 0
 
         for j in range(3):
-            axes[j + shift].plot(meta["data"][i, j, :, 0], linewidth=0.5, color="k", label=f"{chn_name[j]}")
+            t = torch.arange(nt) * dt
+            axes[j + shift].plot(t, meta["data"][i, j, :, 0], linewidth=0.5, color="k", label=f"{chn_name[j]}")
+            axes[j + shift].set_xlim(t[0], t[-1])
             axes[j + shift].set_xticklabels([])
             axes[j + shift].grid("on")
 
         k = 3 + shift
-        axes[k].plot(phase[i, 1, :, 0], "b")
-        axes[k].plot(phase[i, 2, :, 0], "r")
-        axes[k].plot(meta["phase_pick"][i, 1, :, 0], "--C0")
-        axes[k].plot(meta["phase_pick"][i, 2, :, 0], "--C3")
-        axes[k].plot(meta["phase_mask"][i, 0, :, 0], ":", color="gray")
+        t = torch.arange(nt) * dt
+        axes[k].plot(t, phase[i, 1, :, 0], "b")
+        axes[k].plot(t, phase[i, 2, :, 0], "r")
+        axes[k].plot(t, meta["phase_pick"][i, 1, :, 0], "--C0")
+        axes[k].plot(t, meta["phase_pick"][i, 2, :, 0], "--C3")
+        axes[k].plot(t, meta["phase_mask"][i, 0, :, 0], ":", color="gray")
+        axes[k].set_xlim(t[0], t[-1])
         axes[k].set_ylim(-0.05, 1.05)
         axes[k].set_xticklabels([])
         axes[k].grid("on")
 
-        axes[k + 1].plot(polarity[i, 0, :, 0], "b")
-        axes[k + 1].plot(meta["polarity"][i, 0, :, 0], "--C0")
-        axes[k + 1].plot(meta["polarity_mask"][i, 0, :, 0], ":", color="gray")
+        axes[k + 1].plot(t, polarity[i, 0, :, 0], "b")
+        axes[k + 1].plot(t, meta["polarity"][i, 0, :, 0], "--C0")
+        axes[k + 1].plot(t, meta["polarity_mask"][i, 0, :, 0], ":", color="gray")
+        axes[k + 1].set_xlim(t[0], t[-1])
         axes[k + 1].set_ylim(-0.05, 1.05)
         axes[k + 1].set_xticklabels([])
         axes[k + 1].grid("on")
 
-        axes[k + 2].plot(event[i, 0, :, 0], "b")
-        axes[k + 2].plot(meta["event_center"][i, 0, :, 0], "--C0")
-        axes[k + 2].plot(meta["event_mask"][i, 0, :, 0], ":", color="gray")
+        t = torch.arange(nt_scaled) * dt_scaled
+        axes[k + 2].plot(t, event_center[i, 0, :, 0], "b")
+        axes[k + 2].plot(t, meta["event_center"][i, 0, :, 0], "--C0")
+        axes[k + 2].plot(t, meta["event_mask"][i, 0, :, 0], ":", color="gray")
+        axes[k + 2].set_xlim(t[0], t[-1])
         axes[k + 2].set_ylim(-0.05, 1.05)
-        # axes[k+2].set_xticklabels([])
         axes[k + 2].grid("on")
+
+        axes2 = axes[k + 2].twinx()
+        axes2.plot(t, event_time[i, 0, :, 0], "--C1")
+        axes2.plot(t, meta["event_time"][i, 0, :, 0], ":C3")
 
         if "RANK" in os.environ:
             rank = int(os.environ["RANK"])

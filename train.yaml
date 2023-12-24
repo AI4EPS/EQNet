@@ -20,6 +20,8 @@ resources:
 
   disk_size: 200
 
+  disk_tier: high
+
   use_spot: True
 
   # spot_recovery: FAILOVER

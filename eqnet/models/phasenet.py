@@ -202,7 +202,7 @@ class UNetHead(nn.Module):
         x = self.layers(x)
 
         if self.training:
-            return x, self.losses(x, targets)
+            return x, self.losses(x, targets, mask)
         else:
             if targets is not None:  ## for validation, but breaks for torch.compile
                 return x, self.losses(x, targets)
@@ -224,6 +224,53 @@ class UNetHead(nn.Module):
         return loss
 
 
+class EventHead(nn.Module):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size=(7, 1),
+        padding=(3, 0),
+        feature_names: str = "event",
+    ) -> None:
+        super().__init__()
+        self.out_channels = out_channels
+        self.feature_names = feature_names
+        # self.layers = nn.Conv2d(
+        #     in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size, padding=padding
+        # )
+        self.layers = nn.Sequential(
+            nn.Conv2d(in_channels=in_channels, out_channels=in_channels, kernel_size=kernel_size, padding=padding),
+            nn.LeakyReLU(),
+            nn.Conv2d(in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size, padding=padding),
+            nn.LeakyReLU(),
+        )
+
+    def forward(self, features, targets=None, mask=None):
+        x = features[self.feature_names]
+        x = self.layers(x)
+
+        if self.training:
+            return x, self.losses(x, targets, mask)
+        else:
+            if targets is not None:  ## for validation, but breaks for torch.compile
+                return x, self.losses(x, targets)
+            return x, 0.0
+
+    def losses(self, inputs, targets, mask=None):
+        inputs = inputs.float()
+
+        if mask is None:
+            loss = F.mse_loss(inputs, targets)
+        else:
+            mask_sum = mask.sum()
+            if mask_sum == 0.0:
+                mask_sum = 1.0
+            loss = F.l1_loss(inputs * mask, targets * mask, reduction="sum") / mask_sum
+
+        return loss
+
+
 class PhaseNet(nn.Module):
     def __init__(
         self,
@@ -231,14 +278,16 @@ class PhaseNet(nn.Module):
         log_scale=True,
         add_polarity=False,
         add_event=False,
-        event_loss_weight=1.0,
+        event_center_loss_weight=1.0,
+        event_time_loss_weight=1.0,
         polarity_loss_weight=1.0,
     ) -> None:
         super().__init__()
         self.backbone_name = backbone
         self.add_event = add_event
         self.add_polarity = add_polarity
-        self.event_loss_weight = event_loss_weight
+        self.event_center_loss_weight = event_center_loss_weight
+        self.event_time_loss_weight = event_time_loss_weight
         self.polarity_loss_weight = polarity_loss_weight
 
         if backbone == "resnet18":
@@ -252,13 +301,16 @@ class PhaseNet(nn.Module):
 
         if backbone == "unet":
             self.phase_picker = UNetHead(16, 3, feature_names="phase")
-            self.event_detector = UNetHead(32, 1, feature_names="event")
+            if self.add_event:
+                self.event_detector = UNetHead(32, 1, feature_names="event")
+                self.event_timer = EventHead(32, 1, feature_names="event")
             if self.add_polarity:
                 self.polarity_picker = UNetHead(16, 1, feature_names="polarity")
         else:
             self.phase_picker = DeepLabHead(128, 3, scale_factor=32)
             if self.add_event:
                 self.event_detector = DeepLabHead(128, 1, scale_factor=2)
+                self.event_timer = EventHead(128, 1, scale_factor=2)
             if self.add_polarity:
                 self.polarity_picker = DeepLabHead(128, 1, scale_factor=32)
 
@@ -271,9 +323,7 @@ class PhaseNet(nn.Module):
 
         phase_pick = batched_inputs["phase_pick"].to(self.device) if "phase_pick" in batched_inputs else None
         event_center = batched_inputs["event_center"].to(self.device) if "event_center" in batched_inputs else None
-        event_location = (
-            batched_inputs["event_location"].to(self.device) if "event_location" in batched_inputs else None
-        )
+        event_time = batched_inputs["event_time"].to(self.device) if "event_time" in batched_inputs else None
         event_mask = batched_inputs["event_mask"].to(self.device) if "event_mask" in batched_inputs else None
         polarity = batched_inputs["polarity"].to(self.device) if "polarity" in batched_inputs else None
         polarity_mask = batched_inputs["polarity_mask"].to(self.device) if "polarity_mask" in batched_inputs else None
@@ -291,14 +341,18 @@ class PhaseNet(nn.Module):
         output["loss_phase"] = loss_phase
         output["loss"] += loss_phase
         if self.add_event:
-            output_event, loss_event = self.event_detector(features, event_center)
-            output["event"] = output_event
-            output["loss_event"] = loss_event
-            output["loss"] += loss_event * self.event_loss_weight
+            output_event_center, loss_event_center = self.event_detector(features, event_center)
+            output["event_center"] = output_event_center
+            output["loss_event_center"] = loss_event_center * self.event_center_loss_weight
+            output["loss"] += loss_event_center * self.event_center_loss_weight
+            output_event_time, loss_event_time = self.event_timer(features, event_time, mask=event_mask)
+            output["event_time"] = output_event_time
+            output["loss_event_time"] = loss_event_time * self.event_time_loss_weight
+            output["loss"] += loss_event_time * self.event_time_loss_weight
         if self.add_polarity:
             output_polarity, loss_polarity = self.polarity_picker(features, polarity, mask=polarity_mask)
             output["polarity"] = output_polarity
-            output["loss_polarity"] = loss_polarity
+            output["loss_polarity"] = loss_polarity * self.polarity_loss_weight
             output["loss"] += loss_polarity * self.polarity_loss_weight
 
         return output

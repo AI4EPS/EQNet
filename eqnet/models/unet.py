@@ -126,16 +126,36 @@ class UNet(nn.Module):
         self.moving_norm = moving_norm
         self.log_scale = log_scale
         if self.add_polarity:
-            self.encoder1_polarity = self.encoder_block(
-                1, features, kernel_size=kernel_size, stride=init_stride, padding=padding, name="enc1_polarity"
+            self.encoder1_polarity = nn.Sequential(
+                self.encoder_block(
+                    1, features, kernel_size=kernel_size, stride=init_stride, padding=padding, name="enc1_polarity"
+                ),
+                self.encoder_block(
+                    features,
+                    features * 2,
+                    kernel_size=kernel_size,
+                    stride=stride,
+                    padding=padding,
+                    name="enc2_polarity",
+                ),
             )
-            self.decoder1_polarity = self.encoder_block(
-                features * 3,
-                features,
-                kernel_size=kernel_size,
-                stride=init_stride,
-                padding=padding,
-                name="dec1_polarity",
+            self.decoder1_polarity = nn.Sequential(
+                self.decoder_block(
+                    features * 6,
+                    features * 2,
+                    kernel_size=kernel_size,
+                    stride=stride,
+                    padding=padding,
+                    name="dec1_polarity",
+                ),
+                self.encoder_block(
+                    features * 2,
+                    features,
+                    kernel_size=kernel_size,
+                    stride=init_stride,
+                    padding=padding,
+                    name="dec2_polarity",
+                ),
             )
 
         self.input_conv = self.encoder_block(
@@ -278,7 +298,8 @@ class UNet(nn.Module):
         out_phase = out_phase[:, :, :nt, :nx]
 
         if self.add_polarity:
-            dec1_polarity = torch.cat((dec1, enc1_polarity), dim=1)
+            # dec1_polarity = torch.cat((dec1, enc1_polarity), dim=1)
+            dec1_polarity = torch.cat((dec2, enc1_polarity), dim=1)
             out_polarity = self.decoder1_polarity(dec1_polarity)
             if self.output_upsample is not None:
                 out_polarity = self.output_upsample(out_polarity)

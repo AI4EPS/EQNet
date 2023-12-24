@@ -72,7 +72,8 @@ def train_one_epoch(
     metric_logger.add_meter("lr", utils.SmoothedValue(window_size=1, fmt="{value}"))
     if args.model == "phasenet_plus":
         metric_logger.add_meter("loss_phase", utils.SmoothedValue(window_size=1, fmt="{value}"))
-        metric_logger.add_meter("loss_event", utils.SmoothedValue(window_size=1, fmt="{value}"))
+        metric_logger.add_meter("loss_event_center", utils.SmoothedValue(window_size=1, fmt="{value}"))
+        metric_logger.add_meter("loss_event_time", utils.SmoothedValue(window_size=1, fmt="{value}"))
         metric_logger.add_meter("loss_polarity", utils.SmoothedValue(window_size=1, fmt="{value}"))
     header = f"Epoch: [{epoch}]"
 
@@ -117,17 +118,22 @@ def train_one_epoch(
         metric_logger.update(loss=loss.item(), lr=optimizer.param_groups[0]["lr"])
         if args.model == "phasenet_plus":
             metric_logger.update(loss_phase=output["loss_phase"].item())
-            metric_logger.update(loss_event=output["loss_event"].item())
+            metric_logger.update(loss_event_center=output["loss_event_center"].item())
+            metric_logger.update(loss_event_time=output["loss_event_time"].item())
             metric_logger.update(loss_polarity=output["loss_polarity"].item())
         if args.wandb and utils.is_main_process():
-            wandb.log(
-                {
-                    "train/train_loss": loss.item(),
-                    "train/lr": optimizer.param_groups[0]["lr"],
-                    "train/epoch": epoch,
-                    "train/batch": i,
-                }
-            )
+            log = {
+                "train/train_loss": loss.item(),
+                "train/lr": optimizer.param_groups[0]["lr"],
+                "train/epoch": epoch,
+                "train/batch": i,
+            }
+            if args.model == "phasenet_plus":
+                log["train/loss_phase"] = output["loss_phase"].item()
+                log["train/loss_event_center"] = output["loss_event_center"].item()
+                log["train/loss_event_time"] = output["loss_event_time"].item()
+                log["train/loss_polarity"] = output["loss_polarity"].item()
+            wandb.log(log)
 
     model.eval()
     plot_results(meta, model, output, args, epoch, "train_")
@@ -142,16 +148,25 @@ def plot_results(meta, model, output, args, epoch, prefix=""):
             print("Plotting...")
             eqnet.utils.plot_phasenet_train(meta, phase, epoch=epoch, figure_dir=args.figure_dir, prefix=prefix)
             del phase
+
         elif args.model == "phasenet_plus":
             phase = torch.softmax(output["phase"], dim=1).cpu().float()
-            event = torch.sigmoid(output["event"]).cpu().float()
+            event_center = torch.sigmoid(output["event_center"]).cpu().float()
+            event_time = output["event_time"].cpu().float()
             polarity = torch.sigmoid(output["polarity"]).cpu().float()
             meta["data"] = moving_normalize(meta["data"])
             print("Plotting...")
             eqnet.utils.plot_phasenet_plus_train(
-                meta, phase, event, polarity, epoch=epoch, figure_dir=args.figure_dir, prefix=prefix
+                meta,
+                phase,
+                polarity=polarity,
+                event_center=event_center,
+                event_time=event_time,
+                epoch=epoch,
+                figure_dir=args.figure_dir,
+                prefix=prefix,
             )
-            del phase, event, polarity
+            del phase, event_center, polarity
 
         elif args.model == "deepdenoiser":
             pass
@@ -360,10 +375,6 @@ def main(args):
         backbone=args.backbone,
         in_channels=1,
         out_channels=(len(args.phases) + 1),
-        ## phasenet_das
-        reg=args.reg,
-        ## phasenet_plus
-        polarity_loss_weight=args.polarity_loss_weight,
     )
     logger.info("Model:\n{}".format(model))
 
@@ -730,7 +741,6 @@ def get_args_parser(add_help=True):
 
     ## Data Augmentation
     parser.add_argument("--phases", default=["P", "S"], type=str, nargs="+", help="phases to use")
-    parser.add_argument("--reg", default=0.0, type=float, help="laplace regularization for phasenet-das")
     parser.add_argument("--nt", default=1024 * 3, type=int, help="number of time samples")
     parser.add_argument("--nx", default=1024 * 5, type=int, help="number of space samples")
     parser.add_argument("--stack-noise", action="store_true", help="Stack noise")
@@ -740,7 +750,6 @@ def get_args_parser(add_help=True):
     parser.add_argument("--resample-space", action="store_true", help="Resample space resolution")
     parser.add_argument("--resample-time", action="store_true", help="Resample time  resolution")
     parser.add_argument("--masking", action="store_true", help="Masking of the input data")
-    parser.add_argument("--polarity-loss-weight", default=1.0, type=float, help="Polarity loss weight")
     parser.add_argument("--random-crop", action="store_true", help="Random size")
     parser.add_argument("--crop-nt", default=1024, type=int, help="Crop time samples")
     parser.add_argument("--crop-nx", default=1024, type=int, help="Crop space samples")
