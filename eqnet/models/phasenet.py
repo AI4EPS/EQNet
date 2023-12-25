@@ -266,7 +266,8 @@ class EventHead(nn.Module):
             mask_sum = mask.sum()
             if mask_sum == 0.0:
                 mask_sum = 1.0
-            loss = F.l1_loss(inputs * mask, targets * mask, reduction="sum") / mask_sum
+            loss = F.l1_loss(inputs * mask, targets * mask, reduction="sum") / mask_sum  # trigger warning for mps
+            # loss = torch.sum(torch.abs(inputs - targets) * mask, dim=(1, 2, 3)).mean() / mask_sum
 
         return loss
 

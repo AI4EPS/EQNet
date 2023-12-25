@@ -59,7 +59,8 @@ def generate_phase_label(
     if mask_width is None:
         mask_width = [int(x * 1.5) for x in label_width]
     else:
-        mask_width = [min(int(x * 1.5), mask_width) for x in label_width]
+        # mask_width = [min(int(x * 1.5), mask_width) for x in label_width]
+        mask_width = [mask_width] * len(label_width)
 
     for i, (picks, w, m) in enumerate(zip(phase_list, label_width, mask_width)):
         for phase_time in picks:
@@ -175,6 +176,7 @@ def stack_event(
             waveform2_ = np.roll(waveform2, shift, axis=1)
             phase_pick2_ = np.roll(phase_pick2, shift, axis=1)
             phase_mask2_ = np.roll(phase_mask2, shift, axis=0)
+            event_time2_ = np.roll(event_time2, shift, axis=0)
             event_center2_ = np.roll(event_center2, shift, axis=0)
             event_mask2_ = np.roll(event_mask2, shift, axis=0)
             polarity2_ = np.roll(polarity2, shift, axis=0)
@@ -195,7 +197,7 @@ def stack_event(
             phase_mask1 = np.minimum(1.0, phase_mask1 + phase_mask2_)
             tmp_time = np.zeros_like(event_time1)
             tmp_time[event_mask1 >= 1.0] = event_time1[event_mask1 >= 1.0]
-            tmp_time[event_mask2_ >= 1.0] = event_time2[event_mask2_ >= 1.0]
+            tmp_time[event_mask2_ >= 1.0] = event_time2_[event_mask2_ >= 1.0]
             event_time1 = tmp_time
             event_center1 = event_center1 + event_center2_
             event_mask1 = np.minimum(1.0, event_mask1 + event_mask2_)
@@ -528,7 +530,8 @@ class SeismicTraceIterableDataset(IterableDataset):
             attrs["phase_index"][attrs["phase_type"] == "S"][:, np.newaxis]
             - attrs["phase_index"][attrs["phase_type"] == "P"][np.newaxis, :]
         )
-        mask_width = max(100, int(mask_width / 2.0))
+        # mask_width = min(500, int(mask_width / 2.0))
+        mask_width = 500
         phase_up, mask_up = generate_phase_label([up], nt=nt, label_width=self.polarity_width, mask_width=mask_width)
         phase_dn, mask_dn = generate_phase_label([dn], nt=nt, label_width=self.polarity_width, mask_width=mask_width)
         # phase_up, mask_up = generate_label([up], nt=nt, label_width=self.polarity_width, return_mask=True)
@@ -544,6 +547,13 @@ class SeismicTraceIterableDataset(IterableDataset):
         duration = []
         event_time0 = datetime.fromisoformat(hdf5_fp[event_id].attrs["event_time"])
         for e in event_ids:
+            # duration.append([np.min(attrs["phase_index"][attrs["event_id"] == e]).item(), np.max(attrs["phase_index"][attrs["event_id"] == e]).item()])
+            tmp_min = np.min(attrs["phase_index"][attrs["event_id"] == e]).item()
+            tmp_max = np.max(attrs["phase_index"][attrs["event_id"] == e]).item()
+            duration.append([tmp_min, max(tmp_min + 3, tmp_max + 2 * (tmp_max - tmp_min))])
+
+            if len(attrs["phase_index"][attrs["event_id"] == e]) <= 1:  # need both P and S
+                continue
             c0.append(np.mean(attrs["phase_index"][attrs["event_id"] == e]).item())
             shift_t0 = (
                 int(
@@ -556,10 +566,7 @@ class SeismicTraceIterableDataset(IterableDataset):
                 else 0
             )
             t0.append(hdf5_fp[e].attrs["event_time_index"] + shift_t0)
-            # duration.append([np.min(attrs["phase_index"][attrs["event_id"] == e]).item(), np.max(attrs["phase_index"][attrs["event_id"] == e]).item()])
-            tmp_min = np.min(attrs["phase_index"][attrs["event_id"] == e]).item()
-            tmp_max = np.max(attrs["phase_index"][attrs["event_id"] == e]).item()
-            duration.append([tmp_min, tmp_max + 2 * (tmp_max - tmp_min)])
+
         duration = np.array([duration])  # for one station and multiple events
         event_center, event_time, event_mask = generate_event_label(c0, t0, nt=nt, label_width=self.event_width)
 
