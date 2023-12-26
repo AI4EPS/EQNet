@@ -205,7 +205,7 @@ class UNetHead(nn.Module):
             return x, self.losses(x, targets, mask)
         else:
             if targets is not None:  ## for validation, but breaks for torch.compile
-                return x, self.losses(x, targets)
+                return x, self.losses(x, targets, mask)
             return x, 0.0
 
     def losses(self, inputs, targets, mask=None):
@@ -254,7 +254,7 @@ class EventHead(nn.Module):
             return x, self.losses(x, targets, mask)
         else:
             if targets is not None:  ## for validation, but breaks for torch.compile
-                return x, self.losses(x, targets)
+                return x, self.losses(x, targets, mask)
             return x, 0.0
 
     def losses(self, inputs, targets, mask=None):

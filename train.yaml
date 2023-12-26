@@ -14,11 +14,12 @@ resources:
 
   # instance_type: n2-highmem-16
 
-  accelerators: P100:1
+  accelerators: P100:4
 
-  cpus: 16+
+  # cpus: 16+
+  cpus: 64+
 
-  disk_size: 200
+  disk_size: 300
 
   disk_tier: high
 
@@ -32,7 +33,7 @@ envs:
   JOB: quakeflow
   NCPU: 1
   ROOT_PATH: /data
-  MODEL_NAME: phasenet
+  MODEL_NAME: phasenet_plus
   WANDB_API_KEY: cb014c63ac451036ca406582b41d32ae83154289
 
 file_mounts:
@@ -49,16 +50,24 @@ file_mounts:
   #   source: gs://quakeflow_dataset
   #   mode: MOUNT
 
-  # /dataset/waveform_ps:
-  #   source: gs://quakeflow_dataset/NC/waveform_ps
-  #   mode: COPY
+  # /checkpoint:
+  #   name: quakeflow_model # Name of the bucket
+  #   store: gcs
+  #   mode: MOUNT
+  /checkpoint:
+    source: gs://quakeflow_model
+    mode: MOUNT
+
+  /dataset/waveform_ps:
+    source: gs://quakeflow_dataset/NC/waveform_ps
+    mode: COPY
 
   /dataset/train.h5:
-    source: gs://quakeflow_dataset/NC/waveform_ps/2021.h5
+    source: gs://quakeflow_dataset/NC/waveform_ps_train.h5
     mode: COPY
 
   /dataset/test.h5:
-    source: gs://quakeflow_dataset/NC/waveform_ps/2020.h5
+    source: gs://quakeflow_dataset/NC/waveform_ps_test.h5
     mode: COPY
 
   ~/.ssh/id_rsa.pub: ~/.ssh/id_rsa.pub
@@ -88,5 +97,5 @@ run: |
     --nnodes=$num_nodes \
     --master_addr=$master_addr \
     --master_port=8008 \
-    train.py --model $MODEL_NAME --batch-size=1024 --hdf5-file /dataset/train.h5 --test-hdf5-file /dataset/test.h5 \
-    --workers 16 --stack-event --flip-polarity --drop-channel --output model_$MODEL_NAME --wandb --wandb-project $MODEL_NAME  --resume True
+    train.py --model $MODEL_NAME --batch-size=256 --hdf5-file /dataset/train.h5 --test-hdf5-file /dataset/test.h5 \
+    --workers 12 --stack-event --flip-polarity --drop-channel --output /checkpoint/$MODEL_NAME --wandb --wandb-project $MODEL_NAME  --resume True
