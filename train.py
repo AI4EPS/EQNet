@@ -46,6 +46,7 @@ def evaluate(model, data_loader, scaler, args, epoch=0, total_samples=1):
     with torch.inference_mode():
         for meta in metric_logger.log_every(data_loader, args.print_freq, header):
             output = model(meta)
+            batch_size = meta["data"].shape[0]
 
             metric_logger.meters["loss"].update(output["loss"].item(), n=batch_size)
             if args.model == "phasenet_plus":
@@ -54,7 +55,6 @@ def evaluate(model, data_loader, scaler, args, epoch=0, total_samples=1):
                 metric_logger.meters["loss_event_time"].update(output["loss_event_time"].item(), n=batch_size)
                 metric_logger.meters["loss_polarity"].update(output["loss_polarity"].item(), n=batch_size)
 
-            batch_size = meta["data"].shape[0]
             processed_samples += batch_size
             if processed_samples > total_samples:
                 break
@@ -577,16 +577,17 @@ def main(args):
             checkpoint["scaler"] = scaler.state_dict()
 
         utils.save_on_master(checkpoint, os.path.join(args.output_dir, f"model_{epoch}.pth"))
+        utils.save_on_master(checkpoint, os.path.join(args.output_dir, "checkpoint.pth"))
         if utils.is_main_process() and metric.loss.global_avg < best_loss:
             best_loss = metric.loss.global_avg
-            utils.save_on_master(checkpoint, os.path.join(args.output_dir, "checkpoint.pth"))
+            torch.save(checkpoint, os.path.join(args.output_dir, "model_best.pth"))
             if args.wandb:
                 best_model = wandb.Artifact(
                     f"{args.wandb_name}",
                     type="model",
                     metadata=dict(epoch=epoch, loss=best_loss),
                 )
-                best_model.add_file(os.path.join(args.output_dir, "checkpoint.pth"))
+                best_model.add_file(os.path.join(args.output_dir, "model_best.pth"))
                 wandb.log_artifact(best_model)
 
     total_time = time.time() - start_time

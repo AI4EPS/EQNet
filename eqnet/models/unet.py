@@ -125,38 +125,6 @@ class UNet(nn.Module):
         self.add_stft = add_stft
         self.moving_norm = moving_norm
         self.log_scale = log_scale
-        if self.add_polarity:
-            self.encoder1_polarity = nn.Sequential(
-                self.encoder_block(
-                    1, features, kernel_size=kernel_size, stride=init_stride, padding=padding, name="enc1_polarity"
-                ),
-                self.encoder_block(
-                    features,
-                    features * 2,
-                    kernel_size=kernel_size,
-                    stride=stride,
-                    padding=padding,
-                    name="enc2_polarity",
-                ),
-            )
-            self.decoder1_polarity = nn.Sequential(
-                self.decoder_block(
-                    features * 6,
-                    features * 2,
-                    kernel_size=kernel_size,
-                    stride=stride,
-                    padding=padding,
-                    name="dec1_polarity",
-                ),
-                self.encoder_block(
-                    features * 2,
-                    features,
-                    kernel_size=kernel_size,
-                    stride=init_stride,
-                    padding=padding,
-                    name="dec2_polarity",
-                ),
-            )
 
         self.input_conv = self.encoder_block(
             in_channels, features, kernel_size=kernel_size, stride=init_stride, padding=padding, name="enc1"
@@ -236,6 +204,30 @@ class UNet(nn.Module):
                 ]
             )
         )
+
+        if self.add_polarity:
+            self.encoder_polarity = self.encoder_block(
+                1, features, kernel_size=kernel_size, stride=stride, padding=padding, name="enc1_polarity"
+            )
+            self.output_polarity = nn.Sequential(
+                OrderedDict(
+                    [
+                        (
+                            "output_polarity_conv",
+                            nn.Conv2d(
+                                in_channels=features * 5,
+                                out_channels=features,
+                                kernel_size=kernel_size,
+                                padding=padding,
+                                bias=False,
+                            ),
+                        ),
+                        ("output_polarity_norm", nn.BatchNorm2d(num_features=features)),
+                        ("output_polarity_relu", nn.ReLU(inplace=True)),
+                    ]
+                )
+            )
+
         if self.add_event:
             self.output_event = nn.Sequential(
                 OrderedDict(
@@ -255,6 +247,7 @@ class UNet(nn.Module):
                     ]
                 )
             )
+
         if (init_stride[0] > 1) or (init_stride[1] > 1):
             self.output_upsample = nn.Upsample(scale_factor=init_stride, mode="bilinear", align_corners=False)
         else:
@@ -276,7 +269,8 @@ class UNet(nn.Module):
         #             x = sgram
 
         if self.add_polarity:
-            enc1_polarity = self.encoder1_polarity(x[:, -1:, :, :])  ## last channel is vertical component
+            enc_polarity = self.encoder_polarity(x[:, -1:, :, :])  ## last channel is vertical component
+
         enc1 = self.input_conv(x)
         enc2 = self.encoder12(enc1)
         enc3 = self.encoder23(enc2)
@@ -298,12 +292,13 @@ class UNet(nn.Module):
         out_phase = out_phase[:, :, :nt, :nx]
 
         if self.add_polarity:
-            # dec1_polarity = torch.cat((dec1, enc1_polarity), dim=1)
-            dec1_polarity = torch.cat((dec2, enc1_polarity), dim=1)
-            out_polarity = self.decoder1_polarity(dec1_polarity)
+            dec_polarity = torch.cat((dec2, enc_polarity), dim=1)
+            out_polarity = self.output_polarity(dec_polarity)
             if self.output_upsample is not None:
                 out_polarity = self.output_upsample(out_polarity)
-            out_polarity = out_polarity[:, :, :nt, :nx]
+                out_polarity = out_polarity[:, :, :nt, :nx]
+            else:
+                out_polarity = out_polarity[:, :, : nt // 4, :nx]
         else:
             out_polarity = None
 
@@ -311,7 +306,9 @@ class UNet(nn.Module):
             out_event = self.output_event(dec3)
             if self.output_upsample is not None:
                 out_event = self.output_upsample(out_event)
-            out_event = out_event[:, :, :nt, :nx]
+                out_event = out_event[:, :, : nt // 4, :nx]
+            else:
+                out_event = out_event[:, :, : nt // 16, :nx]
         else:
             out_event = None
 

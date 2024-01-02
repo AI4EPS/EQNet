@@ -288,8 +288,10 @@ def drop_channel(meta):
 class SeismicTraceIterableDataset(IterableDataset):
     degree2km = 111.32
     nt = 4096  ## 8992
-    feature_scale = 16
-    feature_nt = nt // feature_scale
+    event_feature_scale = 16
+    polarity_feature_scale = 4
+    event_feature_nt = nt // event_feature_scale
+    polarity_feature_nt = nt // polarity_feature_scale
 
     def __init__(
         self,
@@ -552,6 +554,8 @@ class SeismicTraceIterableDataset(IterableDataset):
             tmp_max = np.max(attrs["phase_index"][attrs["event_id"] == e]).item()
             duration.append([tmp_min, max(tmp_min + 3, tmp_max + 2 * (tmp_max - tmp_min))])
 
+            if e not in hdf5_fp:
+                continue
             if len(attrs["phase_index"][attrs["event_id"] == e]) <= 1:  # need both P and S
                 continue
             c0.append(np.mean(attrs["phase_index"][attrs["event_id"] == e]).item())
@@ -661,11 +665,11 @@ class SeismicTraceIterableDataset(IterableDataset):
             # waveform = normalize(waveform)
             phase_pick = meta["phase_pick"]
             phase_mask = meta["phase_mask"][np.newaxis, ::]
-            event_center = meta["event_center"][np.newaxis, :: self.feature_scale]
-            polarity = meta["polarity"][np.newaxis, ::]
-            polarity_mask = meta["polarity_mask"][np.newaxis, ::]
-            event_time = meta["event_time"][np.newaxis, :: self.feature_scale]
-            event_mask = meta["event_mask"][np.newaxis, :: self.feature_scale]
+            event_center = meta["event_center"][np.newaxis, :: self.event_feature_scale]
+            polarity = meta["polarity"][np.newaxis, :: self.polarity_feature_scale]
+            polarity_mask = meta["polarity_mask"][np.newaxis, :: self.polarity_feature_scale]
+            event_time = meta["event_time"][np.newaxis, :: self.event_feature_scale]
+            event_mask = meta["event_mask"][np.newaxis, :: self.event_feature_scale]
             station_location = meta["station_location"]
 
             yield {

@@ -58,8 +58,8 @@ file_mounts:
     source: gs://quakeflow_model
     mode: MOUNT
 
-  /dataset/waveform_ps:
-    source: gs://quakeflow_dataset/NC/waveform_ps
+  /dataset/waveform_ps_h5:
+    source: gs://quakeflow_dataset/NC/waveform_ps_h5
     mode: COPY
 
   /dataset/train.h5:

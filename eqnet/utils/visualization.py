@@ -195,9 +195,10 @@ def plot_phasenet_plus_train(
 ):
     nb, nc, nt, ns = meta["data"].shape
     dt = 0.01
-    scale = 16
-    nt_scaled = event_center.shape[2]
-    dt_scaled = dt * scale
+    nt_event = event_center.shape[2]
+    dt_event = dt * nt / nt_event
+    nt_polarity = polarity.shape[2]
+    dt_polarity = dt * nt / nt_polarity
 
     for i in range(meta["data"].shape[0]):
         plt.close("all")
@@ -236,6 +237,7 @@ def plot_phasenet_plus_train(
         axes[k].set_xticklabels([])
         axes[k].grid("on")
 
+        t = torch.arange(nt_polarity) * dt_polarity
         axes[k + 1].plot(t, polarity[i, 0, :, 0], "b")
         axes[k + 1].plot(t, meta["polarity"][i, 0, :, 0], "--C0")
         axes[k + 1].plot(t, meta["polarity_mask"][i, 0, :, 0], ":", color="gray")
@@ -244,7 +246,7 @@ def plot_phasenet_plus_train(
         axes[k + 1].set_xticklabels([])
         axes[k + 1].grid("on")
 
-        t = torch.arange(nt_scaled) * dt_scaled
+        t = torch.arange(nt_event) * dt_event
         axes[k + 2].plot(t, event_center[i, 0, :, 0], "b")
         axes[k + 2].plot(t, meta["event_center"][i, 0, :, 0], "--C0")
         axes[k + 2].plot(t, meta["event_mask"][i, 0, :, 0], ":", color="gray")
@@ -269,12 +271,9 @@ def plot_phasenet_plus_train(
 def plot_phasenet(
     meta,
     phase,
-    event=None,
-    polarity=None,
     picks=None,
     phases=None,
     dt=0.01,
-    event_dt_ratio=16,
     nt=6000 * 10,
     epoch=0,
     file_name=None,
@@ -338,31 +337,8 @@ def plot_phasenet(
                 axes[1].plot(t, phase[i, 1, ii : ii + nt, k] + k, "-C0", linewidth=1.0)
                 axes[1].plot(t, phase[i, 2, ii : ii + nt, k] + k, "-C1", linewidth=1.0)
 
-                mask = (phase[i, 1, ii : ii + nt, k] < 0.1) & (phase[i, 2, ii : ii + nt, k] < 0.1)
-                axes[1].plot(t, np.ma.masked_where(mask, polarity[i, 0, ii : ii + nt, k] + k), "--C2", linewidth=1.0)
-
-                # t_event = torch.arange(len(event[i, 0, ii//event_dt_ratio:(ii+nt)//event_dt_ratio, k])) * dt[i] * event_dt_ratio
-                # axes[1].plot(t_event, event[i, 0, ii//event_dt_ratio:(ii+nt)//event_dt_ratio, k] + k, "-C3", linewidth=1.)
-
             axes[0].grid("on")
             axes[1].grid("on")
-
-            # k = 2
-            # axes[k].plot(phase[i, 1, ii:ii+nt, 0], "b")
-            # axes[k].plot(phase[i, 2, ii:ii+nt, 0], "r")
-            # axes[k].set_ylim(-0.05, 1.05)
-            # axes[k].set_xticklabels([])
-            # axes[k].grid("on")
-
-            # axes[k+1].plot(polarity[i, 0, ii:ii+nt, 0], "b")
-            # axes[k+1].set_ylim(-1.05, 1.05)
-            # axes[k+1].set_xticklabels([])
-            # axes[k+1].grid("on")
-
-            # axes[k+2].plot(event[i, 0, ii//16:(ii+nt)//16, 0], "b")
-            # axes[k+2].set_ylim(-0.05, 1.05)
-            # axes[k+2].set_xticklabels([])
-            # axes[k+2].grid("on")
 
             fig.tight_layout()
 
@@ -372,6 +348,97 @@ def plot_phasenet(
                 dpi=300,
             )
             plt.close(fig)
+
+
+def plot_phasenet_plus(
+    meta,
+    phase,
+    polarity=None,
+    event_center=None,
+    event_time=None,
+    dt=0.01,
+    nt=6000 * 10,
+    file_name=None,
+    figure_dir="figures",
+    **kwargs,
+):
+    nb, nc, nt, ns = meta["data"].shape
+    dt = 0.01
+    nt_event = event_center.shape[2]
+    dt_event = dt * nt / nt_event
+    nt_polarity = polarity.shape[2]
+    dt_polarity = dt * nt / nt_polarity
+
+    if "begin_time" in meta:
+        begin_time = meta["begin_time"]
+    else:
+        begin_time = [0] * nb
+
+    for i in range(meta["data"].shape[0]):
+        plt.close("all")
+
+        chn_name = ["E", "N", "Z"]
+
+        if "raw_data" in meta:
+            shift = 3
+            fig, axes = plt.subplots(9, 1, figsize=(10, 10))
+            t = pd.date_range(pd.Timestamp(begin_time[i]), periods=nt, freq=pd.Timedelta(seconds=dt))
+            for j in range(3):
+                axes[j].plot(t, meta["raw_data"][i, j, :, 0], linewidth=0.5, color="k", label=f"{chn_name[j]}")
+                axes[j].set_xlim(t[0], t[-1])
+                axes[j].set_xticklabels([])
+                axes[j].grid("on")
+                axes[j + shift].legend(loc="upper right")
+        else:
+            fig, axes = plt.subplots(6, 1, figsize=(10, 10))
+            shift = 0
+
+        for j in range(3):
+            t = pd.date_range(pd.Timestamp(begin_time[i]), periods=nt, freq=pd.Timedelta(seconds=dt))
+            axes[j + shift].plot(t, meta["data"][i, j, :, 0], linewidth=0.5, color="k", label=f"{chn_name[j]}")
+            axes[j + shift].set_xlim(t[0], t[-1])
+            axes[j + shift].set_xticklabels([])
+            axes[j + shift].grid("on")
+            axes[j + shift].legend(loc="upper right")
+
+        k = 3 + shift
+        t = pd.date_range(pd.Timestamp(begin_time[i]), periods=nt, freq=pd.Timedelta(seconds=dt))
+        axes[k].plot(t, phase[i, 1, :, 0], "b", label="P-phase")
+        axes[k].plot(t, phase[i, 2, :, 0], "r", label="S-phase")
+        axes[k].set_xlim(t[0], t[-1])
+        axes[k].set_ylim(-0.05, 1.05)
+        axes[k].set_xticklabels([])
+        axes[k].grid("on")
+        axes[k].legend(loc="upper right")
+
+        t = pd.date_range(pd.Timestamp(begin_time[i]), periods=nt_polarity, freq=pd.Timedelta(seconds=dt_polarity))
+        axes[k + 1].plot(t, polarity[i, 0, :, 0], "b", label="polarity")
+        axes[k + 1].set_xlim(t[0], t[-1])
+        axes[k + 1].set_ylim(-1.05, 1.05)
+        axes[k + 1].set_xticklabels([])
+        axes[k + 1].grid("on")
+        axes[k + 1].legend(loc="upper right")
+
+        t = pd.date_range(pd.Timestamp(begin_time[i]), periods=nt_event, freq=pd.Timedelta(seconds=dt_event))
+        axes[k + 2].plot(t, event_center[i, 0, :, 0], "b", label="event")
+        axes[k + 2].set_xlim(t[0], t[-1])
+        axes[k + 2].set_ylim(-0.05, 1.05)
+        axes[k + 2].grid("on")
+        axes[k + 2].legend(loc="upper right")
+        axes[k + 2].set_xlabel("Time (s)")
+
+        axes2 = axes[k + 2].twinx()
+        axes2.plot(t, event_time[i, 0, :, 0], "--C1")
+        axes2.set_ylabel("Time (s)")
+
+        fig.tight_layout()
+
+        fig.savefig(
+            os.path.join(figure_dir, file_name[i].replace("/", "_") + ".png"),
+            bbox_inches="tight",
+            dpi=300,
+        )
+        plt.close(fig)
 
 
 def plot_eqnet_train(meta, phase, event, epoch, figure_dir="figures"):
