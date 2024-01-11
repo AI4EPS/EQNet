@@ -113,7 +113,11 @@ def pred_phasenet(args, model, data_loader, pick_path, figure_path):
 
 def pred_phasenet_plus(args, model, data_loader, pick_path, event_path, figure_path):
     model.eval()
-    ctx = nullcontext() if args.device == "cpu" else torch.amp.autocast(device_type=args.device, dtype=args.ptdtype)
+    ctx = (
+        nullcontext()
+        if args.device in ["cpu", "mps"]
+        else torch.amp.autocast(device_type=args.device, dtype=args.ptdtype)
+    )
     with torch.inference_mode():
         for meta in tqdm(data_loader, desc="Predicting", total=len(data_loader)):
             with ctx:

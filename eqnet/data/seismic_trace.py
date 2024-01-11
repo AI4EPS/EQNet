@@ -693,7 +693,11 @@ class SeismicTraceIterableDataset(IterableDataset):
 
     def read_mseed(self, fname, response_xml=None, highpass_filter=False, sampling_rate=100):
         try:
-            stream = obspy.read(fname)
+            stream = obspy.Stream()
+            for tmp in fname.split(","):
+                with fsspec.open(tmp, "rb") as fs:
+                    stream += obspy.read(fs, format="MSEED")
+                # stream += obspy.read(tmp)
             stream = stream.merge(fill_value="latest")
             if response_xml is not None:
                 response = obspy.read_inventory(response_xml)
