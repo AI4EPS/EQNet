@@ -66,15 +66,19 @@ def cross_entropy_loss(inputs, targets):
 
 
 
-def focal_loss(out, target):
+def focal_loss(out, target, mask=None):
     '''
     Arguments:
       out, target: B x Time x Station
+      mask: B x Time x Station
     '''
     out = out.float()
     out = torch.clamp(torch.sigmoid(out), min=1e-4, max=1-1e-4)
     pos_inds = target.eq(1).float()
     neg_inds = target.lt(1).float()
+    if mask is not None:
+        pos_inds = pos_inds * mask
+        neg_inds = neg_inds * mask
     
     neg_weights = torch.pow(1 - target, 4)
     pos_loss = torch.log(out) * torch.pow(1 - out, 2) * pos_inds
@@ -187,6 +191,45 @@ def vector_l1_reg_loss(output, target, mask, type="sl1"):
     elif type == "sl1":
         regr_loss = F.smooth_l1_loss(pred, ground_truth, reduction='none')
     regr_loss = regr_loss.sum(dim=0).sum(dim=-1).sum(dim=-1) / (num + 1e-4)
+    
+    return regr_loss
+
+def modulus_l1_reg_loss(output, target, mask, type="sl1"):
+    '''
+    return the modulus of channel-wise loss vector 
+    '''
+    output = output.float()
+    num = mask.float().sum()
+    mask = mask.unsqueeze(1).float()
+    pred = output * mask
+    ground_truth = target * mask
+    
+    if type == "l1":
+        regr_loss = F.l1_loss(pred, ground_truth, reduction='none')
+    elif type == "sl1":
+        regr_loss = F.smooth_l1_loss(pred, ground_truth, reduction='none')
+    #regr_loss = F.mse_loss(pred, ground_truth, reduction='none')
+    #regr_loss = torch.sqrt(regr_loss.sum(dim=1)).sum()/ (num + 1e-4)
+    
+    #regr_loss = torch.sqrt((regr_loss ** 2).sum(dim=1)).sum()/ (num + 1e-4) # TODO: NaN
+    regr_loss = regr_loss.sum(dim=0).sum(dim=-1).sum(dim=-1) / (num + 1e-4)
+    regr_loss = torch.sqrt((regr_loss ** 2).sum())
+    
+    return regr_loss
+
+def balanced_l1_reg_loss(output, target, mask, center, scale=1.0, type="sl1"):
+    output = output.float()
+    num = mask.float().sum()
+    mask = mask.unsqueeze(1).float()
+    pred = output * mask
+    ground_truth = target * mask
+    
+    if type == "l1":
+        regr_loss = F.l1_loss(pred, ground_truth, reduction='none')
+    elif type == "sl1":
+        regr_loss = F.smooth_l1_loss(pred, ground_truth, reduction='none')
+        
+    regr_loss = (regr_loss * (torch.abs(ground_truth - center)*scale + 1)).sum() / (num + 1e-4)
     
     return regr_loss
 
