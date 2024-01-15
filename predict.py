@@ -1,8 +1,10 @@
 import logging
 import os
-from glob import glob
+import time
 from contextlib import nullcontext
+from glob import glob
 
+import eqnet
 import matplotlib
 import pandas as pd
 import torch
@@ -19,11 +21,13 @@ from eqnet.models.unet import moving_normalize
 from eqnet.utils import (
     detect_peaks,
     extract_picks,
+    merge_csvs,
     merge_patch,
     plot_das,
     plot_phasenet,
     plot_eqnet,
 )
+from tqdm import tqdm
 
 # mp.set_start_method("spawn", force=True)
 matplotlib.use("agg")
@@ -51,7 +55,8 @@ def pred_phasenet(args, model, data_loader, pick_path, figure_path, event_path=N
     # ctx = nullcontext() if args.device == "cpu" else torch.cuda.amp.autocast(enabled=args.amp)
     ctx = nullcontext() if args.device == "cpu" else torch.amp.autocast(device_type=args.device, dtype=args.ptdtype)
     with torch.inference_mode():
-        for meta in metric_logger.log_every(data_loader, 1, header):
+        # for meta in metric_logger.log_every(data_loader, 1, header):
+        for meta in tqdm(data_loader, desc="Predicting", total=len(data_loader)):
             with ctx:
                 output = model(meta)
                 meta, output = postprocess(meta, output)
@@ -73,7 +78,7 @@ def pred_phasenet(args, model, data_loader, pick_path, figure_path, event_path=N
                     vmin=args.min_prob,
                     phases=args.phases,
                     polarity_score=polarity_scores,
-                    waveform=meta["waveform"],
+                    waveform=meta["data"],
                     window_amp=[10, 5],  # s
                 )
 
@@ -94,25 +99,38 @@ def pred_phasenet(args, model, data_loader, pick_path, figure_path, event_path=N
                 )
 
             for i in range(len(meta["file_name"])):
-                filename = meta["file_name"][i].split("//")[-1].replace("/", "_")
+                # filename = meta["file_name"][i].split("//")[-1].replace("/", "_")
+                # filename = meta["file_name"][i].split("/")[-1].replace("*", "")
+                ## filename convention year/jday/station_id
+                tmp = meta["file_name"][i].split("/")
+                parent_dir = "/".join(tmp[-args.folder_depth : -1])
+                filename = tmp[-1].replace("*", "").replace("?", "").replace(".mseed", "")
 
+                if not os.path.exists(os.path.join(pick_path, parent_dir)):
+                    os.makedirs(os.path.join(pick_path, parent_dir), exist_ok=True)
                 if len(phase_picks_[i]) == 0:
                     ## keep an empty file for the file with no picks to make it easier to track processed files
-                    with open(os.path.join(pick_path, filename + ".csv"), "a"):
+                    with open(os.path.join(pick_path, parent_dir, filename + ".csv"), "a"):
                         pass
                     continue
                 picks_df = pd.DataFrame(phase_picks_[i])
+                # picks_df["phase_time"] = picks_df["phase_time"].apply(lambda x: x.isoformat(timespec="milliseconds"))
                 picks_df.sort_values(by=["phase_time"], inplace=True)
-                picks_df.to_csv(os.path.join(pick_path, filename + ".csv"), index=False)
+                picks_df.to_csv(os.path.join(pick_path, parent_dir, filename + ".csv"), index=False)
 
                 if "event" in output:
+                    if not os.path.exists(os.path.join(event_path, parent_dir)):
+                        os.makedirs(os.path.join(event_path, parent_dir), exist_ok=True)
                     if len(event_picks_[i]) == 0:
-                        with open(os.path.join(event_path, filename + ".csv"), "a"):
+                        with open(os.path.join(event_path, parent_dir, filename + ".csv"), "a"):
                             pass
                         continue
                     picks_df = pd.DataFrame(event_picks_[i])
+                    # picks_df["phase_time"] = picks_df["phase_time"].apply(
+                    #     lambda x: x.isoformat(timespec="milliseconds")
+                    # )
                     picks_df.sort_values(by=["phase_time"], inplace=True)
-                    picks_df.to_csv(os.path.join(event_path, filename + ".csv"), index=False)
+                    picks_df.to_csv(os.path.join(event_path, parent_dir, filename + ".csv"), index=False)
 
             if args.plot_figure:
                 # meta["waveform_raw"] = meta["waveform"].clone()
@@ -134,11 +152,11 @@ def pred_phasenet(args, model, data_loader, pick_path, figure_path, event_path=N
     if args.distributed:
         torch.distributed.barrier()
         if utils.is_main_process():
-            merge_patch(pick_path, pick_path.replace("_patch", ""))
-            merge_patch(event_path, event_path.replace("_patch", ""))
+            merge_csvs(pick_path)
+            merge_csvs(event_path)
     else:
-        merge_patch(pick_path, pick_path.replace("_patch", ""))
-        merge_patch(event_path, event_path.replace("_patch", ""))
+        merge_csvs(pick_path)
+        merge_csvs(event_path)
     return 0
 
 
@@ -149,7 +167,8 @@ def pred_phasenet_das(args, model, data_loader, pick_path, figure_path):
     # ctx = nullcontext() if args.device == "cpu" else torch.cuda.amp.autocast(enabled=args.amp)
     ctx = nullcontext() if args.device == "cpu" else torch.amp.autocast(device_type=args.device, dtype=args.ptdtype)
     with torch.inference_mode():
-        for meta in metric_logger.log_every(data_loader, 1, header):
+        # for meta in metric_logger.log_every(data_loader, 1, header):
+        for meta in tqdm(data_loader, desc="Predicting", total=len(data_loader)):
             with ctx:
                 output = model(meta)
 
@@ -170,27 +189,30 @@ def pred_phasenet_das(args, model, data_loader, pick_path, figure_path):
             )
 
             for i in range(len(meta["file_name"])):
+                tmp = meta["file_name"][i].split("/")
+                parent_dir = "/".join(tmp[-args.folder_depth : -1])
+                filename = tmp[-1].replace("*", "").replace(f".{args.format}", "")
+                if not os.path.exists(os.path.join(pick_path, parent_dir)):
+                    os.makedirs(os.path.join(pick_path, parent_dir), exist_ok=True)
+
                 if len(picks_[i]) == 0:
                     ## keep an empty file for the file with no picks to make it easier to track processed files
-                    with open(os.path.join(pick_path, meta["file_name"][i] + ".csv"), "a"):
+                    with open(os.path.join(pick_path, parent_dir, filename + ".csv"), "a"):
                         pass
                     continue
                 picks_df = pd.DataFrame(picks_[i])
                 picks_df["channel_index"] = picks_df["station_id"].apply(lambda x: int(x))
                 picks_df.sort_values(by=["channel_index", "phase_index"], inplace=True)
                 picks_df.to_csv(
-                    os.path.join(pick_path, meta["file_name"][i] + ".csv"),
+                    os.path.join(pick_path, parent_dir, filename + ".csv"),
                     columns=["channel_index", "phase_index", "phase_time", "phase_score", "phase_type"],
                     index=False,
                 )
 
-            # if len(picks_[0]) < 1000:
-            #     continue
-
             if args.plot_figure:
                 plot_das(
-                    meta["data"].cpu(),
-                    scores.cpu(),
+                    meta["data"].cpu().float(),
+                    scores.cpu().float(),
                     picks=picks_,
                     phases=args.phases,
                     file_name=meta["file_name"],
@@ -204,10 +226,10 @@ def pred_phasenet_das(args, model, data_loader, pick_path, figure_path):
     if args.distributed:
         torch.distributed.barrier()
         if args.cut_patch and utils.is_main_process():
-            merge_patch(pick_path, return_single_file=False)
+            merge_patch(pick_path, pick_path.rstrip("_patch"), return_single_file=False)
     else:
         if args.cut_patch:
-            merge_patch(pick_path, return_single_file=False)
+            merge_patch(pick_path, pick_path.rstrip("_patch"), return_single_file=False)
 
     return 0
 
@@ -398,7 +420,13 @@ def main(args):
         rank = utils.get_rank()
         world_size = utils.get_world_size()
     else:
-        rank, world_size = 0, 1
+        if "RANK" in os.environ and "WORLD_SIZE" in os.environ:
+            rank = int(os.environ["RANK"])
+            world_size = int(os.environ["WORLD_SIZE"])
+        else:
+            rank = 0
+            world_size = 1
+
     device = torch.device(args.device)
     dtype = "bfloat16" if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else "float16"
     #TODO: check if bfloat16 decreases the accuracy
@@ -426,6 +454,8 @@ def main(args):
             highpass_filter=args.highpass_filter,
             response_xml=args.response_xml,
             cut_patch=args.cut_patch,
+            resample_time=args.resample_time,
+            system=args.system,
             nx=args.nx,
             nt=args.nt,
             rank=rank,
@@ -443,6 +473,11 @@ def main(args):
             system=args.system,
             cut_patch=args.cut_patch,
             highpass_filter=args.highpass_filter,
+            resample_time=args.resample_time,
+            resample_space=args.resample_space,
+            skip_existing=args.skip_existing,
+            pick_path=pick_path,
+            folder_depth=args.folder_depth,
             rank=rank,
             world_size=world_size,
         )
@@ -481,7 +516,6 @@ def main(args):
         sampler=sampler,
         num_workers=min(args.workers, mp.cpu_count()),
         collate_fn=None,
-        prefetch_factor=2,
         drop_last=False,
     )
 
@@ -512,7 +546,9 @@ def main(args):
             model_url = "https://github.com/AI4EPS/models/releases/download/PhaseNet-Polarity-v3/model_99.pth"
         elif args.model == "phasenet_das":
             if args.location is None:
-                model_url = "ai4eps/model-registry/PhaseNet-DAS:latest"
+                # model_url = "ai4eps/model-registry/PhaseNet-DAS:latest"
+                # model_url = "https://github.com/AI4EPS/models/releases/download/PhaseNet-DAS-v0/PhaseNet-DAS-v0.pth"
+                model_url = "https://github.com/AI4EPS/models/releases/download/PhaseNet-DAS-v1/PhaseNet-DAS-v1.pth"
             elif args.location == "forge":
                 model_url = (
                     "https://github.com/AI4EPS/models/releases/download/PhaseNet-DAS-ConvertedPhase/model_99.pth"
@@ -525,12 +561,12 @@ def main(args):
             raise
 
         ## load model from wandb
-        if utils.is_main_process():
-            with wandb.init() as run:
-                artifact = run.use_artifact(model_url, type="model")
-                artifact_dir = artifact.download()
-            checkpoint = torch.load(glob(os.path.join(artifact_dir, "*.pth"))[0], map_location="cpu")
-            model.load_state_dict(checkpoint["model"], strict=True)
+        # if utils.is_main_process():
+        #     with wandb.init() as run:
+        #         artifact = run.use_artifact(model_url, type="model")
+        #         artifact_dir = artifact.download()
+        #     checkpoint = torch.load(glob(os.path.join(artifact_dir, "*.pth"))[0], map_location="cpu")
+        #     model.load_state_dict(checkpoint["model"], strict=True)
 
     model_without_ddp = model
     if args.distributed:
@@ -538,10 +574,10 @@ def main(args):
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
         model_without_ddp = model.module
     ## load model from url
-    # state_dict = torch.hub.load_state_dict_from_url(
-    #     model_url, model_dir="./", progress=True, check_hash=True, map_location="cpu"
-    # )
-    # model_without_ddp.load_state_dict(state_dict["model"], strict=True)
+    state_dict = torch.hub.load_state_dict_from_url(
+        model_url, model_dir="./", progress=True, check_hash=True, map_location="cpu"
+    )
+    model_without_ddp.load_state_dict(state_dict["model"], strict=True)
 
     if args.model == "phasenet":
         pred_phasenet(args, model, data_loader, pick_path, figure_path, event_path)
@@ -580,6 +616,9 @@ def get_args_parser(add_help=True):
     )
     
     # Mixed precision training parameters
+    parser.add_argument(
+        "--use_deterministic_algorithms", action="store_true", help="Forces the use of deterministic algorithms only."
+    )
     parser.add_argument("--amp", action="store_true", help="Use torch.cuda.amp for mixed precision training")
 
     # distributed training parameters
@@ -607,16 +646,19 @@ def get_args_parser(add_help=True):
     parser.add_argument("--add_event", action="store_true", help="If use event information")
     parser.add_argument("--highpass_filter", type=float, default=0.0, help="highpass filter; default 0.0 is no filter")
     parser.add_argument("--response_xml", default=None, type=str, help="response xml file")
+    parser.add_argument("--folder_depth", default=0, type=int, help="folder depth for data list")
 
     ## DAS
-
     parser.add_argument("--cut_patch", action="store_true", help="If cut patch for continuous data")
-    parser.add_argument("--nt", default=1024 * 30, type=int, help="number of time samples for each patch")
-    parser.add_argument("--nx", default=1024 * 3, type=int, help="number of spatial samples for each patch")
+    parser.add_argument("--nt", default=1024 * 20, type=int, help="number of time samples for each patch")
+    parser.add_argument("--nx", default=1024 * 5, type=int, help="number of spatial samples for each patch")
+    parser.add_argument("--resample_time", action="store_true", help="If resample time for continuous data")
+    parser.add_argument("--resample_space", action="store_true", help="If resample space for continuous data")
     parser.add_argument(
         "--system", type=str, default=None, help="The name of system of different system: optasense, eqnet, or None"
     )
     parser.add_argument("--location", type=str, default=None, help="The name of systems at location")
+    parser.add_argument("--skip_existing", action="store_true", help="Skip existing files")
 
     return parser
 

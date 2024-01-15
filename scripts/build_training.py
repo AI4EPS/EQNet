@@ -20,7 +20,9 @@ bucket = "quakeflow_das"
 figure_path = Path("debug_figures")
 figure_path.mkdir(exist_ok=True)
 plot_figure = False
-label_path = Path("results/training_v1")
+# label_path = Path("results/training_v0")
+# label_path = Path("results/training_v1")
+label_path = Path("results/training_v2")
 if label_path.exists():
     print(f"Warning: {label_path} exist!")
     raise FileExistsError
@@ -28,7 +30,9 @@ else:
     label_path.mkdir(parents=True)
 fs = fsspec.filesystem(protocol.replace("://", ""))
 folders = ["mammoth_north", "mammoth_south", "ridgecrest_north", "ridgecrest_south"]
-picker = "phasenet_das"
+# picker = "phasenet"
+# picker = "phasenet_das"
+picker = "phasenet_das_v1"
 
 
 # %%

@@ -1,4 +1,5 @@
 import os
+import random
 from datetime import datetime, timedelta
 
 import matplotlib.pyplot as plt
@@ -6,7 +7,6 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
-import random
 
 
 def normalize(x):
@@ -18,7 +18,7 @@ def normalize(x):
     return x
 
 
-def visualize_autoencoder_das_train(meta, preds, epoch, figure_dir="figures"):
+def plot_autoencoder_das_train(meta, preds, epoch, figure_dir="figures"):
     meta_data = meta["data"]
     raw_data = meta_data.clone().permute(0, 2, 3, 1).numpy()
     # data = normalize_local(meta_data.clone()).permute(0, 2, 3, 1).numpy()
@@ -61,7 +61,7 @@ def visualize_autoencoder_das_train(meta, preds, epoch, figure_dir="figures"):
         plt.close(fig)
 
 
-def visualize_das_train(meta, preds, epoch, figure_dir="figures", dt=0.01, dx=10, prefix=""):
+def plot_das_train(meta, preds, epoch, figure_dir="figures", dt=0.01, dx=10, prefix=""):
     meta_data = meta["data"].cpu()
     raw_data = meta_data.clone().permute(0, 2, 3, 1).numpy()
     # data = normalize_local(meta_data.clone()).permute(0, 2, 3, 1).numpy()
@@ -148,31 +148,29 @@ def visualize_das_train(meta, preds, epoch, figure_dir="figures", dt=0.01, dx=10
         plt.close(fig)
 
 
-def visualize_phasenet_train(meta, phase, event, polarity=None, epoch=0, figure_dir="figures"):
-    for i in range(meta["waveform"].shape[0]):
+def plot_phasenet_train(meta, phase, epoch=0, figure_dir="figures", prefix=""):
+    for i in range(meta["data"].shape[0]):
         plt.close("all")
-        fig, axes = plt.subplots(9, 1, figsize=(10, 10))
+
         chn_name = ["E", "N", "Z"]
-        # chn_id = list(range(meta["waveform_raw"].shape[1]))
-        # random.shuffle(chn_id)
-        # for j in chn_id:
-        #     if torch.max(torch.abs(meta["waveform_raw"][i, j, :, 0])) > 0.1:
-        #         axes[0].plot(meta["waveform_raw"][i, j, :, 0], linewidth=0.5, color=f"C{j}", label=f"{chn_name[j]}")
-        #         axes[0].legend(loc="upper right")
-        #         axes[1].plot(meta["waveform"][i, j, :, 0], linewidth=0.5, color=f"C{j}", label=f"{chn_name[j]}")
-        #         axes[1].legend(loc="upper right")
-        #         break
+
+        if "raw_data" in meta:
+            shift = 3
+            fig, axes = plt.subplots(7, 1, figsize=(10, 10))
+            for j in range(3):
+                axes[j].plot(meta["raw_data"][i, j, :, 0], linewidth=0.5, color="k", label=f"{chn_name[j]}")
+                axes[j].set_xticklabels([])
+                axes[j].grid("on")
+        else:
+            fig, axes = plt.subplots(4, 1, figsize=(10, 10))
+            shift = 0
 
         for j in range(3):
-            axes[j].plot(meta["waveform_raw"][i, j, :, 0], linewidth=0.5, color="k", label=f"{chn_name[j]}")
-            axes[j].set_xticklabels([])
-            axes[j].grid("on")
-        for j in range(3):
-            axes[j + 3].plot(meta["waveform"][i, j, :, 0], linewidth=0.5, color="k", label=f"{chn_name[j]}")
-            axes[j + 3].set_xticklabels([])
-            axes[j + 3].grid("on")
+            axes[j + shift].plot(meta["data"][i, j, :, 0], linewidth=0.5, color="k", label=f"{chn_name[j]}")
+            axes[j + shift].set_xticklabels([])
+            axes[j + shift].grid("on")
 
-        k = 6
+        k = 3 + shift
         axes[k].plot(phase[i, 1, :, 0], "b")
         axes[k].plot(phase[i, 2, :, 0], "r")
         axes[k].plot(meta["phase_pick"][i, 1, :, 0], "--C0")
@@ -182,25 +180,87 @@ def visualize_phasenet_train(meta, phase, event, polarity=None, epoch=0, figure_
         axes[k].set_xticklabels([])
         axes[k].grid("on")
 
-        axes[k + 1].plot(polarity[i, 0, :, 0], "b")
-        axes[k + 1].plot(meta["polarity"][i, 0, :, 0], "--C0")
-        axes[k + 1].plot(meta["polarity_mask"][i, 0, :, 0], ":", color="gray")
+        if "RANK" in os.environ:
+            rank = int(os.environ["RANK"])
+            fig.savefig(f"{figure_dir}/{prefix}{epoch:02d}_{rank:02d}_{i:02d}.png", dpi=300)
+        else:
+            fig.savefig(f"{figure_dir}/{prefix}{epoch:02d}_{i:02d}.png", dpi=300)
+
+        if i >= 20:
+            break
+
+
+def plot_phasenet_plus_train(
+    meta, phase, polarity=None, event_center=None, event_time=None, epoch=0, figure_dir="figures", prefix=""
+):
+    nb, nc, nt, ns = meta["data"].shape
+    dt = 0.01
+    scale = 16
+    nt_scaled = event_center.shape[2]
+    dt_scaled = dt * scale
+
+    for i in range(meta["data"].shape[0]):
+        plt.close("all")
+
+        chn_name = ["E", "N", "Z"]
+
+        if "raw_data" in meta:
+            shift = 3
+            fig, axes = plt.subplots(9, 1, figsize=(10, 10))
+            t = torch.arange(nt) * dt
+            for j in range(3):
+                axes[j].plot(t, meta["raw_data"][i, j, :, 0], linewidth=0.5, color="k", label=f"{chn_name[j]}")
+                axes[j].set_xlim(t[0], t[-1])
+                axes[j].set_xticklabels([])
+                axes[j].grid("on")
+        else:
+            fig, axes = plt.subplots(6, 1, figsize=(10, 10))
+            shift = 0
+
+        for j in range(3):
+            t = torch.arange(nt) * dt
+            axes[j + shift].plot(t, meta["data"][i, j, :, 0], linewidth=0.5, color="k", label=f"{chn_name[j]}")
+            axes[j + shift].set_xlim(t[0], t[-1])
+            axes[j + shift].set_xticklabels([])
+            axes[j + shift].grid("on")
+
+        k = 3 + shift
+        t = torch.arange(nt) * dt
+        axes[k].plot(t, phase[i, 1, :, 0], "b")
+        axes[k].plot(t, phase[i, 2, :, 0], "r")
+        axes[k].plot(t, meta["phase_pick"][i, 1, :, 0], "--C0")
+        axes[k].plot(t, meta["phase_pick"][i, 2, :, 0], "--C3")
+        axes[k].plot(t, meta["phase_mask"][i, 0, :, 0], ":", color="gray")
+        axes[k].set_xlim(t[0], t[-1])
+        axes[k].set_ylim(-0.05, 1.05)
+        axes[k].set_xticklabels([])
+        axes[k].grid("on")
+
+        axes[k + 1].plot(t, polarity[i, 0, :, 0], "b")
+        axes[k + 1].plot(t, meta["polarity"][i, 0, :, 0], "--C0")
+        axes[k + 1].plot(t, meta["polarity_mask"][i, 0, :, 0], ":", color="gray")
+        axes[k + 1].set_xlim(t[0], t[-1])
         axes[k + 1].set_ylim(-0.05, 1.05)
         axes[k + 1].set_xticklabels([])
         axes[k + 1].grid("on")
 
-        axes[k + 2].plot(event[i, 0, :, 0], "b")
-        axes[k + 2].plot(meta["event_center"][i, 0, :, 0], "--C0")
-        axes[k + 2].plot(meta["event_mask"][i, 0, :, 0], ":", color="gray")
+        t = torch.arange(nt_scaled) * dt_scaled
+        axes[k + 2].plot(t, event_center[i, 0, :, 0], "b")
+        axes[k + 2].plot(t, meta["event_center"][i, 0, :, 0], "--C0")
+        axes[k + 2].plot(t, meta["event_mask"][i, 0, :, 0], ":", color="gray")
+        axes[k + 2].set_xlim(t[0], t[-1])
         axes[k + 2].set_ylim(-0.05, 1.05)
-        # axes[k+2].set_xticklabels([])
         axes[k + 2].grid("on")
+
+        axes2 = axes[k + 2].twinx()
+        axes2.plot(t, event_time[i, 0, :, 0], "--C1")
+        axes2.plot(t, meta["event_time"][i, 0, :, 0], ":C3")
 
         if "RANK" in os.environ:
             rank = int(os.environ["RANK"])
-            fig.savefig(f"{figure_dir}/{epoch:02d}_{rank:02d}_{i:02d}.png", dpi=300)
+            fig.savefig(f"{figure_dir}/{prefix}{epoch:02d}_{rank:02d}_{i:02d}.png", dpi=300)
         else:
-            fig.savefig(f"{figure_dir}/{epoch:02d}_{i:02d}.png", dpi=300)
+            fig.savefig(f"{figure_dir}/{prefix}{epoch:02d}_{i:02d}.png", dpi=300)
 
         if i >= 20:
             break
@@ -228,7 +288,7 @@ def plot_phasenet(
     # waveform = normalize(meta["waveform"])
     # waveform = meta["waveform"] / 3.0
 
-    waveform = meta["waveform"]
+    waveform = meta["data"]
     # waveform = normalize(waveform)
     # vmax = torch.std(waveform) * 3
     # vmin = -vmax
@@ -306,18 +366,15 @@ def plot_phasenet(
 
             fig.tight_layout()
 
-            if not os.path.exists(figure_dir):
-                os.makedirs(figure_dir)
             fig.savefig(
                 os.path.join(figure_dir, file_name[i].replace("/", "_") + f"_{ii:06d}.png"),
                 bbox_inches="tight",
                 dpi=300,
             )
-
             plt.close(fig)
 
 
-def visualize_eqnet_train(meta, phase, event, epoch, figure_dir="figures", prefix="", offset=None, hypocenter=None):
+def plot_eqnet_train(meta, phase, event, epoch, figure_dir="figures", prefix="", offset=None, hypocenter=None):
     degree2km = 111.19
     data = normalize(meta["data"])
     flag=True if (offset is not None) and (hypocenter is not None) else False
