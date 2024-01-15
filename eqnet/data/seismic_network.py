@@ -478,18 +478,32 @@ class SeismicNetworkIterableDataset(IterableDataset):
             
     def read_hdf5(self, event_id):
         if self.hdf5_fp is None:
-            raise ("HDF5 file is not opened")
+            raise ValueError("hdf5_fp is not opened")
         else:
             hdf5_fp = self.hdf5_fp
             event = hdf5_fp[event_id]
             station_ids = list(event.keys())
             event_attrs = event.attrs
+
+            # for sta_id in station_ids:
+            #     attrs = event[sta_id].attrs
+            #     for e_id in sorted(np.unique(event[sta_id].attrs["event_id"])):
+            #         if len(np.unique(attrs["phase_type"][attrs["event_id"]==e_id])) < 2:
+            #             continue
+            #         
+            #         p_picks = attrs["phase_index"][np.logical_and(attrs["phase_type"] == "P", attrs["event_id"] == e_id)]
+            #         s_picks = attrs["phase_index"][np.logical_and(attrs["phase_type"] == "S", attrs["event_id"] == e_id)]
+            #         assert len(p_picks)==len(s_picks), f"{event_id}/{sta_id} manual P&S picks num don't match"
+            #         if np.any(p_picks+5>=s_picks):
+            #             print(f"\n{event_id} when {sta_id} during {e_id} p pick arrives after s pick")
+            #             return None
+            
             begin_time = event_attrs["begin_time"]
             dt_s = event[station_ids[0]].attrs["dt_s"]
             # data shape
             nt = event[station_ids[0]].shape[1]
             nt_feature = 32
-            b, a = butter(10, 0.1, btype="highpass", analog=False)
+            b, a = butter(4, 0.1, btype="highpass", analog=False)
             waveforms = np.zeros([3, nt+((nt_feature-(nt%nt_feature))%nt_feature), len(station_ids)], dtype="float32")
             amplitude = np.zeros_like(waveforms)
             station_location = np.zeros([len(station_ids), 3])
@@ -501,11 +515,11 @@ class SeismicNetworkIterableDataset(IterableDataset):
                 if attrs["unit"][-6:] == "m/s**2":
                     # integrate acceleration to velocity
                     amplitude[:, :, i] = np.cumsum(amplitude[:, :, i]*attrs["dt_s"], axis=1)
-                elif attrs["unit"][-3:] == "m/s": #TODO: temp
-                    amplitude[:, :, i] = amplitude[:, :, i] * 10e4
-                for j in range(3): 
-                    spline_i = LSQUnivariateSpline(np.arange(amplitude.shape[1]), amplitude[j, :, i], t=np.arange(amplitude.shape[1], step=amplitude.shape[1]/2048)[1:], k=3)
-                    amplitude[j, :, i] -= spline_i(np.arange(amplitude.shape[1]))
+                # elif attrs["unit"][-3:] == "m/s": #TODO: temp
+                #     amplitude[:, :, i] = amplitude[:, :, i] * 10e4
+                # for j in range(3): 
+                #     spline_i = LSQUnivariateSpline(np.arange(amplitude.shape[1]), amplitude[j, :, i], t=np.arange(amplitude.shape[1], step=amplitude.shape[1]/2048)[1:], k=3)
+                #     amplitude[j, :, i] -= spline_i(np.arange(amplitude.shape[1]))
                 amplitude[:, :, i] = filtfilt(b, a, amplitude[:, :, i], axis=1)
 
                 ## station location
