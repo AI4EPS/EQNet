@@ -288,8 +288,10 @@ def drop_channel(meta):
 class SeismicTraceIterableDataset(IterableDataset):
     degree2km = 111.32
     nt = 4096  ## 8992
-    feature_scale = 16
-    feature_nt = nt // feature_scale
+    event_feature_scale = 16
+    polarity_feature_scale = 4
+    event_feature_nt = nt // event_feature_scale
+    polarity_feature_nt = nt // polarity_feature_scale
 
     def __init__(
         self,
@@ -312,6 +314,7 @@ class SeismicTraceIterableDataset(IterableDataset):
         resample_time=False,
         ## for prediction
         sampling_rate=100,
+        response_path=None,
         response_xml=None,
         highpass_filter=False,
         rank=0,
@@ -354,6 +357,7 @@ class SeismicTraceIterableDataset(IterableDataset):
         self.data_path = data_path
         self.hdf5_file = hdf5_file
         self.phases = phases
+        self.response_path = response_path
         self.response_xml = response_xml
         self.sampling_rate = sampling_rate
         self.highpass_filter = highpass_filter
@@ -552,6 +556,8 @@ class SeismicTraceIterableDataset(IterableDataset):
             tmp_max = np.max(attrs["phase_index"][attrs["event_id"] == e]).item()
             duration.append([tmp_min, max(tmp_min + 3, tmp_max + 2 * (tmp_max - tmp_min))])
 
+            if e not in hdf5_fp:
+                continue
             if len(attrs["phase_index"][attrs["event_id"] == e]) <= 1:  # need both P and S
                 continue
             c0.append(np.mean(attrs["phase_index"][attrs["event_id"] == e]).item())
@@ -661,11 +667,11 @@ class SeismicTraceIterableDataset(IterableDataset):
             # waveform = normalize(waveform)
             phase_pick = meta["phase_pick"]
             phase_mask = meta["phase_mask"][np.newaxis, ::]
-            event_center = meta["event_center"][np.newaxis, :: self.feature_scale]
-            polarity = meta["polarity"][np.newaxis, ::]
-            polarity_mask = meta["polarity_mask"][np.newaxis, ::]
-            event_time = meta["event_time"][np.newaxis, :: self.feature_scale]
-            event_mask = meta["event_mask"][np.newaxis, :: self.feature_scale]
+            event_center = meta["event_center"][np.newaxis, :: self.event_feature_scale]
+            polarity = meta["polarity"][np.newaxis, :: self.polarity_feature_scale]
+            polarity_mask = meta["polarity_mask"][np.newaxis, :: self.polarity_feature_scale]
+            event_time = meta["event_time"][np.newaxis, :: self.event_feature_scale]
+            event_mask = meta["event_mask"][np.newaxis, :: self.event_feature_scale]
             station_location = meta["station_location"]
 
             yield {
@@ -687,11 +693,19 @@ class SeismicTraceIterableDataset(IterableDataset):
             tr.taper(max_percentage=0.05, type="cosine")
         return stream
 
-    def read_mseed(self, fname, response_xml=None, highpass_filter=False, sampling_rate=100):
+    def read_mseed(self, fname, response_path=None, response_xml=None, highpass_filter=False, sampling_rate=100):
         try:
-            stream = obspy.read(fname)
+            stream = obspy.Stream()
+            for tmp in fname.split(","):
+                with fsspec.open(tmp, "rb") as fs:
+                    meta = obspy.read(fs, format="MSEED")
+                    if response_path is not None:
+                        inv = obspy.read_inventory(os.path.join(response_path, meta[0].id[:-1]) + ".xml")
+                        meta = meta.remove_sensitivity(inv)
+                    stream += meta
+                # stream += obspy.read(tmp)
             stream = stream.merge(fill_value="latest")
-            if response_xml is not None:
+            if (response_path is None) and (response_xml is not None):
                 response = obspy.read_inventory(response_xml)
                 stream = stream.remove_sensitivity(response)
         except Exception as e:
@@ -882,6 +896,7 @@ class SeismicTraceIterableDataset(IterableDataset):
             if self.format == "mseed":
                 meta = self.read_mseed(
                     fname,
+                    response_path=self.response_path,
                     response_xml=self.response_xml,
                     highpass_filter=self.highpass_filter,
                     sampling_rate=self.sampling_rate,

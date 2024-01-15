@@ -4,15 +4,15 @@ import time
 from contextlib import nullcontext
 from glob import glob
 
-import eqnet
 import matplotlib
 import pandas as pd
 import torch
 import torch.nn.functional as F
 import torch.multiprocessing as mp
 import torch.utils.data
-import wandb
 from datetime import datetime, timedelta
+import wandb
+from tqdm import tqdm
 
 import eqnet
 import utils
@@ -20,21 +20,23 @@ from eqnet.data import DASIterableDataset, SeismicTraceIterableDataset, SeismicN
 from eqnet.models.unet import moving_normalize
 from eqnet.utils import (
     detect_peaks,
+    extract_events,
     extract_picks,
-    merge_csvs,
+    merge_events,
     merge_patch,
+    merge_picks,
     plot_das,
     plot_phasenet,
     plot_eqnet,
+    plot_phasenet_plus,
 )
-from tqdm import tqdm
 
 # mp.set_start_method("spawn", force=True)
 matplotlib.use("agg")
 logger = logging.getLogger()
 
 
-def postprocess(meta, output):
+def postprocess(meta, output, polarity_scale=4, event_scale=16):
     nt, nx = meta["nt"], meta["nx"]
     data = meta["data"][:, :, :nt, :nx]
     # data = moving_normalize(data)
@@ -42,30 +44,24 @@ def postprocess(meta, output):
     if "phase" in output:
         output["phase"] = output["phase"][:, :, :nt, :nx]
     if "polarity" in output:
-        output["polarity"] = output["polarity"][:, :, :nt, :nx]
-    if "event" in output:
-        output["event"] = output["event"][:, :, :nt, :nx]
+        output["polarity"] = output["polarity"][:, :, : (nt - 1) // polarity_scale + 1, :nx]
+    if "event_center" in output:
+        output["event_center"] = output["event_center"][:, :, : (nt - 1) // event_scale + 1, :nx]
+    if "event_time" in output:
+        output["event_time"] = output["event_time"][:, :, : (nt - 1) // event_scale + 1, :nx]
     return meta, output
 
 
-def pred_phasenet(args, model, data_loader, pick_path, figure_path, event_path=None):
+def pred_phasenet(args, model, data_loader, pick_path, figure_path):
     model.eval()
-    metric_logger = utils.MetricLogger(delimiter="  ")
-    header = "Predicting:"
-    # ctx = nullcontext() if args.device == "cpu" else torch.cuda.amp.autocast(enabled=args.amp)
     ctx = nullcontext() if args.device == "cpu" else torch.amp.autocast(device_type=args.device, dtype=args.ptdtype)
     with torch.inference_mode():
-        # for meta in metric_logger.log_every(data_loader, 1, header):
         for meta in tqdm(data_loader, desc="Predicting", total=len(data_loader)):
             with ctx:
                 output = model(meta)
                 meta, output = postprocess(meta, output)
             if "phase" in output:
                 phase_scores = torch.softmax(output["phase"], dim=1)  # [batch, nch, nt, nsta]
-                if ("polarity" in output) and (output["polarity"] is not None):
-                    polarity_scores = (torch.sigmoid(output["polarity"]) - 0.5) * 2.0
-                else:
-                    polarity_scores = None
                 topk_phase_scores, topk_phase_inds = detect_peaks(phase_scores, vmin=args.min_prob, kernel=128)
                 phase_picks_ = extract_picks(
                     topk_phase_inds,
@@ -77,31 +73,11 @@ def pred_phasenet(args, model, data_loader, pick_path, figure_path, event_path=N
                     dt=meta["dt_s"] if "dt_s" in meta else 0.01,
                     vmin=args.min_prob,
                     phases=args.phases,
-                    polarity_score=polarity_scores,
                     waveform=meta["data"],
                     window_amp=[10, 5],  # s
                 )
 
-            if ("event" in output) and (output["event"] is not None):
-                event_scores = torch.sigmoid(output["event"])
-                topk_event_scores, topk_event_inds = detect_peaks(event_scores, vmin=args.min_prob, kernel=128)
-                event_picks_ = extract_picks(
-                    topk_event_inds,
-                    topk_event_scores,
-                    file_name=meta["file_name"],
-                    station_id=meta["station_id"],
-                    begin_time=meta["begin_time"] if "begin_time" in meta else None,
-                    begin_time_index=meta["begin_time_index"] if "begin_time_index" in meta else None,
-                    ## event are picked on downsampled time resolution
-                    dt=meta["dt_s"] * 16 if "dt_s" in meta else 0.01 * 16,
-                    vmin=args.min_prob,
-                    phases=["event"],
-                )
-
             for i in range(len(meta["file_name"])):
-                # filename = meta["file_name"][i].split("//")[-1].replace("/", "_")
-                # filename = meta["file_name"][i].split("/")[-1].replace("*", "")
-                ## filename convention year/jday/station_id
                 tmp = meta["file_name"][i].split("/")
                 parent_dir = "/".join(tmp[-args.folder_depth : -1])
                 filename = tmp[-1].replace("*", "").replace("?", "").replace(".mseed", "")
@@ -114,23 +90,8 @@ def pred_phasenet(args, model, data_loader, pick_path, figure_path, event_path=N
                         pass
                     continue
                 picks_df = pd.DataFrame(phase_picks_[i])
-                # picks_df["phase_time"] = picks_df["phase_time"].apply(lambda x: x.isoformat(timespec="milliseconds"))
                 picks_df.sort_values(by=["phase_time"], inplace=True)
                 picks_df.to_csv(os.path.join(pick_path, parent_dir, filename + ".csv"), index=False)
-
-                if "event" in output:
-                    if not os.path.exists(os.path.join(event_path, parent_dir)):
-                        os.makedirs(os.path.join(event_path, parent_dir), exist_ok=True)
-                    if len(event_picks_[i]) == 0:
-                        with open(os.path.join(event_path, parent_dir, filename + ".csv"), "a"):
-                            pass
-                        continue
-                    picks_df = pd.DataFrame(event_picks_[i])
-                    # picks_df["phase_time"] = picks_df["phase_time"].apply(
-                    #     lambda x: x.isoformat(timespec="milliseconds")
-                    # )
-                    picks_df.sort_values(by=["phase_time"], inplace=True)
-                    picks_df.to_csv(os.path.join(event_path, parent_dir, filename + ".csv"), index=False)
 
             if args.plot_figure:
                 # meta["waveform_raw"] = meta["waveform"].clone()
@@ -138,33 +99,131 @@ def pred_phasenet(args, model, data_loader, pick_path, figure_path, event_path=N
                 plot_phasenet(
                     meta,
                     phase_scores.cpu(),
-                    event_scores.cpu() if "event" in output else None,
-                    polarity=polarity_scores.cpu() if polarity_scores is not None else None,
-                    picks=phase_picks_,
-                    phases=args.phases,
                     file_name=meta["file_name"],
                     dt=meta["dt_s"] if "dt_s" in meta else torch.tensor(0.01),
                     figure_dir=figure_path,
                 )
-                print("saving:", meta["file_name"])
 
     ## merge picks
     if args.distributed:
         torch.distributed.barrier()
         if utils.is_main_process():
-            merge_csvs(pick_path)
-            merge_csvs(event_path)
+            merge_picks(pick_path)
     else:
-        merge_csvs(pick_path)
-        merge_csvs(event_path)
+        merge_picks(pick_path)
+    return 0
+
+
+def pred_phasenet_plus(args, model, data_loader, pick_path, event_path, figure_path):
+    model.eval()
+    ctx = (
+        nullcontext()
+        if args.device in ["cpu", "mps"]
+        else torch.amp.autocast(device_type=args.device, dtype=args.ptdtype)
+    )
+    with torch.inference_mode():
+        for meta in tqdm(data_loader, desc="Predicting", total=len(data_loader)):
+            with ctx:
+                output = model(meta)
+                meta, output = postprocess(meta, output)
+
+            dt = meta["dt_s"] if "dt_s" in meta else [torch.tensor(0.01)] * len(meta["data"])
+
+            if "phase" in output:
+                phase_scores = torch.softmax(output["phase"], dim=1)  # [batch, nch, nt, nsta]
+                if ("polarity" in output) and (output["polarity"] is not None):
+                    polarity_scores = (torch.sigmoid(output["polarity"]) - 0.5) * 2.0
+                else:
+                    polarity_scores = None
+                topk_phase_scores, topk_phase_inds = detect_peaks(
+                    phase_scores, vmin=args.min_prob, kernel=128, dt=dt.min().item()
+                )
+                phase_picks_ = extract_picks(
+                    topk_phase_inds,
+                    topk_phase_scores,
+                    file_name=meta["file_name"],
+                    station_id=meta["station_id"],
+                    begin_time=meta["begin_time"] if "begin_time" in meta else None,
+                    begin_time_index=meta["begin_time_index"] if "begin_time_index" in meta else None,
+                    dt=dt,
+                    vmin=args.min_prob,
+                    phases=args.phases,
+                    polarity_score=polarity_scores,
+                    waveform=meta["data"],
+                    window_amp=[10, 5],  # s
+                )
+
+            if ("event_center" in output) and (output["event_center"] is not None):
+                event_center = torch.sigmoid(output["event_center"])
+                event_time = output["event_time"]
+                topk_event_scores, topk_event_inds = detect_peaks(
+                    event_center, vmin=args.min_prob, kernel=16, dt=dt.min().item() * 16.0
+                )
+                event_detects = extract_events(
+                    topk_event_inds,
+                    topk_event_scores,
+                    file_name=meta["file_name"],
+                    station_id=meta["station_id"],
+                    begin_time=meta["begin_time"] if "begin_time" in meta else None,
+                    begin_time_index=meta["begin_time_index"] if "begin_time_index" in meta else None,
+                    dt=dt,
+                    vmin=args.min_prob,
+                    event_time=event_time,
+                )
+
+            for i in range(len(meta["file_name"])):
+                tmp = meta["file_name"][i].split("/")
+                parent_dir = "/".join(tmp[-args.folder_depth : -1])
+                filename = tmp[-1].replace("*", "").replace("?", "").replace(".mseed", "")
+
+                if not os.path.exists(os.path.join(pick_path, parent_dir)):
+                    os.makedirs(os.path.join(pick_path, parent_dir), exist_ok=True)
+                if len(phase_picks_[i]) == 0:
+                    ## keep an empty file for the file with no picks to make it easier to track processed files
+                    with open(os.path.join(pick_path, parent_dir, filename + ".csv"), "a"):
+                        pass
+                    continue
+                picks_df = pd.DataFrame(phase_picks_[i])
+                picks_df.sort_values(by=["phase_time"], inplace=True)
+                picks_df.to_csv(os.path.join(pick_path, parent_dir, filename + ".csv"), index=False)
+
+                if ("event_center" in output) and ("event_time" in output):
+                    if not os.path.exists(os.path.join(event_path, parent_dir)):
+                        os.makedirs(os.path.join(event_path, parent_dir), exist_ok=True)
+                    if len(event_detects[i]) == 0:
+                        with open(os.path.join(event_path, parent_dir, filename + ".csv"), "a"):
+                            pass
+                        continue
+                    events_df = pd.DataFrame(event_detects[i])
+                    events_df.sort_values(by=["event_time"], inplace=True)
+                    events_df.to_csv(os.path.join(event_path, parent_dir, filename + ".csv"), index=False)
+
+            if args.plot_figure:
+                plot_phasenet_plus(
+                    meta,
+                    phase_scores.cpu(),
+                    polarity_scores.cpu() if polarity_scores is not None else None,
+                    event_center.cpu() if "event_center" in output else None,
+                    event_time.cpu() if "event_time" in output else None,
+                    file_name=meta["file_name"],
+                    dt=dt,
+                    figure_dir=figure_path,
+                )
+
+    ## merge picks
+    if args.distributed:
+        torch.distributed.barrier()
+        if utils.is_main_process():
+            merge_picks(pick_path)
+            merge_events(event_path)
+    else:
+        merge_picks(pick_path)
+        merge_events(event_path)
     return 0
 
 
 def pred_phasenet_das(args, model, data_loader, pick_path, figure_path):
     model.eval()
-    metric_logger = utils.MetricLogger(delimiter="  ")
-    header = "Predicting:"
-    # ctx = nullcontext() if args.device == "cpu" else torch.cuda.amp.autocast(enabled=args.amp)
     ctx = nullcontext() if args.device == "cpu" else torch.amp.autocast(device_type=args.device, dtype=args.ptdtype)
     with torch.inference_mode():
         # for meta in metric_logger.log_every(data_loader, 1, header):
@@ -442,7 +501,7 @@ def main(args):
     else:
         torch.backends.cudnn.benchmark = True
 
-    if args.model == "phasenet":
+    if args.model in ["phasenet", "phasenet_plus"]:
         dataset = SeismicTraceIterableDataset(
             data_path=args.data_path,
             data_list=args.data_list,
@@ -452,6 +511,7 @@ def main(args):
             dataset=args.dataset,
             training=False,
             highpass_filter=args.highpass_filter,
+            response_path=args.response_path,
             response_xml=args.response_xml,
             cut_patch=args.cut_patch,
             resample_time=args.resample_time,
@@ -523,8 +583,6 @@ def main(args):
         backbone=args.backbone,
         in_channels=1,
         out_channels=(len(args.phases) + 1),
-        add_polarity=args.add_polarity,
-        add_event=args.add_event,
         ## eqnet
         head=args.head,
         use_station_location=args.use_station_location,
@@ -540,10 +598,10 @@ def main(args):
         model.load_state_dict(checkpoint["model"], strict=True)
         print("Loaded checkpoint '{}' (epoch {})".format(args.resume, checkpoint["epoch"]))
     else:
-        if args.model == "phasenet" and (not args.add_polarity):
-            raise NotImplementedError("No pretrained model for phasenet, please use phasenet_polarity instead")
-        elif (args.model == "phasenet") and (args.add_polarity):
-            model_url = "https://github.com/AI4EPS/models/releases/download/PhaseNet-Polarity-v3/model_99.pth"
+        if args.model == "phasenet":
+            raise ("No pretrained model for phasenet, please use phasenet_plus instead")
+        elif args.model == "phasenet_plus":
+            model_url = "https://github.com/AI4EPS/models/releases/download/PhaseNet-Plus-v1/PhaseNet-Plus-v1.pth"
         elif args.model == "phasenet_das":
             if args.location is None:
                 # model_url = "ai4eps/model-registry/PhaseNet-DAS:latest"
@@ -580,7 +638,10 @@ def main(args):
     model_without_ddp.load_state_dict(state_dict["model"], strict=True)
 
     if args.model == "phasenet":
-        pred_phasenet(args, model, data_loader, pick_path, figure_path, event_path)
+        pred_phasenet(args, model, data_loader, pick_path, figure_path)
+
+    if args.model == "phasenet_plus":
+        pred_phasenet_plus(args, model, data_loader, pick_path, event_path, figure_path)
 
     if args.model == "phasenet_das":
         pred_phasenet_das(args, model, data_loader, pick_path, figure_path)
@@ -645,6 +706,7 @@ def get_args_parser(add_help=True):
     parser.add_argument("--add_polarity", action="store_true", help="If use polarity information")
     parser.add_argument("--add_event", action="store_true", help="If use event information")
     parser.add_argument("--highpass_filter", type=float, default=0.0, help="highpass filter; default 0.0 is no filter")
+    parser.add_argument("--response_path", default=None, type=str, help="response path")
     parser.add_argument("--response_xml", default=None, type=str, help="response xml file")
     parser.add_argument("--folder_depth", default=0, type=int, help="folder depth for data list")
 
