@@ -233,6 +233,7 @@ def extract_events(
                         if event_time is not None:
                             t0 = center_time - timedelta(seconds=event_time[i, 0, index.item(), k].item() * dt[i])
                             event_dict["event_time"] = t0.strftime("%Y-%m-%dT%H:%M:%S.%f")
+                            event_dict["travel_time_s"] = event_time[i, 0, index.item(), k].item() * dt[i]
 
                         events_per_file.append(event_dict)
 
