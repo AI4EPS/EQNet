@@ -6,6 +6,7 @@ import numpy as np
 from collections import defaultdict, deque
 
 import datasets
+from datasets.fingerprint import Hasher
 import torch
 import torch.nn as nn
 import torch.functional as F
@@ -14,11 +15,12 @@ from torch.utils.data import Dataset, DataLoader, Sampler, BatchSampler
 import sys
 sys.path.append("../")
 from eqnet.utils.station_sampler import StationSampler, cut_reorder_keys, create_groups
+from eqnet.data.utils import random_shift
 
 # args
 is_pad = True
 is_print = False
-num_stations_list = [5, 10, 20]
+num_stations_list = [10]
 
 
 time1 = time.time()
@@ -49,7 +51,10 @@ if world_size is not None:
     if gpu > 0:
         print(f"Rank {rank}: GPU {gpu} waiting for main process to perform mapping")
         torch.distributed.barrier()
+    print(f"Rank {rank}: Gpu {gpu} cut_reorder_keys fingerprint {Hasher.hash(lambda x: cut_reorder_keys(x, num_stations_list=num_stations_list, is_pad=True, is_train=True))}")
+    print(f"Rank {rank}: Gpu {gpu} random_shift fingerprint {Hasher.hash(lambda x: random_shift(x, shift_range=(-160, 0), feature_scale=16))}")
     quakeflow_nc = quakeflow_nc.map(lambda x: cut_reorder_keys(x, num_stations_list=num_stations_list, is_pad=is_pad, is_train=True), num_proc=num_proc, desc="cut_reorder_keys")
+    quakeflow_nc = quakeflow_nc.map(lambda x: random_shift(x, shift_range=(-160, 0)), num_proc=num_proc, desc="random_shift")
     if gpu == 0:
         print("Mapping finished, loading results from main process")
         torch.distributed.barrier()
