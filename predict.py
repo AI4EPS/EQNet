@@ -541,7 +541,7 @@ def main(args):
         print("Loaded checkpoint '{}' (epoch {})".format(args.resume, checkpoint["epoch"]))
     else:
         if args.model == "phasenet" and (not args.add_polarity):
-            raise ("No pretrained model for phasenet, please use phasenet_polarity instead")
+            raise NotImplementedError("No pretrained model for phasenet, please use phasenet_polarity instead")
         elif (args.model == "phasenet") and (args.add_polarity):
             model_url = "https://github.com/AI4EPS/models/releases/download/PhaseNet-Polarity-v3/model_99.pth"
         elif args.model == "phasenet_das":
@@ -554,11 +554,11 @@ def main(args):
                     "https://github.com/AI4EPS/models/releases/download/PhaseNet-DAS-ConvertedPhase/model_99.pth"
                 )
             else:
-                raise ("Missing pretrained model for this location")
+                raise NotImplementedError("Missing pretrained model for this location")
         elif args.model == "eqnet":
             model_url = "ai4eps/model-registry/eqnet-test:latest"
         else:
-            raise
+            raise NotImplementedError("Missing pretrained model for this model")
 
         ## load model from wandb
         # if utils.is_main_process():
