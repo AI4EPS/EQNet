@@ -8,7 +8,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 from .centernet import convolution, \
-    cross_entropy_loss, focal_loss, smoothl1_reg_loss, weighted_l1_reg_loss, l1_reg_loss, vector_l1_reg_loss
+    cross_entropy_loss, focal_loss, smoothl1_reg_loss, weighted_l1_reg_loss, \
+        l1_reg_loss, vector_l1_reg_loss, modulus_l1_reg_loss, balanced_l1_reg_loss
 
 
 class Sample(nn.Module):
@@ -299,10 +300,12 @@ class EventHead(nn.Module):
                  hidden_channels=[256, 128, 64, 32],
                  dilations=[1, 4, 8, 16],
                  kernel_size=7,
-                 loss_dict: dict = {"hm_loss": "focal", "hw_loss": "wl1", "reg_loss": "vl1"},
-                 weights=[1.495, 0.018, 0.043],
+                 loss_dict: dict = {"hm_loss": "focal", "hw_loss": "wl1", "reg_loss": "vl1", "angle_loss": "vl1", "depth_loss": "bl1", "mag_loss": "bl1"},
+                 weights=[1.497, 0.018, 0.044],
                  offset_weight=[3, 1], 
-                 reg_weight=[0.75,1.7,16,1.2, 1],
+                 reg_weight=[0.75,1.9,18,0.9, 0.7],
+                 depth_center=8.0,
+                 mag_center=1.5,
                  ):
         super().__init__()
         
@@ -312,6 +315,8 @@ class EventHead(nn.Module):
         self.weights = weights
         self.offset_weight = offset_weight
         self.reg_weight = reg_weight
+        self.depth_center = depth_center
+        self.mag_center = mag_center
         
         #TODO: subhead layers? dilation?
         self.heatmap = nn.Sequential(
@@ -417,22 +422,27 @@ class EventHead(nn.Module):
         )
 
 
-        loss_factory = {"mse": F.mse_loss, "focal": focal_loss, "l1": l1_reg_loss, "sl1": smoothl1_reg_loss, "wl1": weighted_l1_reg_loss, "vl1": vector_l1_reg_loss, "cross_entropy": cross_entropy_loss}
+        loss_factory = {"mse": F.mse_loss, "focal": focal_loss, "l1": l1_reg_loss, "sl1": smoothl1_reg_loss, \
+            "wl1": weighted_l1_reg_loss, "vl1": vector_l1_reg_loss, "ml1": modulus_l1_reg_loss, \
+            "bl1": balanced_l1_reg_loss, "cross_entropy": cross_entropy_loss}
         self.weights = weights
         self.hm_loss = loss_factory[loss_dict["hm_loss"]]
         self.hw_loss = loss_factory[loss_dict["hw_loss"]]
         self.reg_loss = loss_factory[loss_dict["reg_loss"]]
+        self.angle_loss = loss_factory[loss_dict["angle_loss"]]
+        self.depth_loss = loss_factory[loss_dict["depth_loss"]]
+        self.mag_loss = loss_factory[loss_dict["mag_loss"]]
         
-    def forward(self, features, event_center, event_location, event_location_mask, amplitude):
+    def forward(self, features, amplitude, event_center, event_location, event_location_mask):
         """
         Forward pass of the EventHead module.
 
         Args:
             features (dict): Dictionary of input features.
+            amplitude (torch.Tensor): Tensor of amplitude values.
             event_center (torch.Tensor): Tensor of event center labels.
             event_location (torch.Tensor): Tensor of event location labels.
             event_location_mask (torch.Tensor): Tensor of event location masks.
-            amplitude (torch.Tensor): Tensor of amplitude values.
 
         Returns:
             tuple: Tuple containing the predicted outputs and the loss values (if in training mode).
@@ -501,27 +511,28 @@ class EventHead(nn.Module):
         """
         #hm_loss = cross_entropy_loss(outputs["event"], event_center)
         hm_loss = self.hm_loss(outputs["event"], event_center)
+        #station_mask = (event_location_mask.sum(axis=1) > 0).float().unsqueeze(1)
+        #hm_loss = self.hm_loss(outputs["event"]*station_mask, event_center*station_mask)
         hw_loss = self.hw_loss(outputs["offset"], event_location[:, 5:, :, :], event_location_mask, weights=self.offset_weight)
         
         outputs["hypocenter"] = outputs["hypocenter"].float()
-        #reg_loss = self.reg_loss(outputs["hypocenter"], event_location[:, :5, :, :], event_location_mask, weights=self.reg_weight)
-        hypocenter = torch.cat([outputs["hypocenter"][:, :2, :, :], 
-                                torch.sin(outputs["hypocenter"][:, 2:3, :, :]), torch.cos(outputs["hypocenter"][:, 2:3, :, :]), 
-                                outputs["hypocenter"][:, 3:, :, :]], dim=1)
-        hypo_ground_truth = torch.cat([event_location[:, :2, :, :],
-                                        torch.sin(event_location[:, 2:3, :, :]), torch.cos(event_location[:, 2:3, :, :]),
-                                        event_location[:, 3:5, :, :]], dim=1)
-        reg_loss = self.reg_loss(hypocenter, hypo_ground_truth, event_location_mask)
+        reg_loss = self.reg_loss(outputs["hypocenter"][:, :2, :, :], event_location[:, :2, :, :], event_location_mask)
+        angle_loss = self.angle_loss(torch.cat([torch.sin(outputs["hypocenter"][:, 2:3, :, :]), torch.cos(outputs["hypocenter"][:, 2:3, :, :]),], dim=1),
+                                        torch.cat([torch.sin(event_location[:, 2:3, :, :]), torch.cos(event_location[:, 2:3, :, :]),], dim=1),
+                                        event_location_mask)
+        angle_loss = angle_loss.sum()
+        depth_loss = self.depth_loss(outputs["hypocenter"][:, 3:4, :, :], event_location[:, 3:4, :, :], event_location_mask, center=self.depth_center, scale=0.2)
+        mag_loss = self.mag_loss(outputs["hypocenter"][:, 4:5, :, :], event_location[:, 4:5, :, :], event_location_mask, center=self.mag_center, scale=1.2)
         
         loss = hm_loss * self.weights[0] + hw_loss * self.weights[1] \
             + reg_loss[0] * self.weights[2] \
             + reg_loss[1] * self.weights[3] \
-            + (reg_loss[2] + reg_loss[3]) * self.weights[4] \
-            + reg_loss[4] * self.weights[5] \
-            + reg_loss[5] * self.weights[6]
+            + angle_loss * self.weights[4] \
+            + depth_loss * self.weights[5] \
+            + mag_loss * self.weights[6]
         # print(f"loss {loss}, hm_loss {hm_loss}, hw_loss {hw_loss}, reg_loss {reg_loss}", force=True)
         # return {"loss": loss, "loss_event": hm_loss, "loss_offset": hw_loss, "loss_hypocenter": reg_loss}
-        return {"loss": loss, "loss_event": hm_loss, "loss_offset": hw_loss, "loss_origin_time": reg_loss[0], "loss_x": reg_loss[1], "loss_y": reg_loss[2]+reg_loss[3], "loss_depth": reg_loss[4], "loss_magnitude": reg_loss[5]}
+        return {"loss": loss, "loss_event": hm_loss, "loss_offset": hw_loss, "loss_origin_time": reg_loss[0], "loss_x": reg_loss[1], "loss_y": angle_loss, "loss_depth": depth_loss, "loss_magnitude": mag_loss}
     
     
 class PhaseHead(nn.Module):

@@ -367,13 +367,13 @@ class EQNet(nn.Module):
             event_center = batched_inputs["event_center"].to(self.device)
             event_location = batched_inputs["event_location"].to(self.device)
             event_location_mask = batched_inputs["event_location_mask"].to(self.device)
-            num_stations = (event_location_mask.sum(axis=1) > 0).float().to(self.device)
+            num_stations = torch.any(event_location_mask>0, axis=1).float().to(self.device)
         elif "phase_pick" in batched_inputs.keys(): # validation
             phase_pick = batched_inputs["phase_pick"].to(self.device)
             event_center = batched_inputs["event_center"].to(self.device)
             event_location = batched_inputs["event_location"].to(self.device)
             event_location_mask = batched_inputs["event_location_mask"].to(self.device)
-            num_stations = (event_location_mask.sum(axis=1) > 0).float().to(self.device)
+            num_stations = torch.any(event_location_mask>0, axis=1).float().to(self.device)
         else:
             phase_pick, event_center, event_location, event_location_mask, num_stations = None, None, None, None, None
 
@@ -387,7 +387,7 @@ class EQNet(nn.Module):
         features = self.neck(features)
 
         output_phase, loss_phase = self.phase_picker(features, phase_pick, num_stations)
-        outputs_event, losses_event = self.event_detector(features, event_center, event_location, event_location_mask, amplitude)
+        outputs_event, losses_event = self.event_detector(features, amplitude, event_center, event_location, event_location_mask)
 
         if self.training:
             loss = loss_phase + losses_event["loss"]
