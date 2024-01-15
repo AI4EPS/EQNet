@@ -374,12 +374,27 @@ def plot_phasenet(
             plt.close(fig)
 
 
-def plot_eqnet_train(meta, phase, event, epoch, figure_dir="figures"):
+def plot_eqnet_train(meta, phase, event, epoch, figure_dir="figures", prefix="", offset=None, hypocenter=None):
+    degree2km = 111.19
+    data = normalize(meta["data"])
+    flag=True if (offset is not None) and (hypocenter is not None) else False
     for i in range(meta["data"].shape[0]):
         plt.close("all")
-        fig, axes = plt.subplots(3, 1, figsize=(10, 10))
+        if flag:
+            #fig, axes = plt.subplots(5, 1, figsize=(10, 20), dpi=100)
+            fig = plt.figure(figsize=(10, 18), dpi=150)
+            axes=[]
+            axes.append(plt.subplot2grid((6, 4), (0, 0), colspan=4))
+            axes.append(plt.subplot2grid((6, 4), (1, 0), colspan=4))
+            axes.append(plt.subplot2grid((6, 4), (2, 0), colspan=4))
+            axes.append(plt.subplot2grid((6, 4), (3, 0), colspan=3, rowspan=2))
+            axes.append(plt.subplot2grid((6, 4), (5, 0), colspan=3))
+            axes.append(plt.subplot2grid((6, 4), (3, 3), colspan=1, rowspan=2))
+            axes.append(plt.subplot2grid((6, 4), (5, 3), colspan=1))
+        else:
+            fig, axes = plt.subplots(3, 1, figsize=(10, 10))
         for j in range(phase.shape[-1]):
-            axes[0].plot((meta["data"][i, -1, :, j]) / torch.std(meta["data"][i, -1, :, j]) / 8 + j)
+            axes[0].plot((data[i, -1, :, j]) + j)
 
             axes[1].plot(phase[i, 1, :, j] + j, "r")
             axes[1].plot(phase[i, 2, :, j] + j, "b")
@@ -388,12 +403,136 @@ def plot_eqnet_train(meta, phase, event, epoch, figure_dir="figures"):
 
             axes[2].plot(event[i, :, j] + j, "b")
             axes[2].plot(meta["event_center"][i, :, j] + j, "--C0")
+                
+        # draw t, xy and xz scatter, show the station location, and the event location
+        if flag:
+            feature_scale=16
+            sampling_rate=100.0
+            event_center = (meta["event_center"][i,:,:].eq(1).float()*torch.arange(meta["event_center"][i].shape[-2])[:,None].float()).sum(axis=-2)
+            true_station_number = event_center.shape[0]
+            mask = meta["event_location_mask"][i]
+            mask_divide = mask.sum(axis=-2)
+            for k in range(mask_divide.shape[0]):
+                if mask_divide[k] == 0:
+                    mask_divide[k] = 1
+                    true_station_number -= 1
+            #assert abs((mask*torch.arange(mask.shape[-2])[:,None].float()).sum(axis=-2)/mask.sum(axis=-2) - event_center).max() <= 1
+            dt = (hypocenter[i, 0,:,:]*mask)*sampling_rate
+            dt = dt.sum(axis=-2)/mask_divide
+            offset_pred = (offset[i, 0,:,:]*mask)
+            offset_pred = offset_pred.sum(axis=-2)/mask_divide
+            dt = dt + offset_pred*feature_scale
+            
+            dt_ground_truth = (meta["event_location"][i, 0,:,:]*mask)*sampling_rate
+            dt_ground_truth = dt_ground_truth.sum(axis=-2)/mask_divide
+            offset_ground_truth = (meta["event_location"][i, 5,:,:]*mask)
+            offset_ground_truth = offset_ground_truth.sum(axis=-2)/mask_divide
+            dt_ground_truth = dt_ground_truth + offset_ground_truth*feature_scale
+            cut_idx = (dt_ground_truth!=0)
+            # we only plot the event that is not the 0 padding
+            event_center = event_center[cut_idx]
+            dt = dt[cut_idx]
+            dt_ground_truth = dt_ground_truth[cut_idx]
+            offset_pred = offset_pred[cut_idx]
+            offset_ground_truth = offset_ground_truth[cut_idx]
+            
+            #axes[2].scatter((feature_scale*(event_center+offset_ground_truth))/feature_scale, np.arange(event_center.shape[-1]), c=np.arange(event_center.shape[-1]), s=50, marker=".")
+            axes[2].scatter((feature_scale*(event_center+offset_pred)-dt)/feature_scale, np.arange(event_center.shape[-1]), c=np.arange(event_center.shape[-1]), s=50, marker="^")
+            axes[2].scatter((feature_scale*(event_center+offset_ground_truth)-dt_ground_truth)/feature_scale, np.arange(event_center.shape[-1]), c=np.arange(event_center.shape[-1]), s=50, marker="*")
+            axes[2].scatter(((feature_scale*(event_center+offset_pred)-dt).sum()/true_station_number)/feature_scale, event_center.shape[-1], c="C1", s=100, marker="^")
+            axes[2].scatter(((feature_scale*(event_center+offset_ground_truth)-dt_ground_truth).sum()/true_station_number)/feature_scale, event_center.shape[-1], c="C0", s=100, marker="*")
+            
+            width_pred = (offset[i, 1,:,:]*mask)
+            width_pred = width_pred.sum(axis=-2)/mask_divide
+            width_ground_truth = (meta["event_location"][i, 6,:,:]*mask)
+            width_ground_truth = width_ground_truth.sum(axis=-2)/mask_divide
+            # we only plot the event that is not the 0 padding
+            width_pred = width_pred[cut_idx]
+            width_ground_truth = width_ground_truth[cut_idx]
+            
+            for k in range(len(event_center)):
+                # use arrow to show the prediction
+                axes[2].annotate("", xy=(event_center[k], k), xytext=(event_center[k]-width_pred[k], k), arrowprops=dict(color='red', arrowstyle='<-', mutation_scale=0.7))
+                axes[2].annotate("", xy=(event_center[k], k), xytext=(event_center[k]+width_pred[k], k), arrowprops=dict(color='blue', arrowstyle='<-', mutation_scale=0.7))
+                axes[2].annotate("", xy=(event_center[k], k), xytext=(event_center[k]+offset_pred[k], k), arrowprops=dict(color='green', arrowstyle='<-', mutation_scale=0.7))
+                
+                # use vertical line to show the ground truth
+                axes[2].vlines(event_center[k]-width_ground_truth[k], k-0.2, k+0.2, color="C3", linestyle="--")
+                axes[2].vlines(event_center[k]+width_ground_truth[k], k-0.2, k+0.2, color="C0", linestyle="--")
+                axes[2].vlines(event_center[k]+offset_ground_truth[k], k-0.2, k+0.2, color="C2", linestyle="--")
+            
+            distance = (hypocenter[i, 1:4,:,:]*mask[None, :, :])
+            distance = distance.sum(axis=-2)/mask_divide[None,:]
+            # if prediction doesn't have the depth, use 0
+            if distance.shape[0]==2:
+                distance = torch.cat([distance, torch.zeros_like(distance[0:1])], dim=0)
+            distance_ground_truth = (meta["event_location"][i, 1:4,:,:]*mask[None, :, :])
+            distance_ground_truth = distance_ground_truth.sum(axis=-2)/mask_divide[None, :]
+            station_location = meta["station_location"][i]
+            station_location[:, 0] = station_location[:, 0] * torch.cos(torch.deg2rad(station_location[:, 1])) * degree2km
+            station_location[:, 1] = station_location[:, 1] * degree2km
+            x = distance[0] * torch.cos(distance[1])
+            y = distance[0] * torch.sin(distance[1])
+            x_ground_truth = distance_ground_truth[0] * torch.cos(distance_ground_truth[1])
+            y_ground_truth = distance_ground_truth[0] * torch.sin(distance_ground_truth[1])
+            distance = torch.stack([x, y, distance[2]], dim=0)
+            distance_ground_truth = torch.stack([x_ground_truth, y_ground_truth, distance_ground_truth[2]], dim=0)
+            
+            # we only plot the event that is not the 0 padding
+            distance = distance[:, cut_idx]
+            distance_ground_truth = distance_ground_truth[:, cut_idx]
+            station_location = station_location[cut_idx]
+            
+            axes[3].scatter(station_location[:, 0], station_location[:, 1], c=np.arange(station_location.shape[0]), s=50, marker="^")
+            axes[3].scatter(distance[0]+station_location[:, 0], distance[1]+station_location[:, 1], c=np.arange(station_location.shape[0]), s=50, marker=".", alpha=0.5)
+            axes[3].scatter(distance_ground_truth[0]+station_location[:, 0], distance_ground_truth[1]+station_location[:, 1], c=np.arange(station_location.shape[0]), s=50, marker="*", alpha=0.5)
+            axes[3].scatter((distance[0]+station_location[:, 0]).sum()/true_station_number, (distance[1]+station_location[:, 1]).sum()/true_station_number, c="C1", s=150, marker=".", alpha=0.7)
+            axes[3].scatter((distance_ground_truth[0]+station_location[:, 0]).sum()/true_station_number, (distance_ground_truth[1]+station_location[:, 1]).sum()/true_station_number, c="C0", s=150, marker="*", alpha=0.7)
+            
+            axes[4].scatter(station_location[:, 0], station_location[:, 2], c=np.arange(station_location.shape[0]), s=50, marker="^")
+            axes[4].scatter(distance[0]+station_location[:, 0], distance[2]+station_location[:, 2], c=np.arange(station_location.shape[0]), s=50, marker=".", alpha=0.5)
+            axes[4].scatter(distance_ground_truth[0]+station_location[:, 0], distance_ground_truth[2]+station_location[:, 2], c=np.arange(station_location.shape[0]), s=50, marker="*", alpha=0.5)
+            axes[4].scatter((distance[0]+station_location[:, 0]).sum()/true_station_number, (distance[2]+station_location[:, 2]).sum()/true_station_number, c="C1", s=150, marker=".", alpha=0.7)
+            axes[4].scatter((distance_ground_truth[0]+station_location[:, 0]).sum()/true_station_number, (distance_ground_truth[2]+station_location[:, 2]).sum()/true_station_number, c="C0", s=150, marker="*", alpha=0.7)
+            
+            axes[5].scatter(station_location[:, 2], station_location[:, 1], c=np.arange(station_location.shape[0]), s=50, marker="^")
+            axes[5].scatter(distance[2]+station_location[:, 2], distance[1]+station_location[:, 1], c=np.arange(station_location.shape[0]), s=50, marker=".", alpha=0.5)
+            axes[5].scatter(distance_ground_truth[2]+station_location[:, 2], distance_ground_truth[1]+station_location[:, 1], c=np.arange(station_location.shape[0]), s=50, marker="*", alpha=0.5)
+            axes[5].scatter((distance[2]+station_location[:, 2]).sum()/true_station_number, (distance[1]+station_location[:, 1]).sum()/true_station_number, c="C1", s=150, marker=".", alpha=0.7)
+            axes[5].scatter((distance_ground_truth[2]+station_location[:, 2]).sum()/true_station_number, (distance_ground_truth[1]+station_location[:, 1]).sum()/true_station_number, c="C0", s=150, marker="*", alpha=0.7)
+            
+            magnitude = (hypocenter[i, 4,:,:]*mask)
+            magnitude = magnitude.sum(axis=-2)/mask_divide
+            magnitude_ground_truth = (meta["event_location"][i, 4,:,:]*mask)
+            magnitude_ground_truth = magnitude_ground_truth.sum(axis=-2)/mask_divide
+            # we only plot the event that is not the 0 padding
+            magnitude = magnitude[cut_idx]
+            magnitude_ground_truth = magnitude_ground_truth[cut_idx]
+            
+            axes[6].scatter(magnitude, np.zeros_like(magnitude), c=np.arange(magnitude.shape[0]), s=50, marker=".", alpha=0.7)
+            axes[6].scatter(magnitude.sum()/true_station_number, 0, c=magnitude.shape[0], s=150, marker=".")
+            axes[6].scatter(magnitude_ground_truth.sum()/true_station_number, 0, c="C1", s=150, marker="*")
 
+        axes[0].set_title("data")
+        axes[1].set_title("phase_pick")
+        axes[2].set_title("event_center")
+        if flag:
+            axes[3].set_title("hypocenter xy")
+            axes[4].set_title("hypocenter xz")
+            axes[5].set_title("hypocenter yz")
+            axes[6].set_title("magnitude")
+            #axes[3].set_aspect("equal")
+            #axes[4].set_aspect("equal")
+            #axes[5].set_aspect("equal")
+            axes[4].sharex(axes[3])
+            axes[5].sharey(axes[3])
+            #axes[8].set_title("hypocenter dz")
+        fig.subplots_adjust(hspace=0.5, bottom=0.05, top=0.95)
         if "LOCAL_RANK" in os.environ:
             local_rank = int(os.environ["LOCAL_RANK"])
-            fig.savefig(f"{figure_dir}/{epoch:02d}_{i:02d}_{local_rank}.png", dpi=300)
+            fig.savefig(f"{figure_dir}/{prefix}{epoch:02d}_{i:02d}_{local_rank}.png", dpi=300)
         else:
-            fig.savefig(f"{figure_dir}/{epoch:02d}_{i:02d}.png", dpi=300)
+            fig.savefig(f"{figure_dir}/{prefix}{epoch:02d}_{i:02d}.png", dpi=300)
 
 
 def plot_das(data, pred, picks=None, phases=["P", "S"], file_name=None, figure_dir="./figures", epoch=0, **kwargs):
@@ -653,3 +792,97 @@ def plot_das(data, pred, picks=None, phases=["P", "S"], file_name=None, figure_d
         plt.close(fig)
 
     return 0
+
+def plot_eqnet(meta, pred_phase, pred_event, phase_picks=None, event_picks=None, phases=["P", "S"], file_name=None, begin_time_index=None, dt=torch.tensor(0.01), figure_dir="./figures", feature_scale = 16, **kwargs):
+    nt=60000
+    nb0, nc0, nt0, ns0 = pred_phase.shape
+    chn_name = ["E", "N", "Z"]
+    degree2km = 111.19
+    # normalize = lambda x: (x - torch.mean(x, dim=2, keepdim=True)) / torch.std(x, dim=2, keepdim=True) / 10
+    # waveform_raw = normalize(meta["waveform_raw"])
+    # waveform = normalize(meta["waveform"])
+    # waveform = meta["waveform"] / 3.0
+
+    waveform = normalize(meta["data"])
+    # waveform = normalize(waveform)
+    # vmax = torch.std(waveform) * 3
+    # vmin = -vmax
+    if "begin_time" in meta:
+        begin_time = meta["begin_time"]
+    else:
+        begin_time = [0] * nb0
+    
+    for i in range(nb0):
+        dt = dt[i].item()
+
+        for ii in range(0, nt0, nt):
+            plt.close("all")
+            fig, axes = plt.subplots(4, 1, figsize=(20, 10))
+
+            for k in range(ns0):
+                begin_time_i = datetime.fromisoformat(begin_time[i])
+                t = [
+                    begin_time_i + timedelta(seconds=(ii + it) * dt) for it in range(len(pred_phase[i, 1, ii : ii + nt, k]))
+                ]
+                
+                t_event = [
+                    begin_time_i + timedelta(seconds=(ii + it*feature_scale) * dt) for it in range(len(pred_event[i, ii//feature_scale : (ii + nt)//feature_scale, k]))
+                ]
+
+                if ns0 == 1:
+                    for j in range(3):
+                        waveform_ijk = waveform[i, j, ii : ii + nt, k]
+                        waveform_ijk -= torch.mean(waveform_ijk)
+                        waveform_ijk /= torch.std(waveform_ijk) * 6
+                        axes[0].plot(t, waveform_ijk + j, linewidth=0.2, color="k", label=f"{chn_name[j]}")
+                else:
+                    waveform_ijk = waveform[i, 2, ii : ii + nt, k]
+                    waveform_ijk -= torch.mean(waveform_ijk)
+                    waveform_ijk /= torch.std(waveform_ijk) * 6
+                axes[0].plot(t, waveform_ijk + k, linewidth=0.2, color="k", label=f"{chn_name[2]}")
+
+                axes[1].plot(t, pred_phase[i, 1, ii : ii + nt, k] + k, "-C3", linewidth=1.0)
+                axes[1].plot(t, pred_phase[i, 2, ii : ii + nt, k] + k, "-C0", linewidth=1.0)
+
+                axes[1].plot(t_event, pred_event[i, ii//feature_scale : (ii + nt)//feature_scale, k] + k, "-C1", linewidth=1.0)
+
+            meta["station_location"][i, :, 0] = meta["station_location"][i, :, 0] * torch.cos(torch.deg2rad(meta["station_location"][i, :, 1])) * degree2km
+            meta["station_location"][i, :, 1] = meta["station_location"][i, :, 1] * degree2km
+            axes[2].scatter(meta["station_location"][i, :, 0], meta["station_location"][i, :, 1], c=np.arange(ns0), s=50, marker="^")
+            axes[3].scatter(meta["station_location"][i, :, 0], meta["station_location"][i, :, 2], c=np.arange(ns0), s=50, marker="^")
+            for pick_dict in event_picks[i]:
+                if len(phase_picks[i]) == 0:
+                    continue
+                if ii > pick_dict["event_center_index"]*feature_scale or ii + nt < pick_dict["event_center_index"]*feature_scale:
+                    continue
+                sta_order = pick_dict["station_index"]
+                axes[1].scatter(datetime.fromisoformat(pick_dict["event_original_time"]), sta_order[0], marker="^", s=50, c=sta_order[0])
+                p_time = (datetime.fromisoformat(pick_dict["phase_time"])
+                            + timedelta(seconds=((pick_dict["p_index"]-pick_dict["phase_index"])*dt*feature_scale)))
+                s_time = (datetime.fromisoformat(pick_dict["phase_time"])
+                            + timedelta(seconds=((pick_dict["s_index"]-pick_dict["phase_index"])*dt*feature_scale)))
+                axes[1].vlines(p_time, sta_order[0]-0.5, sta_order[0]+0.5, color="r", linewidth=1.0)
+                axes[1].vlines(s_time, sta_order[0]-0.5, sta_order[0]+0.5, color="b", linewidth=1.0)
+                
+                axes[2].scatter(pick_dict["event_location_x"], pick_dict["event_location_y"], marker=".", s=50, c=sta_order[0])
+                axes[3].scatter(pick_dict["event_location_x"], pick_dict["event_location_z"], marker=".", s=50, c=sta_order[0])
+            
+            axes[0].grid("on")
+            axes[1].grid("on")
+            axes[2].grid("on")
+            axes[3].grid("on")
+            axes[0].set_title(f"{file_name[i]} data")
+            axes[1].set_title("phase & event")
+            axes[2].set_title("event location")
+
+            fig.tight_layout()
+            fig.subplots_adjust(hspace=0.5, bottom=0.05, top=0.95)
+            if not os.path.exists(figure_dir):
+                os.makedirs(figure_dir)
+            fig.savefig(
+                os.path.join(figure_dir, file_name[i].replace("/", "_") + f"_{ii:06d}.png"),
+                bbox_inches="tight",
+                dpi=300,
+            )
+
+            plt.close(fig)

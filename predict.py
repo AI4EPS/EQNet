@@ -8,11 +8,15 @@ import eqnet
 import matplotlib
 import pandas as pd
 import torch
+import torch.nn.functional as F
 import torch.multiprocessing as mp
 import torch.utils.data
-import utils
 import wandb
-from eqnet.data import DASIterableDataset, SeismicTraceIterableDataset
+from datetime import datetime, timedelta
+
+import eqnet
+import utils
+from eqnet.data import DASIterableDataset, SeismicTraceIterableDataset, SeismicNetworkIterableDataset
 from eqnet.models.unet import moving_normalize
 from eqnet.utils import (
     detect_peaks,
@@ -21,6 +25,7 @@ from eqnet.utils import (
     merge_patch,
     plot_das,
     plot_phasenet,
+    plot_eqnet,
 )
 from tqdm import tqdm
 
@@ -229,6 +234,166 @@ def pred_phasenet_das(args, model, data_loader, pick_path, figure_path):
     return 0
 
 
+def pred_eqnet(args, model, data_loader, pick_path, figure_path, event_path=None):
+    model.eval()
+    metric_logger = utils.MetricLogger(delimiter="  ")
+    header = "Predicting:"
+    feature_scale = 16
+    # ctx = nullcontext() if args.device == "cpu" else torch.cuda.amp.autocast(enabled=args.amp)
+    ctx = nullcontext() if args.device == "cpu" else torch.amp.autocast(device_type=args.device, dtype=args.ptdtype)
+    with torch.inference_mode():
+        for meta in metric_logger.log_every(data_loader, 1, header):
+            num_stations = len(meta["station_id"])
+            with ctx:
+                output = model(meta)
+            output["phase"] = output["phase"][:, :, :, :num_stations]
+            output["event"] = output["event"][:, :, :num_stations]
+            output["offset"] = output["offset"][:, :, :, :num_stations]
+            output["hypocenter"] = output["hypocenter"][:, :, :, :num_stations]
+            meta["station_location"] = meta["station_location"][:, :num_stations]
+            for k in meta.keys():
+                try:
+                    # if v is a number in fp16, convert it to fp32
+                    meta[k] = meta[k].float()
+                except:
+                    pass
+            for k in output.keys():
+                output[k] = output[k].float()
+            
+            if "phase" in output:
+                phase_scores = F.softmax(output["phase"], dim=1)  # [batch, nch, nt, nsta]
+                topk_phase_scores, topk_phase_inds = detect_peaks(phase_scores, vmin=args.min_prob, kernel=128)
+                phase_picks_ = extract_picks(
+                    topk_phase_inds,
+                    topk_phase_scores,
+                    file_name=meta["file_name"],
+                    station_id=meta["station_id"],
+                    begin_time=meta["begin_time"] if "begin_time" in meta else None,
+                    begin_time_index=meta["begin_time_index"] if "begin_time_index" in meta else None,
+                    dt=meta["dt_s"] if "dt_s" in meta else 0.01,
+                    vmin=args.min_prob,
+                    phases=args.phases,
+                    waveform=meta["data"],
+                    window_amp=[10, 5],  # s
+                )
+
+            if ("event" in output) and (output["event"] is not None):
+                event_scores = torch.sigmoid(output["event"])
+                event_scores = event_scores.unsqueeze(1)  # [batch, 1, nt, nsta]
+                topk_event_scores, topk_event_inds, event_mask = detect_peaks(event_scores, vmin=args.min_prob, kernel=24, if_mask=True)
+                event_scores = event_scores.squeeze(1)  # [batch, nt, nsta]
+                event_picks_ = extract_picks(
+                    topk_event_inds,
+                    topk_event_scores,
+                    file_name=meta["file_name"],
+                    station_id=meta["station_id"],
+                    begin_time=meta["begin_time"] if "begin_time" in meta else None,
+                    begin_time_index=meta["begin_time_index"] if "begin_time_index" in meta else None,
+                    ## event are picked on downsampled time resolution
+                    dt=meta["dt_s"] * feature_scale if "dt_s" in meta else 0.01 * feature_scale,
+                    vmin=args.min_prob,
+                    phases=["event"],
+                    scores_mask=event_mask,
+                )
+                
+            for i in range(len(meta["file_name"])):
+                filename = meta["file_name"][i].split("//")[-1].replace("/", "_")
+
+                if args.save_score:
+                    torch.save(phase_scores[i], os.path.join(pick_path, filename + "_score.pt"))
+                    torch.save(event_scores[i], os.path.join(event_path, filename + "_score.pt"))
+                if len(phase_picks_[i]) == 0:
+                    ## keep an empty file for the file with no picks to make it easier to track processed files
+                    with open(os.path.join(pick_path, filename + ".csv"), "a"):
+                        pass
+                else:
+                    picks_df = pd.DataFrame(phase_picks_[i])
+                    picks_df.sort_values(by=["phase_time"], inplace=True)
+                    picks_df.to_csv(os.path.join(pick_path, filename + ".csv"), index=False)
+                    
+                if len(event_picks_[i]) == 0:
+                    with open(os.path.join(event_path, filename + ".csv"), "a"):
+                        pass
+                    continue
+                for pick_dict in event_picks_[i]:
+                    sta_order = pick_dict["station_index"]
+                    station_loc = meta["station_location"][sta_order[1], sta_order[0]]
+                    time_shift = meta["begin_time_index"][sta_order[1]] if "begin_time_index" in meta.keys() else 0
+                    # offset = output["offset"][i, 0, pick_dict["phase_index"]-time_shift, sta_order[0]].float().item()
+                    # width = output["offset"][i, 1, pick_dict["phase_index"]-time_shift, sta_order[0]].float().item()
+                    # dt = output["hypocenter"][i, 0, pick_dict["phase_index"]-time_shift, sta_order[0]].float().item()
+                    offset = output["offset"][i, 0, pick_dict["phase_mask"], sta_order[0]].float().mean().item()
+                    # assert 0, f"phase_mask: {pick_dict['phase_mask']}, phase_index: {pick_dict['phase_index']}, offset: {offset}"
+                    width = output["offset"][i, 1, pick_dict["phase_mask"], sta_order[0]].float().mean().item()
+                    dt = output["hypocenter"][i, 0, pick_dict["phase_mask"], sta_order[0]].float().mean().item()
+                    # dx = output["hypocenter"][i, 1, pick_dict["phase_index"]-time_shift, sta_order[0]].float().item()
+                    # dy = output["hypocenter"][i, 2, pick_dict["phase_index"]-time_shift, sta_order[0]].float().item()
+                    # dz = output["hypocenter"][i, 3, pick_dict["phase_index"]-time_shift, sta_order[0]].float().item()
+                    event_center_index = pick_dict["phase_index"]#+offset
+                    event_index = event_center_index - dt/(meta["dt_s"][i].item())/feature_scale
+                    p_index = event_center_index - width
+                    s_index = event_center_index + width
+                    pick_dict["event_center_index"] = event_center_index
+                    pick_dict["event_index"] = event_index
+                    pick_dict["p_index"] = p_index
+                    pick_dict["s_index"] = s_index
+                    pick_dict["event_original_time"] = (datetime.fromisoformat(pick_dict["phase_time"])
+                                                        + timedelta(seconds=(-dt))).isoformat(
+                            timespec="milliseconds"
+                    )
+                    
+                    dist = output["hypocenter"][i, 1, pick_dict["phase_mask"], sta_order[0]].mean()
+                    azimuth = output["hypocenter"][i, 2, pick_dict["phase_mask"], sta_order[0]].mean()
+                    pick_dict["epicentral_distance"] = dist.item()
+                    pick_dict["azimuth"] = torch.rad2deg(azimuth).item()
+                    dist = dist/6371
+                    sta_lon = torch.deg2rad(station_loc[0]) # longitude
+                    sta_lat = torch.deg2rad(station_loc[1]) # latitude
+                    pick_dict["event_latitude"] = torch.asin(torch.sin(sta_lat)*torch.cos(dist) + torch.cos(sta_lat)*torch.sin(dist)*torch.cos(azimuth))
+                    pick_dict["event_longitude"] = sta_lon + torch.atan2(torch.sin(azimuth)*torch.sin(dist)*torch.cos(sta_lat), torch.cos(dist)-torch.sin(sta_lat)*torch.sin(pick_dict["event_latitude"]))
+                    pick_dict["event_location_x"] = (pick_dict["event_longitude"]*torch.cos(pick_dict["event_latitude"]) * 6371).item()
+                    pick_dict["event_location_y"] = (pick_dict["event_latitude"] * 6371).item()
+                    pick_dict["event_location_z"] = (station_loc[2] + output["hypocenter"][i, 3, pick_dict["phase_mask"], sta_order[0]].mean()).item() #output["hypocenter"][i, 3, pick_dict["phase_index"]-time_shift, sta_order[0]]).item()
+                    pick_dict["magnitude"] = output["hypocenter"][i, 4, pick_dict["phase_mask"], sta_order[0]].mean().float().item()#output["hypocenter"][i, 4, pick_dict["phase_index"]-time_shift, sta_order[0]].float().item()
+                    pick_dict["phase_mask"] = [int(pick_dict["phase_mask"].item()), int(pick_dict["phase_mask"].item())]
+                    pick_dict["event_latitude"] = torch.rad2deg(pick_dict["event_latitude"]).item()
+                    pick_dict["event_longitude"] = torch.rad2deg(pick_dict["event_longitude"]).item()
+                    
+                picks_df = pd.DataFrame(event_picks_[i])
+                picks_df.sort_values(by=["phase_time"], inplace=True)
+                picks_df.to_csv(os.path.join(event_path, filename + ".csv"), index=False)
+
+            if args.plot_figure:
+                # meta["waveform_raw"] = meta["waveform"].clone()
+                # meta["data"] = moving_normalize(meta["data"])
+                plot_eqnet(
+                    meta,
+                    phase_scores.cpu(),
+                    event_scores.cpu(),
+                    phase_picks=phase_picks_,
+                    event_picks=event_picks_,
+                    phases=args.phases,
+                    file_name=meta["file_name"],
+                    begin_time_index=meta["begin_time_index"] if "begin_time_index" in meta else None,
+                    dt=meta["dt_s"] if "dt_s" in meta else torch.tensor(0.01),
+                    figure_dir=figure_path,
+                    feature_scale=feature_scale,
+                )
+                print("saving:", meta["file_name"])
+
+    ## merge picks
+    if args.distributed:
+        torch.distributed.barrier()
+        if utils.is_main_process():
+            merge_patch(pick_path, pick_path.replace("_patch", ""))
+            merge_patch(event_path, event_path.replace("_patch", ""))
+    else:
+        merge_patch(pick_path, pick_path.replace("_patch", ""))
+        merge_patch(event_path, event_path.replace("_patch", ""))
+        
+    return 0
+
+
 def main(args):
     result_path = args.result_path
     if args.cut_patch:
@@ -264,11 +429,14 @@ def main(args):
 
     device = torch.device(args.device)
     dtype = "bfloat16" if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else "float16"
+    #TODO: check if bfloat16 decreases the accuracy
+    dtype = "bfloat16" if args.model == "eqnet" else dtype  # eqnet only supports float16
     ptdtype = {"float32": torch.float32, "bfloat16": torch.bfloat16, "float16": torch.float16}[dtype]
     args.dtype, args.ptdtype = dtype, ptdtype
     torch.backends.cuda.matmul.allow_tf32 = True  # allow tf32 on matmul
     torch.backends.cudnn.allow_tf32 = True  # allow tf32 on cudnn
     if args.use_deterministic_algorithms:
+        os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
         torch.backends.cudnn.benchmark = False
         torch.use_deterministic_algorithms(True)
     else:
@@ -314,6 +482,31 @@ def main(args):
             world_size=world_size,
         )
         sampler = None
+    elif args.model == "eqnet":
+        dataset = SeismicNetworkIterableDataset(
+        data_path=args.data_path,
+        data_list=args.data_list,
+        hdf5_file=args.hdf5_file,
+        station_file=args.station_file,
+        prefix=args.prefix,
+        format=args.format,
+        dataset=args.dataset,
+        training=False,
+        phases=["P", "S"],
+        sort=False,
+        ## for prediction
+        sampling_rate=100,
+        highpass_filter=args.highpass_filter,
+        response_xml=args.response_xml,
+        cut_patch=args.cut_patch,
+        nx=args.nx,
+        nt_cut=args.nt,
+        rank=rank,
+        world_size=world_size,
+        is_pad=args.is_pad,
+        num_stations=args.num_stations,
+        )
+        sampler = None
     else:
         raise ("Unknown model")
 
@@ -332,6 +525,9 @@ def main(args):
         out_channels=(len(args.phases) + 1),
         add_polarity=args.add_polarity,
         add_event=args.add_event,
+        ## eqnet
+        head=args.head,
+        use_station_location=args.use_station_location,
     )
     logger.info("Model:\n{}".format(model))
 
@@ -359,6 +555,8 @@ def main(args):
                 )
             else:
                 raise ("Missing pretrained model for this location")
+        elif args.model == "eqnet":
+            model_url = "ai4eps/model-registry/eqnet-test:latest"
         else:
             raise
 
@@ -386,6 +584,9 @@ def main(args):
 
     if args.model == "phasenet_das":
         pred_phasenet_das(args, model, data_loader, pick_path, figure_path)
+    
+    if args.model == "eqnet":
+        pred_eqnet(args, model, data_loader, pick_path, figure_path, event_path)
 
 
 def get_args_parser(add_help=True):
@@ -397,6 +598,8 @@ def get_args_parser(add_help=True):
     parser.add_argument("--model", default="phasenet_das", type=str, help="model name")
     parser.add_argument("--resume", default="", type=str, help="path of checkpoint")
     parser.add_argument("--backbone", default="unet", type=str, help="model backbone")
+    parser.add_argument("--head", default="simple", type=str, help="model head")
+    parser.add_argument("--use-station-location", action="store_true", help="use station location")
     parser.add_argument("--phases", default=["P", "S"], type=str, nargs="+", help="phases to use")
 
     parser.add_argument("--device", default="cuda", type=str, help="device (Use cuda or cpu Default: cuda)")
@@ -406,6 +609,12 @@ def get_args_parser(add_help=True):
     parser.add_argument(
         "-b", "--batch_size", default=1, type=int, help="images per gpu, the total batch size is $NGPU x batch_size"
     )
+    
+    # deterministic option
+    parser.add_argument(
+        "--use-deterministic-algorithms", action="store_true", help="Forces the use of deterministic algorithms only."
+    )
+    
     # Mixed precision training parameters
     parser.add_argument(
         "--use_deterministic_algorithms", action="store_true", help="Forces the use of deterministic algorithms only."
@@ -420,12 +629,17 @@ def get_args_parser(add_help=True):
     parser.add_argument("--data_path", type=str, default="./", help="path to data directory")
     parser.add_argument("--data_list", type=str, default=None, help="selectecd data list")
     parser.add_argument("--hdf5-file", default=None, type=str, help="hdf5 file for training")
+    parser.add_argument("--station_file", default=None, type=str, help="station file")
     parser.add_argument("--prefix", default="", type=str, help="prefix for the file name")
     parser.add_argument("--format", type=str, default="h5", help="data format")
     parser.add_argument("--dataset", type=str, default="das", help="dataset type; seismic_trace, seismic_network, das")
     parser.add_argument("--result_path", type=str, default="results", help="path to result directory")
     parser.add_argument("--plot_figure", action="store_true", help="If plot figure for test")
     parser.add_argument("--min_prob", default=0.3, type=float, help="minimum probability for picking")
+    parser.add_argument("--is_pad", action="store_true", help="If pad the data to at least num_stations for eqnet")
+    parser.add_argument("--sort", default=True, type=bool, help="If sort the data by station locations for eqnet")
+    parser.add_argument("--num_stations", default=10, type=int, help="number of stations for eqnet")
+    parser.add_argument("--save_score", action="store_true", help="If save score for test")
 
     ## Seismic
     parser.add_argument("--add_polarity", action="store_true", help="If use polarity information")

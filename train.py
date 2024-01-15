@@ -10,11 +10,15 @@ import matplotlib
 import numpy as np
 import torch
 import torch.multiprocessing as mp
+import torch.distributed
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.data
+import wandb
 
 import datasets
+from datasets.distributed import split_dataset_by_node
+from datasets.fingerprint import Hasher
 import eqnet
 import utils
 import wandb
@@ -24,9 +28,11 @@ from eqnet.data import (
     SeismicNetworkIterableDataset,
     SeismicTraceIterableDataset,
 )
+from eqnet.data.utils import (random_shift)
 from eqnet.models.unet import moving_normalize
-from eqnet.utils.station_sampler import StationSampler, create_groups, cut_reorder_keys
+from eqnet.utils.station_sampler import StationSampler, create_groups, cut_reorder_keys, reorder_keys
 
+os.system('export HF_DATASETS_CACHE="/data/cache/huggingface"')
 matplotlib.use("agg")
 logger = logging.getLogger("EQNet")
 # mp.set_start_method("spawn", force=True)
@@ -53,6 +59,10 @@ def evaluate(model, data_loader, scaler, args, epoch=0, total_samples=1):
                 metric_logger.meters["loss_event_center"].update(output["loss_event_center"].item(), n=batch_size)
                 metric_logger.meters["loss_event_time"].update(output["loss_event_time"].item(), n=batch_size)
                 metric_logger.meters["loss_polarity"].update(output["loss_polarity"].item(), n=batch_size)
+            if args.model == "eqnet":
+                for k, v in output.items():
+                    if "loss" in k and k != "loss":
+                        metric_logger.meters[k].update(v.item(), n=batch_size)
 
             batch_size = meta["data"].shape[0]
             processed_samples += batch_size
@@ -71,6 +81,10 @@ def evaluate(model, data_loader, scaler, args, epoch=0, total_samples=1):
             log["test/loss_event_center"] = metric_logger.loss_event_center.global_avg
             log["test/loss_event_time"] = metric_logger.loss_event_time.global_avg
             log["test/loss_polarity"] = metric_logger.loss_polarity.global_avg
+        if args.model == "eqnet":
+            for k, v in metric_logger.meters.items():
+                if "loss" in k and k != "loss":
+                    log[f"test/{k}"] = v.global_avg
         wandb.log(log)
 
     plot_results(meta, model, output, args, epoch, "test_")
@@ -89,6 +103,7 @@ def train_one_epoch(
     args,
     epoch,
     total_samples,
+    balancer=None,
 ):
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter("lr", utils.SmoothedValue(window_size=1, fmt="{value}"))
@@ -97,7 +112,24 @@ def train_one_epoch(
         metric_logger.add_meter("loss_event_center", utils.SmoothedValue(window_size=1, fmt="{value}"))
         metric_logger.add_meter("loss_event_time", utils.SmoothedValue(window_size=1, fmt="{value}"))
         metric_logger.add_meter("loss_polarity", utils.SmoothedValue(window_size=1, fmt="{value}"))
+    if args.model == "eqnet":
+        metric_logger.add_meter("loss_phase", utils.SmoothedValue(window_size=1, fmt="{value}"))
+        metric_logger.add_meter("loss_event", utils.SmoothedValue(window_size=1, fmt="{value}"))
+        metric_logger.add_meter("loss_offset", utils.SmoothedValue(window_size=1, fmt="{value}"))
+        #metric_logger.add_meter("loss_hypocenter", utils.SmoothedValue(window_size=1, fmt="{value}"))
+        metric_logger.add_meter("loss_origin_time", utils.SmoothedValue(window_size=1, fmt="{value}"))
+        metric_logger.add_meter("loss_x", utils.SmoothedValue(window_size=1, fmt="{value}"))
+        metric_logger.add_meter("loss_y", utils.SmoothedValue(window_size=1, fmt="{value}"))
+        metric_logger.add_meter("loss_depth", utils.SmoothedValue(window_size=1, fmt="{value}"))
+        metric_logger.add_meter("loss_magnitude", utils.SmoothedValue(window_size=1, fmt="{value}"))
+        
     header = f"Epoch: [{epoch}]"
+    
+    if balancer is not None:
+        print(header, end="\t")
+        for i, k in enumerate(balancer.tasks):
+            print(f"{k}: {balancer.batch_weight[epoch,i]:.4f}", end="\t")
+        print()
 
     ctx = (
         nullcontext()
@@ -107,10 +139,15 @@ def train_one_epoch(
     model.train()
     processed_samples = 0
     for i, meta in enumerate(metric_logger.log_every(data_loader, args.print_freq, header)):
+        if args.model == "eqnet":
+            meta = random_shift(meta, shift_range=(-160, 0), feature_scale=16)
         with ctx:
             output = model(meta)
 
-        loss = output["loss"]
+        if balancer is None:
+            loss = output["loss"]
+        else:
+            loss = balancer.balance(model=model, output=output, epoch=epoch)
 
         optimizer.zero_grad()
         if scaler is not None:
@@ -122,6 +159,11 @@ def train_one_epoch(
             scaler.update()
         else:
             loss.backward()
+            # print("Not scaling...")
+            # print("Checking None grads...")
+            # for name, param in model.named_parameters():
+            #     if param.grad is None:
+            #         print(name)
             if args.clip_grad_norm is not None:
                 nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad_norm)
             optimizer.step()
@@ -143,6 +185,11 @@ def train_one_epoch(
             metric_logger.update(loss_event_center=output["loss_event_center"].item())
             metric_logger.update(loss_event_time=output["loss_event_time"].item())
             metric_logger.update(loss_polarity=output["loss_polarity"].item())
+        if args.model == "eqnet":
+            for k, v in output.items():
+                if "loss" in k and k != "loss":
+                    metric_logger.meters[k].update(v.item())
+
         if args.wandb and utils.is_main_process():
             log = {
                 "train/train_loss": loss.item(),
@@ -155,9 +202,20 @@ def train_one_epoch(
                 log["train/loss_event_center"] = output["loss_event_center"].item()
                 log["train/loss_event_time"] = output["loss_event_time"].item()
                 log["train/loss_polarity"] = output["loss_polarity"].item()
+            if args.model == "eqnet":
+                for k, v in output.items():
+                    if "loss" in k and k != "loss":
+                        log[f"train/{k}"] = v.item()
             wandb.log(log)
 
     model.eval()
+    
+    if balancer is not None:
+        balancer.update(meters=metric_logger.meters, epoch=epoch)
+        if args.wandb and utils.is_main_process():
+            if args.mtl=="dwa":
+                for i, k in enumerate(balancer.tasks):
+                    wandb.log({"train/balancer_" + k: balancer.batch_weight[epoch,i]})
     plot_results(meta, model, output, args, epoch, "train_")
     del meta, output, loss
 
@@ -207,14 +265,22 @@ def plot_results(meta, model, output, args, epoch, prefix=""):
             del preds
 
         elif args.model == "eqnet":
+            output = model(meta)
             phase = F.softmax(output["phase"], dim=1).cpu().float()
             event = torch.sigmoid(output["event"]).cpu().float()
+            try:
+                offset = output["offset"].cpu().float()
+                hypocenter = output["hypocenter"].cpu().float()
+            except:
+                offset = None
+                hypocenter = None
             print("Plotting...")
-            eqnet.utils.plot_eqnet_train(meta, phase, event, epoch=epoch, figure_dir=args.figure_dir)
-            del phase, event
+            eqnet.utils.plot_eqnet_train(meta, phase, event, epoch=epoch, figure_dir=args.figure_dir, prefix=prefix, offset=offset, hypocenter=hypocenter)
+            del output, phase, event, offset, hypocenter
 
 
 def main(args):
+    # mp.set_start_method('spawn', force=True)
     if args.output_dir:
         utils.mkdir(args.output_dir)
         figure_dir = os.path.join(args.output_dir, "figures")
@@ -227,6 +293,7 @@ def main(args):
     if args.distributed:
         rank = utils.get_rank()
         world_size = utils.get_world_size()
+        print(f"Rank: {rank}, World size: {world_size}")
     else:
         rank, world_size = 0, 1
 
@@ -236,6 +303,8 @@ def main(args):
 
     device = torch.device(args.device)
     dtype = "bfloat16" if (torch.cuda.is_available() and torch.cuda.is_bf16_supported()) else "float16"
+    if args.model == "eqnet":
+        dtype = "float16" if args.backbone == "swin" else "float16"
     ptdtype = {"float32": torch.float32, "bfloat16": torch.bfloat16, "float16": torch.float16}[dtype]
     scaler = torch.cuda.amp.GradScaler(enabled=((dtype == "float16") & torch.cuda.is_available()))
     args.dtype, args.ptdtype = dtype, ptdtype
@@ -243,7 +312,7 @@ def main(args):
     torch.backends.cudnn.allow_tf32 = True  # allow tf32 on cudnn
     if args.use_deterministic_algorithms:
         torch.backends.cudnn.benchmark = False
-        torch.use_deterministic_algorithms(True)
+        torch.use_deterministic_algorithms(True, warn_only=True)
     else:
         torch.backends.cudnn.benchmark = True
 
@@ -327,31 +396,65 @@ def main(args):
     elif args.model == "eqnet":
         if args.huggingface_dataset:
             try:
-                # Get the directory of the train.py
+            # Get the directory of the train.py
                 code_dir = os.path.dirname(os.path.abspath(__file__))
                 script_dir = os.path.join(code_dir, "eqnet/data/quakeflow_nc.py")
-                dataset = datasets.load_dataset(script_dir, split="train", name="NCEDC_full_size")
+                dataset = datasets.load_dataset(script_dir, split="train", name=args.dataset_config, cache_dir="/data/cache/huggingface")
+                dataset_test = datasets.load_dataset(script_dir, split="test", name=args.dataset_config, cache_dir="/data/cache/huggingface")
+            # TODO: just for testing
+            # dataset = datasets.load_dataset(script_dir, split="test", name=args.dataset_config)
+            # dataset_dict = dataset.train_test_split(test_size=0.2, seed=42)
+            # dataset = dataset_dict["train"]
+            # dataset_test = dataset_dict["test"]
             except:
-                dataset = datasets.load_dataset("AI4EPS/quakeflow_nc", split="train", name="NCEDC_full_size")
+                print("Failed to load dataset from local")
+                dataset = datasets.load_dataset("AI4EPS/quakeflow_nc", split="train", name=args.dataset_config)
+                dataset_test = datasets.load_dataset("AI4EPS/quakeflow_nc", split="test", name=args.dataset_config)
 
             dataset = dataset.with_format("torch")
-            dataset_dict = dataset.train_test_split(test_size=0.2, shuffle=False)
-            dataset = dataset_dict["train"]
-            dataset_test = dataset_dict["test"]
+            dataset_test = dataset_test.with_format("torch")
+            group_ids = create_groups(dataset, args.num_stations_list, is_pad=True, is_train=True)
+            if args.distributed and world_size > 1:
+                torch.set_num_threads(1) # fix the multi-processing bug
+                if args.gpu > 0:
+                    print(f"Rank {args.rank}: Gpu {args.gpu} waiting for main process to perform the mapping", force=True)
+                    torch.distributed.barrier()
+                print(f"Rank {args.rank}: Gpu {args.gpu} cut_reorder_keys fingerprint {Hasher.hash(lambda x: cut_reorder_keys(x, num_stations_list=args.num_stations_list, is_pad=True, is_train=False))}", force=True)
+                dataset = dataset.map(lambda x: cut_reorder_keys(x, num_stations_list=args.num_stations_list, is_pad=True, is_train=True), num_proc=args.workers, desc="cut_reorder_keys")#, new_fingerprint=Hasher.hash(lambda x: cut_reorder_keys(x, num_stations_list=num_stations_list, is_pad=True, is_train=True)))
+                dataset_test = dataset_test.map(lambda x: cut_reorder_keys(x, num_stations_list=args.num_stations_list, is_pad=True, is_train=False), num_proc=args.workers, desc="cut_reorder_keys")#, new_fingerprint=Hasher.hash(lambda x: cut_reorder_keys(x, num_stations_list=num_stations_list, is_pad=True, is_train=False)))
+                # dataset_test = dataset_test.map(lambda x: reorder_keys(x), num_proc=args.workers, desc="reorder_keys")
+                if args.gpu == 0:
+                    print("Mapping finished, loading results from main process")
+                    torch.distributed.barrier()
+            else:
+                torch.set_num_threads(1) # fix the multi-processing bug
+                print("Mapping dataset")
+                dataset = dataset.map(lambda x: cut_reorder_keys(x, num_stations_list=args.num_stations_list, is_pad=True, is_train=True), desc="cut_reorder_keys", num_proc=args.workers)
+                dataset_test = dataset_test.map(lambda x: cut_reorder_keys(x, num_stations_list=args.num_stations_list, is_pad=True, is_train=False), desc="cut_reorder_keys", num_proc=args.workers)
 
             if args.distributed:
+                # dataset = split_dataset_by_node(dataset, rank, world_size)
+                # dataset_test = split_dataset_by_node(dataset_test, rank, world_size)
                 train_sampler = torch.utils.data.distributed.DistributedSampler(dataset)
                 test_sampler = torch.utils.data.distributed.DistributedSampler(dataset_test, shuffle=False)
             else:
                 train_sampler = torch.utils.data.RandomSampler(dataset)
                 test_sampler = torch.utils.data.SequentialSampler(dataset_test)
 
-            group_ids = create_groups(dataset, args.num_stations_list)
-            dataset = dataset.map(lambda x: cut_reorder_keys(x, num_stations_list=args.num_stations_list))
             train_batch_sampler = StationSampler(train_sampler, group_ids, args.batch_size, args.num_stations_list)
+            # dataset_test = dataset_test.map(lambda x: reorder_keys(x))
 
         else:
-            dataset = SeismicNetworkIterableDataset(args.dataset)
+            dataset = SeismicNetworkIterableDataset(
+                data_path=args.data_path,
+                data_list=args.data_list,
+                hdf5_file=args.hdf5_file,
+                num_stations=args.num_stations_list[0] if args.num_stations_list is not None else None,
+                format="h5",
+                training=True,
+                rank=rank,
+                world_size=world_size,
+            )    
             train_sampler = None
             dataset_test = dataset
             test_sampler = None
@@ -397,6 +500,13 @@ def main(args):
         backbone=args.backbone,
         in_channels=1,
         out_channels=(len(args.phases) + 1),
+        ## phasenet-das
+        reg=args.reg,
+        ## phasenet
+        polarity_loss_weight=args.polarity_loss_weight,
+        ## eqnet
+        head=args.head,
+        use_station_location=args.use_station_location,
     )
     logger.info("Model:\n{}".format(model))
 
@@ -502,8 +612,27 @@ def main(args):
         )
     else:
         lr_scheduler = main_lr_scheduler
+        
+    if args.mtl is not None:
+        if args.mtl == "dwa":
+            if args.model == "eqnet":
+                #tasks = ["loss_phase", "loss_event", "loss_offset", "loss_hypocenter"]
+                tasks = ["loss_phase", "loss_event", "loss_offset", "loss_origin_time", "loss_x", "loss_y", "loss_depth", "loss_magnitude"]
+                # pre_weight = args.pre_weight
+                pre_weight = [1.0,]+model.event_detector.weights
+                print(f"{args.model}: {args.mtl} pre_weight: ", end="\t")
+                for i, k in enumerate(tasks):
+                    print(f"{k}: {pre_weight[i]:.4f}", end="\t")
+                print()
+        
+        balancer = utils.MTLBalance(args.mtl, tasks, pre_weight, args.temp, args.epochs, device)
 
     model_without_ddp = model
+    # print parameter number
+    print("Number of parameters: ", sum(p.numel() for p in model_without_ddp.parameters() if p.requires_grad))
+    # for name, param in model.named_parameters():
+    #     if param.grad is None:
+    #         print(name)
     if args.distributed:
         model = torch.nn.parallel.DistributedDataParallel(
             model, device_ids=[args.gpu]
@@ -554,6 +683,7 @@ def main(args):
             args,
             epoch,
             len(dataset),
+            balancer=None if args.mtl is None else balancer,
         )
         print(f"Training time of epoch {epoch} of rank {rank}: {time.time() - tmp_time:.3f}")
 
@@ -616,6 +746,8 @@ def get_args_parser(add_help=True):
     parser.add_argument("--dataset", default="", type=str, help="dataset name")
     parser.add_argument("--model", default="phasenet_das", type=str, help="model name")
     parser.add_argument("--backbone", default="unet", type=str, help="model backbone")
+    parser.add_argument("--head", default="simple", type=str, help="model head")
+    parser.add_argument("--use-station-location", action="store_true", help="use station location")
     parser.add_argument(
         "--device",
         default="cuda",
@@ -762,6 +894,11 @@ def get_args_parser(add_help=True):
         action="store_true",
         help="Use torch.cuda.amp for mixed precision training",
     )
+    
+    # MTL training strategy
+    parser.add_argument("--mtl", default=None, type=str, help="type of mtl training strategy")
+    parser.add_argument("--pre-weight", default=None, type=float, nargs="+", help="pre-factor weight of mtl loss")
+    parser.add_argument("--temp", default=2.0, type=float, help="temperature of dwa")
 
     ## Data Augmentation
     parser.add_argument("--phases", default=["P", "S"], type=str, nargs="+", help="phases to use")
@@ -788,8 +925,9 @@ def get_args_parser(add_help=True):
 
     # huggingface dataset
     parser.add_argument("--huggingface-dataset", action="store_true", help="use huggingface dataset")
+    parser.add_argument("--dataset-config", default="event", type=str, help="huggingface dataset config name")
     parser.add_argument(
-        "--num-stations-list", default=[5, 10, 20], type=int, nargs="+", help="possible stations number of the dataset"
+        "--num-stations-list", default=None, type=int, nargs="+", help="possible stations number of the dataset"
     )
 
     return parser
