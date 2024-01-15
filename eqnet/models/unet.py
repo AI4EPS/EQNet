@@ -289,16 +289,17 @@ class UNet(nn.Module):
         out_phase = self.output_conv(dec1)
         if self.output_upsample is not None:
             out_phase = self.output_upsample(out_phase)
-        out_phase = out_phase[:, :, :nt, :nx]
+        # TODO: Check AGAIN if these part is needed.
+        # out_phase = out_phase[:, :, :nt, :nx]
 
         if self.add_polarity:
             dec_polarity = torch.cat((dec2, enc_polarity), dim=1)
             out_polarity = self.output_polarity(dec_polarity)
             if self.output_upsample is not None:
                 out_polarity = self.output_upsample(out_polarity)
-                out_polarity = out_polarity[:, :, :nt, :nx]
-            else:
-                out_polarity = out_polarity[:, :, : nt // 4, :nx]
+            #     out_polarity = out_polarity[:, :, :nt, :nx]
+            # else:
+            #     out_polarity = out_polarity[:, :, : nt // 4, :nx]
         else:
             out_polarity = None
 
@@ -306,9 +307,9 @@ class UNet(nn.Module):
             out_event = self.output_event(dec3)
             if self.output_upsample is not None:
                 out_event = self.output_upsample(out_event)
-                out_event = out_event[:, :, : nt // 4, :nx]
-            else:
-                out_event = out_event[:, :, : nt // 16, :nx]
+                # out_event = out_event[:, :, : nt // 4, :nx]
+            # else:
+            #     out_event = out_event[:, :, : nt // 16, :nx]
         else:
             out_event = None
 

@@ -314,6 +314,7 @@ class SeismicTraceIterableDataset(IterableDataset):
         resample_time=False,
         ## for prediction
         sampling_rate=100,
+        response_path=None,
         response_xml=None,
         highpass_filter=False,
         rank=0,
@@ -356,6 +357,7 @@ class SeismicTraceIterableDataset(IterableDataset):
         self.data_path = data_path
         self.hdf5_file = hdf5_file
         self.phases = phases
+        self.response_path = response_path
         self.response_xml = response_xml
         self.sampling_rate = sampling_rate
         self.highpass_filter = highpass_filter
@@ -691,15 +693,19 @@ class SeismicTraceIterableDataset(IterableDataset):
             tr.taper(max_percentage=0.05, type="cosine")
         return stream
 
-    def read_mseed(self, fname, response_xml=None, highpass_filter=False, sampling_rate=100):
+    def read_mseed(self, fname, response_path=None, response_xml=None, highpass_filter=False, sampling_rate=100):
         try:
             stream = obspy.Stream()
             for tmp in fname.split(","):
                 with fsspec.open(tmp, "rb") as fs:
-                    stream += obspy.read(fs, format="MSEED")
+                    meta = obspy.read(fs, format="MSEED")
+                    if response_path is not None:
+                        inv = obspy.read_inventory(os.path.join(response_path, meta[0].id[:-1]) + ".xml")
+                        meta = meta.remove_sensitivity(inv)
+                    stream += meta
                 # stream += obspy.read(tmp)
             stream = stream.merge(fill_value="latest")
-            if response_xml is not None:
+            if (response_path is None) and (response_xml is not None):
                 response = obspy.read_inventory(response_xml)
                 stream = stream.remove_sensitivity(response)
         except Exception as e:
@@ -890,6 +896,7 @@ class SeismicTraceIterableDataset(IterableDataset):
             if self.format == "mseed":
                 meta = self.read_mseed(
                     fname,
+                    response_path=self.response_path,
                     response_xml=self.response_xml,
                     highpass_filter=self.highpass_filter,
                     sampling_rate=self.sampling_rate,

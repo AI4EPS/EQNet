@@ -9,11 +9,11 @@ import pandas as pd
 import torch
 import torch.multiprocessing as mp
 import torch.utils.data
+import wandb
 from tqdm import tqdm
 
 import eqnet
 import utils
-import wandb
 from eqnet.data import DASIterableDataset, SeismicTraceIterableDataset
 from eqnet.models.unet import moving_normalize
 from eqnet.utils import (
@@ -41,11 +41,11 @@ def postprocess(meta, output, polarity_scale=4, event_scale=16):
     if "phase" in output:
         output["phase"] = output["phase"][:, :, :nt, :nx]
     if "polarity" in output:
-        output["polarity"] = output["polarity"][:, :, : nt // polarity_scale, :nx]
+        output["polarity"] = output["polarity"][:, :, : (nt - 1) // polarity_scale + 1, :nx]
     if "event_center" in output:
-        output["event_center"] = output["event_center"][:, :, : nt // event_scale, :nx]
+        output["event_center"] = output["event_center"][:, :, : (nt - 1) // event_scale + 1, :nx]
     if "event_time" in output:
-        output["event_time"] = output["event_time"][:, :, : nt // event_scale, :nx]
+        output["event_time"] = output["event_time"][:, :, : (nt - 1) // event_scale + 1, :nx]
     return meta, output
 
 
@@ -345,6 +345,7 @@ def main(args):
             dataset=args.dataset,
             training=False,
             highpass_filter=args.highpass_filter,
+            response_path=args.response_path,
             response_xml=args.response_xml,
             cut_patch=args.cut_patch,
             resample_time=args.resample_time,
@@ -493,6 +494,7 @@ def get_args_parser(add_help=True):
     parser.add_argument("--add_polarity", action="store_true", help="If use polarity information")
     parser.add_argument("--add_event", action="store_true", help="If use event information")
     parser.add_argument("--highpass_filter", type=float, default=0.0, help="highpass filter; default 0.0 is no filter")
+    parser.add_argument("--response_path", default=None, type=str, help="response path")
     parser.add_argument("--response_xml", default=None, type=str, help="response xml file")
     parser.add_argument("--folder_depth", default=0, type=int, help="folder depth for data list")
 

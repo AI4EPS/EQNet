@@ -259,11 +259,16 @@ def merge_picks(pick_dir):
         num_p += len(picks_[picks_["phase_type"] == "P"])
         num_s += len(picks_[picks_["phase_type"] == "S"])
         picks.append(picks_)
-    picks = pd.concat(picks)
-    picks = picks.sort_values(["phase_time", "station_id", "phase_type"])
-    picks = picks.reset_index(drop=True)
-    picks.to_csv(str(pick_dir) + ".csv", index=False)
+    if len(picks) == 0:
+        with open(str(pick_dir) + ".csv", "w") as fp:
+            fp.write("")
+    else:
+        picks = pd.concat(picks)
+        picks = picks.sort_values(["phase_time", "station_id", "phase_type"])
+        picks = picks.reset_index(drop=True)
+        picks.to_csv(str(pick_dir) + ".csv", index=False)
 
+    print(f"Number of picks: {len(picks)}")
     if (num_p > 0) and (num_s > 0):
         print(f"Number of P picks: {num_p}")
         print(f"Number of S picks: {num_s}")
@@ -284,12 +289,16 @@ def merge_events(event_dir):
             continue
         events_ = pd.read_csv(file)
         events.append(events_)
-    events = pd.concat(events)
-    events = events.sort_values(["event_time", "station_id"])
-    events = events.reset_index(drop=True)
-    events.to_csv(str(event_dir) + ".csv", index=False)
+    if len(events) == 0:
+        with open(str(event_dir) + ".csv", "w") as fp:
+            fp.write("")
+    else:
+        events = pd.concat(events)
+        events = events.sort_values(["event_time", "station_id"])
+        events = events.reset_index(drop=True)
+        events.to_csv(str(event_dir) + ".csv", index=False)
 
-    print(f"Number of events: {len(events)}")
+    print(f"Number of event x station: {len(events)}")
     return 0
 
 
