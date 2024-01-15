@@ -945,8 +945,6 @@ class SeismicTraceIterableDataset(IterableDataset):
                             "begin_time_index": i,
                             "dt_s": meta["dt_s"],
                             "file_name": os.path.splitext(meta["file_name"].split("/")[-1])[0] + f"_{i:04d}_{j:04d}",
-                            "nx": nx,
-                            "nt": nt,
                         }
 
 

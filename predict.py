@@ -612,11 +612,11 @@ def main(args):
                     "https://github.com/AI4EPS/models/releases/download/PhaseNet-DAS-ConvertedPhase/model_99.pth"
                 )
             else:
-                raise ("Missing pretrained model for this location")
+                raise NotImplementedError("Missing pretrained model for this location")
         elif args.model == "eqnet":
             model_url = "ai4eps/model-registry/eqnet-test:latest"
         else:
-            raise
+            raise NotImplementedError("Missing pretrained model for this model")
 
         ## load model from wandb
         # if utils.is_main_process():

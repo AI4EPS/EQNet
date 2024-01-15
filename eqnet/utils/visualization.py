@@ -566,110 +566,124 @@ def plot_eqnet_train(meta, phase, event, epoch, figure_dir="figures", prefix="",
         if flag:
             feature_scale=16
             sampling_rate=100.0
-            event_center = (meta["event_center"][i,:,:].eq(1).float()*torch.arange(meta["event_center"][i].shape[-2])[:,None].float()).sum(axis=-2)
-            true_station_number = event_center.shape[0]
+            true_station_number = meta["event_center"].shape[-1]
             mask = meta["event_location_mask"][i]
             mask_divide = mask.sum(axis=-2)
             for k in range(mask_divide.shape[0]):
                 if mask_divide[k] == 0:
                     mask_divide[k] = 1
                     true_station_number -= 1
-            #assert abs((mask*torch.arange(mask.shape[-2])[:,None].float()).sum(axis=-2)/mask.sum(axis=-2) - event_center).max() <= 1
-            dt = (hypocenter[i, 0,:,:]*mask)*sampling_rate
-            dt = dt.sum(axis=-2)/mask_divide
-            offset_pred = (offset[i, 0,:,:]*mask)
-            offset_pred = offset_pred.sum(axis=-2)/mask_divide
-            dt = dt + offset_pred*feature_scale
-            
-            dt_ground_truth = (meta["event_location"][i, 0,:,:]*mask)*sampling_rate
-            dt_ground_truth = dt_ground_truth.sum(axis=-2)/mask_divide
-            offset_ground_truth = (meta["event_location"][i, 5,:,:]*mask)
-            offset_ground_truth = offset_ground_truth.sum(axis=-2)/mask_divide
-            dt_ground_truth = dt_ground_truth + offset_ground_truth*feature_scale
-            cut_idx = (dt_ground_truth!=0)
-            # we only plot the event that is not the 0 padding
-            event_center = event_center[cut_idx]
-            dt = dt[cut_idx]
-            dt_ground_truth = dt_ground_truth[cut_idx]
-            offset_pred = offset_pred[cut_idx]
-            offset_ground_truth = offset_ground_truth[cut_idx]
-            
-            #axes[2].scatter((feature_scale*(event_center+offset_ground_truth))/feature_scale, np.arange(event_center.shape[-1]), c=np.arange(event_center.shape[-1]), s=50, marker=".")
-            axes[2].scatter((feature_scale*(event_center+offset_pred)-dt)/feature_scale, np.arange(event_center.shape[-1]), c=np.arange(event_center.shape[-1]), s=50, marker="^")
-            axes[2].scatter((feature_scale*(event_center+offset_ground_truth)-dt_ground_truth)/feature_scale, np.arange(event_center.shape[-1]), c=np.arange(event_center.shape[-1]), s=50, marker="*")
-            axes[2].scatter(((feature_scale*(event_center+offset_pred)-dt).sum()/true_station_number)/feature_scale, event_center.shape[-1], c="C1", s=100, marker="^")
-            axes[2].scatter(((feature_scale*(event_center+offset_ground_truth)-dt_ground_truth).sum()/true_station_number)/feature_scale, event_center.shape[-1], c="C0", s=100, marker="*")
-            
-            width_pred = (offset[i, 1,:,:]*mask)
-            width_pred = width_pred.sum(axis=-2)/mask_divide
-            width_ground_truth = (meta["event_location"][i, 6,:,:]*mask)
-            width_ground_truth = width_ground_truth.sum(axis=-2)/mask_divide
-            # we only plot the event that is not the 0 padding
-            width_pred = width_pred[cut_idx]
-            width_ground_truth = width_ground_truth[cut_idx]
-            
-            for k in range(len(event_center)):
-                # use arrow to show the prediction
-                axes[2].annotate("", xy=(event_center[k], k), xytext=(event_center[k]-width_pred[k], k), arrowprops=dict(color='red', arrowstyle='<-', mutation_scale=0.7))
-                axes[2].annotate("", xy=(event_center[k], k), xytext=(event_center[k]+width_pred[k], k), arrowprops=dict(color='blue', arrowstyle='<-', mutation_scale=0.7))
-                axes[2].annotate("", xy=(event_center[k], k), xytext=(event_center[k]+offset_pred[k], k), arrowprops=dict(color='green', arrowstyle='<-', mutation_scale=0.7))
-                
-                # use vertical line to show the ground truth
-                axes[2].vlines(event_center[k]-width_ground_truth[k], k-0.2, k+0.2, color="C3", linestyle="--")
-                axes[2].vlines(event_center[k]+width_ground_truth[k], k-0.2, k+0.2, color="C0", linestyle="--")
-                axes[2].vlines(event_center[k]+offset_ground_truth[k], k-0.2, k+0.2, color="C2", linestyle="--")
-            
-            distance = (hypocenter[i, 1:4,:,:]*mask[None, :, :])
-            distance = distance.sum(axis=-2)/mask_divide[None,:]
-            # if prediction doesn't have the depth, use 0
-            if distance.shape[0]==2:
-                distance = torch.cat([distance, torch.zeros_like(distance[0:1])], dim=0)
-            distance_ground_truth = (meta["event_location"][i, 1:4,:,:]*mask[None, :, :])
-            distance_ground_truth = distance_ground_truth.sum(axis=-2)/mask_divide[None, :]
-            station_location = meta["station_location"][i]
-            station_location[:, 0] = station_location[:, 0] * torch.cos(torch.deg2rad(station_location[:, 1])) * degree2km
-            station_location[:, 1] = station_location[:, 1] * degree2km
-            x = distance[0] * torch.cos(distance[1])
-            y = distance[0] * torch.sin(distance[1])
-            x_ground_truth = distance_ground_truth[0] * torch.cos(distance_ground_truth[1])
-            y_ground_truth = distance_ground_truth[0] * torch.sin(distance_ground_truth[1])
-            distance = torch.stack([x, y, distance[2]], dim=0)
-            distance_ground_truth = torch.stack([x_ground_truth, y_ground_truth, distance_ground_truth[2]], dim=0)
-            
-            # we only plot the event that is not the 0 padding
-            distance = distance[:, cut_idx]
-            distance_ground_truth = distance_ground_truth[:, cut_idx]
-            station_location = station_location[cut_idx]
-            
-            axes[3].scatter(station_location[:, 0], station_location[:, 1], c=np.arange(station_location.shape[0]), s=50, marker="^")
-            axes[3].scatter(distance[0]+station_location[:, 0], distance[1]+station_location[:, 1], c=np.arange(station_location.shape[0]), s=50, marker=".", alpha=0.5)
-            axes[3].scatter(distance_ground_truth[0]+station_location[:, 0], distance_ground_truth[1]+station_location[:, 1], c=np.arange(station_location.shape[0]), s=50, marker="*", alpha=0.5)
-            axes[3].scatter((distance[0]+station_location[:, 0]).sum()/true_station_number, (distance[1]+station_location[:, 1]).sum()/true_station_number, c="C1", s=150, marker=".", alpha=0.7)
-            axes[3].scatter((distance_ground_truth[0]+station_location[:, 0]).sum()/true_station_number, (distance_ground_truth[1]+station_location[:, 1]).sum()/true_station_number, c="C0", s=150, marker="*", alpha=0.7)
-            
-            axes[4].scatter(station_location[:, 0], station_location[:, 2], c=np.arange(station_location.shape[0]), s=50, marker="^")
-            axes[4].scatter(distance[0]+station_location[:, 0], distance[2]+station_location[:, 2], c=np.arange(station_location.shape[0]), s=50, marker=".", alpha=0.5)
-            axes[4].scatter(distance_ground_truth[0]+station_location[:, 0], distance_ground_truth[2]+station_location[:, 2], c=np.arange(station_location.shape[0]), s=50, marker="*", alpha=0.5)
-            axes[4].scatter((distance[0]+station_location[:, 0]).sum()/true_station_number, (distance[2]+station_location[:, 2]).sum()/true_station_number, c="C1", s=150, marker=".", alpha=0.7)
-            axes[4].scatter((distance_ground_truth[0]+station_location[:, 0]).sum()/true_station_number, (distance_ground_truth[2]+station_location[:, 2]).sum()/true_station_number, c="C0", s=150, marker="*", alpha=0.7)
-            
-            axes[5].scatter(station_location[:, 2], station_location[:, 1], c=np.arange(station_location.shape[0]), s=50, marker="^")
-            axes[5].scatter(distance[2]+station_location[:, 2], distance[1]+station_location[:, 1], c=np.arange(station_location.shape[0]), s=50, marker=".", alpha=0.5)
-            axes[5].scatter(distance_ground_truth[2]+station_location[:, 2], distance_ground_truth[1]+station_location[:, 1], c=np.arange(station_location.shape[0]), s=50, marker="*", alpha=0.5)
-            axes[5].scatter((distance[2]+station_location[:, 2]).sum()/true_station_number, (distance[1]+station_location[:, 1]).sum()/true_station_number, c="C1", s=150, marker=".", alpha=0.7)
-            axes[5].scatter((distance_ground_truth[2]+station_location[:, 2]).sum()/true_station_number, (distance_ground_truth[1]+station_location[:, 1]).sum()/true_station_number, c="C0", s=150, marker="*", alpha=0.7)
-            
-            magnitude = (hypocenter[i, 4,:,:]*mask)
-            magnitude = magnitude.sum(axis=-2)/mask_divide
-            magnitude_ground_truth = (meta["event_location"][i, 4,:,:]*mask)
-            magnitude_ground_truth = magnitude_ground_truth.sum(axis=-2)/mask_divide
-            # we only plot the event that is not the 0 padding
-            magnitude = magnitude[cut_idx]
-            magnitude_ground_truth = magnitude_ground_truth[cut_idx]
-            
-            axes[6].scatter(magnitude, np.zeros_like(magnitude), c=np.arange(magnitude.shape[0]), s=50, marker=".", alpha=0.7)
-            axes[6].scatter(magnitude.sum()/true_station_number, 0, c=magnitude.shape[0], s=150, marker=".")
-            axes[6].scatter(magnitude_ground_truth.sum()/true_station_number, 0, c="C1", s=150, marker="*")
+            event_centers = [torch.where(meta["event_center"][i,:,k_sta].eq(1))[0][0].unsqueeze(-1) for k_sta in range(true_station_number)] # stations, events
+            if true_station_number < meta["event_center"].shape[-1]:
+                #event_centers += [torch.zeros_like(event_centers[0])] * (meta["event_center"].shape[-1] - true_station_number)
+                event_centers += [torch.zeros_like(torch.tensor([0]))] * (meta["event_center"].shape[-1] - true_station_number)
+            event_centers = torch.stack(event_centers).permute(1,0) # events, stations
+            for event_center in event_centers:     
+                #assert abs((mask*torch.arange(mask.shape[-2])[:,None].float()).sum(axis=-2)/mask.sum(axis=-2) - event_center).max() <= 1
+                mask = event_center.eq(torch.arange(mask.shape[-2])[:,None])
+                #dt = (hypocenter[i, 0,:,:]*mask)*sampling_rate
+                #dt = dt.sum(axis=-2)/mask_divide
+                dt = (hypocenter[i, 0, mask])*sampling_rate 
+                #offset_pred = (offset[i, 0,:,:]*mask)
+                #offset_pred = offset_pred.sum(axis=-2)/mask_divide
+                offset_pred = (offset[i, 0, mask])
+                dt = dt + offset_pred*feature_scale
+
+                #dt_ground_truth = (meta["event_location"][i, 0,:,:]*mask)*sampling_rate
+                #dt_ground_truth = dt_ground_truth.sum(axis=-2)/mask_divide
+                dt_ground_truth = (meta["event_location"][i, 0, mask])*sampling_rate
+                #offset_ground_truth = (meta["event_location"][i, 5,:,:]*mask)
+                #offset_ground_truth = offset_ground_truth.sum(axis=-2)/mask_divide
+                offset_ground_truth = (meta["event_location"][i, 5, mask])
+                dt_ground_truth = dt_ground_truth + offset_ground_truth*feature_scale
+                cut_idx = (dt_ground_truth!=0)
+                # we only plot the event that is not the 0 padding
+                event_center = event_center[cut_idx]
+                dt = dt[cut_idx]
+                dt_ground_truth = dt_ground_truth[cut_idx]
+                offset_pred = offset_pred[cut_idx]
+                offset_ground_truth = offset_ground_truth[cut_idx]
+
+                #axes[2].scatter((feature_scale*(event_center+offset_ground_truth))/feature_scale, np.arange(event_center.shape[-1]), c=np.arange(event_center.shape[-1]), s=50, marker=".")
+                axes[2].scatter((feature_scale*(event_center+offset_pred)-dt)/feature_scale, np.arange(event_center.shape[-1]), c=np.arange(event_center.shape[-1]), s=50, marker="^")
+                axes[2].scatter((feature_scale*(event_center+offset_ground_truth)-dt_ground_truth)/feature_scale, np.arange(event_center.shape[-1]), c=np.arange(event_center.shape[-1]), s=50, marker="*")
+                axes[2].scatter(((feature_scale*(event_center+offset_pred)-dt).sum()/true_station_number)/feature_scale, event_center.shape[-1], c="C1", s=100, marker="^")
+                axes[2].scatter(((feature_scale*(event_center+offset_ground_truth)-dt_ground_truth).sum()/true_station_number)/feature_scale, event_center.shape[-1], c="C0", s=100, marker="*")
+
+                #width_pred = (offset[i, 1,:,:]*mask)
+                #width_pred = width_pred.sum(axis=-2)/mask_divide
+                width_pred = (offset[i, 1, mask])
+                #width_ground_truth = (meta["event_location"][i, 6,:,:]*mask)
+                #width_ground_truth = width_ground_truth.sum(axis=-2)/mask_divide
+                width_ground_truth = (meta["event_location"][i, 6, mask])
+                # we only plot the event that is not the 0 padding
+                width_pred = width_pred[cut_idx]
+                width_ground_truth = width_ground_truth[cut_idx]
+
+                for k in range(len(event_center)):
+                    # use arrow to show the prediction
+                    axes[2].annotate("", xy=(event_center[k], k), xytext=(event_center[k]-width_pred[k], k), arrowprops=dict(color='red', arrowstyle='<-', mutation_scale=0.7))
+                    axes[2].annotate("", xy=(event_center[k], k), xytext=(event_center[k]+width_pred[k], k), arrowprops=dict(color='blue', arrowstyle='<-', mutation_scale=0.7))
+                    axes[2].annotate("", xy=(event_center[k], k), xytext=(event_center[k]+offset_pred[k], k), arrowprops=dict(color='green', arrowstyle='<-', mutation_scale=0.7))
+
+                    # use vertical line to show the ground truth
+                    axes[2].vlines(event_center[k]-width_ground_truth[k], k-0.2, k+0.2, color="C3", linestyle="--")
+                    axes[2].vlines(event_center[k]+width_ground_truth[k], k-0.2, k+0.2, color="C0", linestyle="--")
+                    axes[2].vlines(event_center[k]+offset_ground_truth[k], k-0.2, k+0.2, color="C2", linestyle="--")
+
+                distance = (hypocenter[i, 1:4,:,:]*mask[None, :, :])
+                distance = distance.sum(axis=-2)#/mask_divide[None,:]
+                # if prediction doesn't have the depth, use 0
+                if distance.shape[0]==2:
+                    distance = torch.cat([distance, torch.zeros_like(distance[0:1])], dim=0)
+                distance_ground_truth = (meta["event_location"][i, 1:4,:,:]*mask[None, :, :])
+                distance_ground_truth = distance_ground_truth.sum(axis=-2)#/mask_divide[None, :]
+                station_location = meta["station_location"][i]
+                station_location[:, 0] = station_location[:, 0] * torch.cos(torch.deg2rad(station_location[:, 1])) * degree2km
+                station_location[:, 1] = station_location[:, 1] * degree2km
+                x = distance[0] * torch.cos(distance[1])
+                y = distance[0] * torch.sin(distance[1])
+                x_ground_truth = distance_ground_truth[0] * torch.cos(distance_ground_truth[1])
+                y_ground_truth = distance_ground_truth[0] * torch.sin(distance_ground_truth[1])
+                distance = torch.stack([x, y, distance[2]], dim=0)
+                distance_ground_truth = torch.stack([x_ground_truth, y_ground_truth, distance_ground_truth[2]], dim=0)
+
+                # we only plot the event that is not the 0 padding
+                distance = distance[:, cut_idx]
+                distance_ground_truth = distance_ground_truth[:, cut_idx]
+                station_location = station_location[cut_idx]
+
+                axes[3].scatter(station_location[:, 0], station_location[:, 1], c=np.arange(station_location.shape[0]), s=50, marker="^")
+                axes[3].scatter(distance[0]+station_location[:, 0], distance[1]+station_location[:, 1], c=np.arange(station_location.shape[0]), s=50, marker=".", alpha=0.5)
+                axes[3].scatter(distance_ground_truth[0]+station_location[:, 0], distance_ground_truth[1]+station_location[:, 1], c=np.arange(station_location.shape[0]), s=50, marker="*", alpha=0.5)
+                axes[3].scatter((distance[0]+station_location[:, 0]).sum()/true_station_number, (distance[1]+station_location[:, 1]).sum()/true_station_number, c="C1", s=150, marker=".", alpha=0.7)
+                axes[3].scatter((distance_ground_truth[0]+station_location[:, 0]).sum()/true_station_number, (distance_ground_truth[1]+station_location[:, 1]).sum()/true_station_number, c="C0", s=150, marker="*", alpha=0.7)
+
+                axes[4].scatter(station_location[:, 0], station_location[:, 2], c=np.arange(station_location.shape[0]), s=50, marker="^")
+                axes[4].scatter(distance[0]+station_location[:, 0], distance[2]+station_location[:, 2], c=np.arange(station_location.shape[0]), s=50, marker=".", alpha=0.5)
+                axes[4].scatter(distance_ground_truth[0]+station_location[:, 0], distance_ground_truth[2]+station_location[:, 2], c=np.arange(station_location.shape[0]), s=50, marker="*", alpha=0.5)
+                axes[4].scatter((distance[0]+station_location[:, 0]).sum()/true_station_number, (distance[2]+station_location[:, 2]).sum()/true_station_number, c="C1", s=150, marker=".", alpha=0.7)
+                axes[4].scatter((distance_ground_truth[0]+station_location[:, 0]).sum()/true_station_number, (distance_ground_truth[2]+station_location[:, 2]).sum()/true_station_number, c="C0", s=150, marker="*", alpha=0.7)
+
+                axes[5].scatter(station_location[:, 2], station_location[:, 1], c=np.arange(station_location.shape[0]), s=50, marker="^")
+                axes[5].scatter(distance[2]+station_location[:, 2], distance[1]+station_location[:, 1], c=np.arange(station_location.shape[0]), s=50, marker=".", alpha=0.5)
+                axes[5].scatter(distance_ground_truth[2]+station_location[:, 2], distance_ground_truth[1]+station_location[:, 1], c=np.arange(station_location.shape[0]), s=50, marker="*", alpha=0.5)
+                axes[5].scatter((distance[2]+station_location[:, 2]).sum()/true_station_number, (distance[1]+station_location[:, 1]).sum()/true_station_number, c="C1", s=150, marker=".", alpha=0.7)
+                axes[5].scatter((distance_ground_truth[2]+station_location[:, 2]).sum()/true_station_number, (distance_ground_truth[1]+station_location[:, 1]).sum()/true_station_number, c="C0", s=150, marker="*", alpha=0.7)
+
+                #magnitude = (hypocenter[i, 4,:,:]*mask)
+                #magnitude = magnitude.sum(axis=-2)/mask_divide
+                magnitude = (hypocenter[i, 4, mask])
+                #magnitude_ground_truth = (meta["event_location"][i, 4,:,:]*mask)
+                #magnitude_ground_truth = magnitude_ground_truth.sum(axis=-2)/mask_divide
+                magnitude_ground_truth = (meta["event_location"][i, 4, mask])
+                # we only plot the event that is not the 0 padding
+                magnitude = magnitude[cut_idx]
+                magnitude_ground_truth = magnitude_ground_truth[cut_idx]
+
+                axes[6].scatter(magnitude, np.zeros_like(magnitude), c=np.arange(magnitude.shape[0]), s=50, marker=".", alpha=0.7)
+                axes[6].scatter(magnitude.sum()/true_station_number, 0, c=magnitude.shape[0], s=150, marker=".")
+                axes[6].scatter(magnitude_ground_truth.sum()/true_station_number, 0, c="C1", s=150, marker="*")
 
         axes[0].set_title("data")
         axes[1].set_title("phase_pick")

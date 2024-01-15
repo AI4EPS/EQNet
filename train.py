@@ -304,7 +304,7 @@ def main(args):
     device = torch.device(args.device)
     dtype = "bfloat16" if (torch.cuda.is_available() and torch.cuda.is_bf16_supported()) else "float16"
     if args.model == "eqnet":
-        dtype = "float16" if args.backbone == "swin" else "float16"
+        dtype = "bfloat16" if args.backbone == "swin" else "bfloat16"
     ptdtype = {"float32": torch.float32, "bfloat16": torch.bfloat16, "float16": torch.float16}[dtype]
     scaler = torch.cuda.amp.GradScaler(enabled=((dtype == "float16") & torch.cuda.is_available()))
     args.dtype, args.ptdtype = dtype, ptdtype
@@ -395,33 +395,35 @@ def main(args):
         test_sampler = None
     elif args.model == "eqnet":
         if args.huggingface_dataset:
-            try:
+            #try:
             # Get the directory of the train.py
-                code_dir = os.path.dirname(os.path.abspath(__file__))
-                script_dir = os.path.join(code_dir, "eqnet/data/quakeflow_nc.py")
-                dataset = datasets.load_dataset(script_dir, split="train", name=args.dataset_config, cache_dir="/data/cache/huggingface")
-                dataset_test = datasets.load_dataset(script_dir, split="test", name=args.dataset_config, cache_dir="/data/cache/huggingface")
+            code_dir = os.path.dirname(os.path.abspath(__file__))
+            script_dir = os.path.join(code_dir, "eqnet/data/quakeflow_nc.py")
+            dataset = datasets.load_dataset(script_dir, split="train", name=args.dataset_config, cache_dir="/data/cache/huggingface", num_proc=min(args.workers, 16))
+            dataset_test = datasets.load_dataset(script_dir, split="test", name=args.dataset_config, cache_dir="/data/cache/huggingface", num_proc=1)
             # TODO: just for testing
             # dataset = datasets.load_dataset(script_dir, split="test", name=args.dataset_config)
             # dataset_dict = dataset.train_test_split(test_size=0.2, seed=42)
             # dataset = dataset_dict["train"]
             # dataset_test = dataset_dict["test"]
-            except:
-                print("Failed to load dataset from local")
-                dataset = datasets.load_dataset("AI4EPS/quakeflow_nc", split="train", name=args.dataset_config)
-                dataset_test = datasets.load_dataset("AI4EPS/quakeflow_nc", split="test", name=args.dataset_config)
+            #except:
+            #    print("Failed to load dataset from local")
+            #    dataset = datasets.load_dataset("AI4EPS/quakeflow_nc", split="train", name=args.dataset_config)
+            #    dataset_test = datasets.load_dataset("AI4EPS/quakeflow_nc", split="test", name=args.dataset_config)
 
             dataset = dataset.with_format("torch")
             dataset_test = dataset_test.with_format("torch")
-            group_ids = create_groups(dataset, args.num_stations_list, is_pad=True, is_train=True)
+            # we discard the samples with less than 5 stations
+            dataset = dataset.filter(lambda x: x["num_stations"] >= 5, num_proc=args.workers)
+            group_ids = create_groups(dataset, args.num_stations_list, is_pad=True)
             if args.distributed and world_size > 1:
                 torch.set_num_threads(1) # fix the multi-processing bug
                 if args.gpu > 0:
                     print(f"Rank {args.rank}: Gpu {args.gpu} waiting for main process to perform the mapping", force=True)
                     torch.distributed.barrier()
-                print(f"Rank {args.rank}: Gpu {args.gpu} cut_reorder_keys fingerprint {Hasher.hash(lambda x: cut_reorder_keys(x, num_stations_list=args.num_stations_list, is_pad=True, is_train=False))}", force=True)
-                dataset = dataset.map(lambda x: cut_reorder_keys(x, num_stations_list=args.num_stations_list, is_pad=True, is_train=True), num_proc=args.workers, desc="cut_reorder_keys")#, new_fingerprint=Hasher.hash(lambda x: cut_reorder_keys(x, num_stations_list=num_stations_list, is_pad=True, is_train=True)))
-                dataset_test = dataset_test.map(lambda x: cut_reorder_keys(x, num_stations_list=args.num_stations_list, is_pad=True, is_train=False), num_proc=args.workers, desc="cut_reorder_keys")#, new_fingerprint=Hasher.hash(lambda x: cut_reorder_keys(x, num_stations_list=num_stations_list, is_pad=True, is_train=False)))
+                print(f"Rank {args.rank}: Gpu {args.gpu} cut_reorder_keys fingerprint {Hasher.hash(lambda x: cut_reorder_keys(x, num_stations_list=args.num_stations_list, is_pad=True))}", force=True)
+                dataset = dataset.map(lambda x: cut_reorder_keys(x, num_stations_list=args.num_stations_list, is_pad=True), num_proc=args.workers, desc="cut_reorder_keys")#, new_fingerprint=Hasher.hash(lambda x: cut_reorder_keys(x, num_stations_list=num_stations_list, is_pad=True, is_train=True)))
+                dataset_test = dataset_test.map(lambda x: cut_reorder_keys(x, num_stations_list=args.num_stations_list, is_pad=True), num_proc=args.workers, desc="cut_reorder_keys")#, new_fingerprint=Hasher.hash(lambda x: cut_reorder_keys(x, num_stations_list=num_stations_list, is_pad=True, is_train=False)))
                 # dataset_test = dataset_test.map(lambda x: reorder_keys(x), num_proc=args.workers, desc="reorder_keys")
                 if args.gpu == 0:
                     print("Mapping finished, loading results from main process")
@@ -429,8 +431,8 @@ def main(args):
             else:
                 torch.set_num_threads(1) # fix the multi-processing bug
                 print("Mapping dataset")
-                dataset = dataset.map(lambda x: cut_reorder_keys(x, num_stations_list=args.num_stations_list, is_pad=True, is_train=True), desc="cut_reorder_keys", num_proc=args.workers)
-                dataset_test = dataset_test.map(lambda x: cut_reorder_keys(x, num_stations_list=args.num_stations_list, is_pad=True, is_train=False), desc="cut_reorder_keys", num_proc=args.workers)
+                dataset = dataset.map(lambda x: cut_reorder_keys(x, num_stations_list=args.num_stations_list, is_pad=True), desc="cut_reorder_keys", num_proc=args.workers)
+                dataset_test = dataset_test.map(lambda x: cut_reorder_keys(x, num_stations_list=args.num_stations_list, is_pad=True), desc="cut_reorder_keys", num_proc=args.workers)
 
             if args.distributed:
                 # dataset = split_dataset_by_node(dataset, rank, world_size)
@@ -459,7 +461,7 @@ def main(args):
             dataset_test = dataset
             test_sampler = None
     else:
-        raise ("Unknown model")
+        raise NotImplementedError(f"Invalid model {args.model}. Only phasenet, phasenet_das, autoencoder and eqnet are supported.")
 
     if args.huggingface_dataset:
         data_loader = torch.utils.data.DataLoader(
