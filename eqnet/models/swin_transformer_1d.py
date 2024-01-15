@@ -9,6 +9,13 @@ from torch import nn, Tensor
 from ._utils import _ovewrite_named_param
 from torch.fx import wrap
 
+# import xformers.components.attention.attention_patterns as attention_patterns
+# import xformers.components.attention.core as attention_core
+# from xformers import _has_cpp_library
+# from xformers.components.attention.attention_mask import AttentionMask #TODO: maybe not needed
+# if _has_cpp_library:
+#     from xformers.components.attention._sputnik_sparse import SparseCS
+
 __all__ = [
     "SwinTransformer",
     "swin_t",
