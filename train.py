@@ -5,6 +5,7 @@ import random
 import time
 from contextlib import nullcontext
 from glob import glob
+from functools import partial
 
 import matplotlib
 import numpy as np
@@ -413,17 +414,33 @@ def main(args):
 
             dataset = dataset.with_format("torch")
             dataset_test = dataset_test.with_format("torch")
-            # we discard the samples with less than 5 stations
-            dataset = dataset.filter(lambda x: x["num_stations"] >= 5, num_proc=args.workers)
+            if args.distributed and world_size > 1:
+                torch.set_num_threads(1) # fix the multi-processing bug
+                if args.gpu > 0:
+                    print(f"Rank {args.rank}: Gpu {args.gpu} waiting for main process to perform the filtering", force=True)
+                    torch.distributed.barrier()
+                # we discard the samples with less than 5 stations
+                dataset = dataset.filter(lambda x: x["num_stations"] >= 5, num_proc=args.workers)
+                # dataset_test = dataset_test.map(lambda x: reorder_keys(x), num_proc=args.workers, desc="reorder_keys")
+                if args.gpu == 0:
+                    print("Filtering finished, loading results from main process")
+                    torch.distributed.barrier()
+            else:
+                torch.set_num_threads(1) # fix the multi-processing bug
+                print("Filtering dataset")
+                # we discard the samples with less than 5 stations
+                dataset = dataset.filter(lambda x: x["num_stations"] >= 5, num_proc=args.workers)
+            
             group_ids = create_groups(dataset, args.num_stations_list, is_pad=True)
+            cut_reorder_keys_group = partial(cut_reorder_keys, num_stations_list=args.num_stations_list)
             if args.distributed and world_size > 1:
                 torch.set_num_threads(1) # fix the multi-processing bug
                 if args.gpu > 0:
                     print(f"Rank {args.rank}: Gpu {args.gpu} waiting for main process to perform the mapping", force=True)
                     torch.distributed.barrier()
-                print(f"Rank {args.rank}: Gpu {args.gpu} cut_reorder_keys fingerprint {Hasher.hash(lambda x: cut_reorder_keys(x, num_stations_list=args.num_stations_list, is_pad=True))}", force=True)
-                dataset = dataset.map(lambda x: cut_reorder_keys(x, num_stations_list=args.num_stations_list, is_pad=True), num_proc=args.workers, desc="cut_reorder_keys")#, new_fingerprint=Hasher.hash(lambda x: cut_reorder_keys(x, num_stations_list=num_stations_list, is_pad=True, is_train=True)))
-                dataset_test = dataset_test.map(lambda x: cut_reorder_keys(x, num_stations_list=args.num_stations_list, is_pad=True), num_proc=args.workers, desc="cut_reorder_keys")#, new_fingerprint=Hasher.hash(lambda x: cut_reorder_keys(x, num_stations_list=num_stations_list, is_pad=True, is_train=False)))
+                print(f"Rank {args.rank}: Gpu {args.gpu} cut_reorder_keys fingerprint {Hasher.hash(lambda x: cut_reorder_keys_group(x, is_pad=True))}", force=True)
+                dataset = dataset.map(lambda x: cut_reorder_keys_group(x, is_pad=True), num_proc=args.workers, desc="cut_reorder_keys")#, new_fingerprint=Hasher.hash(lambda x: cut_reorder_keys(x, num_stations_list=num_stations_list, is_pad=True, is_train=True)))
+                dataset_test = dataset_test.map(lambda x: cut_reorder_keys_group(x, is_pad=True), num_proc=args.workers, desc="cut_reorder_keys")#, new_fingerprint=Hasher.hash(lambda x: cut_reorder_keys(x, num_stations_list=num_stations_list, is_pad=True, is_train=False)))
                 # dataset_test = dataset_test.map(lambda x: reorder_keys(x), num_proc=args.workers, desc="reorder_keys")
                 if args.gpu == 0:
                     print("Mapping finished, loading results from main process")
@@ -502,10 +519,6 @@ def main(args):
         backbone=args.backbone,
         in_channels=1,
         out_channels=(len(args.phases) + 1),
-        ## phasenet-das
-        reg=args.reg,
-        ## phasenet
-        polarity_loss_weight=args.polarity_loss_weight,
         ## eqnet
         head=args.head,
         use_station_location=args.use_station_location,
@@ -890,6 +903,7 @@ def get_args_parser(add_help=True):
         type=str,
         help="url used to set up distributed training",
     )
+    parser.add_argument("--timeout", default=30, type=int, help="timeout for distributed barrier")
 
     # Mixed precision training parameters
     parser.add_argument(
