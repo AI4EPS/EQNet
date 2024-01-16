@@ -487,9 +487,8 @@ def main(args):
             world_size = 1
 
     device = torch.device(args.device)
-    dtype = "bfloat16" if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else "float16"
+    dtype = "float32" if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else "float16"
     #TODO: check if bfloat16 decreases the accuracy
-    dtype = "bfloat16" if args.model == "eqnet" else dtype  # eqnet only supports float16
     ptdtype = {"float32": torch.float32, "bfloat16": torch.bfloat16, "float16": torch.float16}[dtype]
     args.dtype, args.ptdtype = dtype, ptdtype
     torch.backends.cuda.matmul.allow_tf32 = True  # allow tf32 on matmul
@@ -685,6 +684,7 @@ def get_args_parser(add_help=True):
     # distributed training parameters
     parser.add_argument("--world-size", default=1, type=int, help="number of distributed processes")
     parser.add_argument("--dist-url", default="env://", type=str, help="url used to set up distributed training")
+    parser.add_argument("--timeout", default=30, type=int, help="timeout for distributed barrier")
 
     # prediction parameters
     parser.add_argument("--data_path", type=str, default="./", help="path to data directory")
