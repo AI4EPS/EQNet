@@ -748,8 +748,6 @@ class ShiftedWindowAttentionV2(ShiftedWindowAttention):
         )
 
         self.earth_radius = 6371
-        # give up use logit_scale because the length of time dimension won't be too far from the original length
-        # self.logit_scale = None
         self.logit_scale = nn.Parameter(torch.log(10 * torch.ones((num_heads, 1, 1))))
         ## https://github.com/microsoft/Swin-Transformer/blob/b720b4191588c19222ccf129860e905fb02373a7/models/swin_transformer_v2.py#L92
         # mlp to generate continuous relative position bias
@@ -802,14 +800,16 @@ class ShiftedWindowAttentionV2(ShiftedWindowAttention):
             dtype = loc.dtype
             loc = loc.float() # to avoid round error
             loc[...,:2] = torch.deg2rad(loc[...,:2]) # to radians
-            relative_coords_sta = loc[:, :, None, :] - loc[:, None, :, :] # B, nx, nx, 3 (lon, lat, z)
+            # loc[:, :, None, :] station 1; loc[:, None, :, :] station 2
+            # from station 1 to station 2
+            relative_coords_sta = loc[:, None, :, :] - loc[:, :, None, :] # B, nx, nx, 3 (lon, lat, z)
             a = torch.sin(relative_coords_sta[:, :, :, 1]/2)**2 + torch.cos(loc[:, :, None, 1]) * torch.cos(loc[:, None, :, 1]) * torch.sin(relative_coords_sta[:, :, :, 0]/2)**2
             relative_dist = 2 * torch.atan2(torch.sqrt(a), torch.sqrt(1-a))*self.earth_radius # B, nx, nx
             # y = torch.sin(relative_coords_sta[:, :, :, 0]) * torch.cos(loc[:, None, :, 1]) # B, nx, nx, 1
-            # x = torch.cos(loc[:, :, None, 0]) * torch.sin(loc[:, None, :, 0]) - torch.sin(loc[:, :, None, 0]) * torch.cos(loc[:, None, :, 0]) * torch.cos(relative_coords_sta[:, :, :, 0]) # B, nx, nx, 1
+            # x = torch.cos(loc[:, :, None, 1]) * torch.sin(loc[:, None, :, 1]) - torch.sin(loc[:, :, None, 1]) * torch.cos(loc[:, None, :, 1]) * torch.cos(relative_coords_sta[:, :, :, 0]) # B, nx, nx, 1
             # relative_azi = torch.atan2(y, x) # B, nx, nx
             relative_azi = torch.atan2(torch.sin(relative_coords_sta[:, :, :, 0]) * torch.cos(loc[:, None, :, 1]), 
-                                       torch.cos(loc[:, :, None, 0]) * torch.sin(loc[:, None, :, 0]) - torch.sin(loc[:, :, None, 0]) * torch.cos(loc[:, None, :, 0]) * torch.cos(relative_coords_sta[:, :, :, 0])
+                                       torch.cos(loc[:, :, None, 1]) * torch.sin(loc[:, None, :, 1]) - torch.sin(loc[:, :, None, 1]) * torch.cos(loc[:, None, :, 1]) * torch.cos(relative_coords_sta[:, :, :, 0])
                                        ) # B, nx, nx
             relative_coords_sta = torch.cat((relative_dist.unsqueeze(-1), 
                                             torch.sin(relative_azi).unsqueeze(-1), 
