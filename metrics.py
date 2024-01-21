@@ -223,8 +223,11 @@ with h5py.File(h5_file, "r") as fp:
             
             for sta_id in list(event.keys()):
                 phase_type_gt = event[sta_id].attrs["phase_type"]
-                if len(phase_type_gt)==1 or event[sta_id].attrs["phase_status"]=='automatic':
-                    continue
+                try:
+                    if len(phase_type_gt)==1 or event[sta_id].attrs["phase_status"]=='automatic':
+                        continue
+                except:
+                    pass
                 p_picks_gt = np.sort(event[sta_id].attrs["phase_index"][phase_type_gt=='P'])
                 s_picks_gt = np.sort(event[sta_id].attrs["phase_index"][phase_type_gt=='S'])
                 pick_metric.num_p_picks_label+=len(p_picks_gt)
@@ -239,9 +242,11 @@ with h5py.File(h5_file, "r") as fp:
         for sta_id in list(event.keys()):
             phase_type_gt = event[sta_id].attrs["phase_type"]
             
-            if len(phase_type_gt)==1 or event[sta_id].attrs["phase_status"]=='automatic':
-                continue
-            
+            try:
+                if len(phase_type_gt)==1 or event[sta_id].attrs["phase_status"]=='automatic':
+                    continue
+            except:
+                pass
             p_picks_gt = np.sort(event[sta_id].attrs["phase_index"][phase_type_gt=='P'])
             s_picks_gt = np.sort(event[sta_id].attrs["phase_index"][phase_type_gt=='S'])
             pick_metric.num_p_picks_label+=len(p_picks_gt)
@@ -305,7 +310,7 @@ pick_metric_thld.calc_metrics(dt_bar=dt_bar, distribution_bar=distribution_bar)
 print("\nWhole dataset:\n")
 pick_metric.plot_residual(save_path=f"./metrics/phase_picking{suffix}.png")
 print(f"\nnum_station >= {station_threshold} subset:\n")
-pick_metric_thld.plot_residual(save_path=f"./metrics/phase_picking_{num_stations}{suffix}.png")
+pick_metric_thld.plot_residual(save_path=f"./metrics/phase_picking_threshold{station_threshold}{suffix}.png")
 print("\n")
 
 # %% [markdown]
@@ -456,7 +461,7 @@ class EventMetric:
         ax[1, 0].set_title("magnitude residual")
         ax[1, 1].hist(self.epicenter_distance_res, bins=41, range=(-20, 20))
         ax[1, 1].set_title("epicenter distance residual") 
-        ax[1, 2].hist(self.azimuth_res, bins=41, range=(-20, 20))
+        ax[1, 2].hist(self.azimuth_res, bins=141, range=(-360, 360))
         ax[1, 2].set_title("azimuth residual")
         if save_path is not None:
             plt.savefig(save_path)
@@ -547,7 +552,14 @@ with h5py.File(h5_file, "r") as fp:
         label_y = event.attrs["latitude"]*degree2km
         label_z = event.attrs["depth_km"]
         labels_dist = np.array([event[sta_id].attrs["distance_km"] for sta_id in stations])
-        labels_azi = np.array([event[sta_id].attrs["azimuth"] for sta_id in stations])
+        labels_lat = np.array([event[sta_id].attrs["latitude"] for sta_id in stations])
+        labels_lon = np.array([event[sta_id].attrs["longitude"] for sta_id in stations])
+        dlon = event.attrs["longitude"] - labels_lon
+        dlat = event.attrs["latitude"] - labels_lat
+        y = np.sin(np.radians(dlon)) * np.cos(np.radians(event.attrs["latitude"]))
+        x = np.cos(np.radians(labels_lat)) * np.sin(np.radians(event.attrs["latitude"])) \
+            - np.sin(np.radians(labels_lat)) * np.cos(np.radians(event.attrs["latitude"])) * np.cos(np.radians(dlon))
+        labels_azi = np.degrees(np.arctan2(y, x))
         for c in classes:
             cluster_picks = hypoparameters[labels==c]
             label_dist = labels_dist[labels==c]
@@ -564,7 +576,7 @@ with h5py.File(h5_file, "r") as fp:
                 y_diff = (y_pred - label_y)
                 z_diff = (z_pred - label_z)
                 dist_diff = (cluster_picks[:,6] - label_dist)
-                azi_diff = (cluster_picks[:,7] - label_azi + 360) % 360
+                azi_diff = cluster_picks[:,7] - label_azi
                 magnitude_pr = np.median(cluster_picks[:,8])
                 min_time_diff = time_diff
         event_metric.update_matched_picks([min_time_diff], [x_diff], [y_diff], [z_diff], [x_pred], [y_pred], [z_pred], [event.attrs["magnitude"]], [magnitude_pr], [cluster_picks[:,6]], [dist_diff], [azi_diff])
@@ -588,4 +600,4 @@ event_metric_thld.calc_metrics(event_dt_bar=event_dt_bar)
 print("\nWhole dataset:\n")
 event_metric.plot_residual(f"./metrics/event_residual{suffix}.png")
 print(f"\nnum_station >= {station_threshold} subset:\n")
-event_metric_thld.plot_residual(f"./metrics/event_residual_{num_stations}{suffix}.png")
+event_metric_thld.plot_residual(f"./metrics/event_residual_threshold{station_threshold}{suffix}.png")
