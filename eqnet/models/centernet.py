@@ -42,25 +42,11 @@ def _transpose_and_gather_feat(feat, ind):
     return feat
 
 
-def cross_entropy_loss(inputs, targets):
+def cross_entropy_loss(inputs, targets, mask):
     inputs = inputs.float()  # https://github.com/pytorch/pytorch/issues/48163
-    # loss = 0
-    # for i in range(targets.shape[0]):
-    #     ind = []
-    #     for j in range(targets.shape[-1]):
-    #         if not torch.all(targets[i,:,j]==0):
-    #             ind.append(j)
-    #     ind = torch.tensor(ind)
-    #     inputs_ = inputs[i, :, ind]
-    #     targets_ = targets[i, :, ind]
-    #     loss += F.binary_cross_entropy_with_logits(inputs_, targets_)
-    # loss /= targets.shape[0]
-    num=targets.shape[0]*targets.shape[-1]
-    for i in range(targets.shape[0]):
-        for j in range(targets.shape[-1]):
-            if torch.all(targets[i,:,j]==0):
-                num-=1
-    loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction='sum')/(num*targets.shape[1])
+    num=mask.sum()
+    loss = F.binary_cross_entropy_with_logits(inputs, targets, weight=mask, 
+                     reduction='sum')/(num*targets.shape[1])
         
     return loss
 
