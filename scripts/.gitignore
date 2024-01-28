@@ -4,5 +4,6 @@ log_gamma.txt
 results/
 debug_figures/
 wandb/
+mseed_list/
 torch_compile_debug
 *.csv
