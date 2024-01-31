@@ -297,13 +297,13 @@ class UPerNeck(nn.Module, metaclass=ABCMeta):
 class EventHead(nn.Module):
     def __init__(self, 
                  channels=512,
-                 hidden_channels=[256, 128, 64, 32],
+                 hidden_channels=[256, 128, 64, 32, 16],
                  dilations=[1, 4, 8, 16],
                  kernel_size=7,
                  loss_dict: dict = {"hm_loss": "focal", "hw_loss": "wl1", "reg_loss": "vl1", "angle_loss": "vl1", "depth_loss": "bl1", "mag_loss": "bl1"},
-                 weights=[1.497, 0.018, 0.044],
-                 offset_weight=[3, 1], 
-                 reg_weight=[0.75,1.9,18,0.9, 0.7],
+                 weights=[1.495, 0.018, 0.047],
+                 offset_weight=[1, 1], 
+                 reg_weight=[0.75,2,20,0.9, 0.6],
                  depth_center=8.0,
                  mag_center=1.5,
                  ):
@@ -380,7 +380,7 @@ class EventHead(nn.Module):
             #sample(scale_factor=2, mode='linear', align_corners=False),
             nn.Conv1d(
                 hidden_channels[2],
-                4,
+                5,
                 kernel_size=kernel_size,
                 dilation=dilations[1],
                 padding=((kernel_size - 1) * dilations[1] + 1) // 2,
@@ -403,7 +403,7 @@ class EventHead(nn.Module):
             #Sample(scale_factor=2, mode='linear', align_corners=False),
             nn.Conv1d(
                 hidden_channels[2],
-                16,
+                hidden_channels[4],
                 kernel_size=kernel_size,
                 dilation=dilations[2],
                 padding=((kernel_size - 1) * dilations[2] + 1) // 2,
@@ -412,7 +412,7 @@ class EventHead(nn.Module):
             nn.BatchNorm1d(16),
             nn.ReLU(inplace=True),
             nn.Conv1d(
-                16,
+                hidden_channels[4],
                 1,
                 kernel_size=kernel_size,
                 dilation=dilations[1],
@@ -510,19 +510,19 @@ class EventHead(nn.Module):
             dict: Dictionary containing the loss values.
         """
         #hm_loss = cross_entropy_loss(outputs["event"], event_center)
-        hm_loss = self.hm_loss(outputs["event"], event_center)
-        #station_mask = (event_location_mask.sum(axis=1) > 0).float().unsqueeze(1)
-        #hm_loss = self.hm_loss(outputs["event"]*station_mask, event_center*station_mask)
+        #hm_loss = self.hm_loss(outputs["event"], event_center)
+        station_mask = (event_location_mask.sum(axis=1) > 0).float().unsqueeze(1)
+        hm_loss = self.hm_loss(outputs["event"], event_center, station_mask)
         hw_loss = self.hw_loss(outputs["offset"], event_location[:, 5:, :, :], event_location_mask, weights=self.offset_weight)
         
         outputs["hypocenter"] = outputs["hypocenter"].float()
         reg_loss = self.reg_loss(outputs["hypocenter"][:, :2, :, :], event_location[:, :2, :, :], event_location_mask)
-        angle_loss = self.angle_loss(torch.cat([torch.sin(outputs["hypocenter"][:, 2:3, :, :]), torch.cos(outputs["hypocenter"][:, 2:3, :, :]),], dim=1),
+        angle_loss = self.angle_loss(outputs["hypocenter"][:, 2:4, :, :],# torch.cat([torch.sin(outputs["hypocenter"][:, 2:3, :, :]), torch.cos(outputs["hypocenter"][:, 2:3, :, :]),], dim=1),
                                         torch.cat([torch.sin(event_location[:, 2:3, :, :]), torch.cos(event_location[:, 2:3, :, :]),], dim=1),
                                         event_location_mask)
         angle_loss = angle_loss.sum()
-        depth_loss = self.depth_loss(outputs["hypocenter"][:, 3:4, :, :], event_location[:, 3:4, :, :], event_location_mask, center=self.depth_center, scale=0.2)
-        mag_loss = self.mag_loss(outputs["hypocenter"][:, 4:5, :, :], event_location[:, 4:5, :, :], event_location_mask, center=self.mag_center, scale=1.2)
+        depth_loss = self.depth_loss(outputs["hypocenter"][:, 4:5, :, :], event_location[:, 3:4, :, :], event_location_mask, center=self.depth_center, scale=0.2)
+        mag_loss = self.mag_loss(outputs["hypocenter"][:, 5:6, :, :], event_location[:, 4:5, :, :], event_location_mask, center=self.mag_center, scale=1.2)
         
         loss = hm_loss * self.weights[0] + hw_loss * self.weights[1] \
             + reg_loss[0] * self.weights[2] \
@@ -540,11 +540,13 @@ class PhaseHead(nn.Module):
                  channels=512,
                  hidden_channels=[256, 128, 64, 32],
                  dilations=[1, 8, 16, 32],
-                 kernel_size = 7,
+                 kernel_size=7,
+                 weights=[0.9,],
                  ):
         super().__init__()
         
         self.channels = channels
+        self.weights = weights
         
         self.phase_1 = nn.Sequential(
             nn.Conv1d(
@@ -609,22 +611,6 @@ class PhaseHead(nn.Module):
 
     def losses(self, inputs, targets, num_stations):
         inputs = inputs.float()  # https://github.com/pytorch/pytorch/issues/48163
-        # loss = 0
-        # for i in range(targets.shape[0]):
-        #     ind = []
-        #     for j in range(targets.shape[3]):
-        #         if not torch.all(targets[i,1:,:,j]==0):
-        #             ind.append(j)
-        #     ind = torch.tensor(ind)
-        #     inputs_ = inputs[i, :, :, ind]
-        #     targets_ = targets[i, :, :, ind]
-        #     loss += torch.sum(-targets_ * F.log_softmax(inputs_, dim=0), dim=0).mean()
-        # loss /= targets.shape[0]
-        # num=targets.shape[0]*targets.shape[3]
-        # for i in range(targets.shape[0]):
-        #     for j in range(targets.shape[3]):
-        #         if torch.all(targets[i,:,:,j]==0):
-        #             num-=1
         num=num_stations.sum()
         #mask = num_stations.unsqueeze(1).unsqueeze(1)
         loss = torch.sum(-targets * F.log_softmax(inputs, dim=1) * num_stations.unsqueeze(1).unsqueeze(1))/(num*targets.shape[2])
