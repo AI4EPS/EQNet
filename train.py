@@ -304,8 +304,6 @@ def main(args):
 
     device = torch.device(args.device)
     dtype = "bfloat16" if (torch.cuda.is_available() and torch.cuda.is_bf16_supported()) else "float16"
-    if args.model == "eqnet":
-        dtype = "bfloat16" if args.backbone == "swin" else "bfloat16"
     ptdtype = {"float32": torch.float32, "bfloat16": torch.bfloat16, "float16": torch.float16}[dtype]
     scaler = torch.cuda.amp.GradScaler(enabled=((dtype == "float16") & torch.cuda.is_available()))
     args.dtype, args.ptdtype = dtype, ptdtype
@@ -396,22 +394,11 @@ def main(args):
         test_sampler = None
     elif args.model == "eqnet":
         if args.huggingface_dataset:
-            #try:
             # Get the directory of the train.py
             code_dir = os.path.dirname(os.path.abspath(__file__))
             script_dir = os.path.join(code_dir, "eqnet/data/quakeflow_nc.py")
             dataset = datasets.load_dataset(script_dir, split="train", name=args.dataset_config, cache_dir="/data/cache/huggingface", num_proc=min(args.workers, 16))
             dataset_test = datasets.load_dataset(script_dir, split="test", name=args.dataset_config, cache_dir="/data/cache/huggingface", num_proc=1)
-            # TODO: just for testing
-            # dataset = datasets.load_dataset(script_dir, split="test", name=args.dataset_config)
-            # dataset_dict = dataset.train_test_split(test_size=0.2, seed=42)
-            # dataset = dataset_dict["train"]
-            # dataset_test = dataset_dict["test"]
-            #except:
-            #    print("Failed to load dataset from local")
-            #    dataset = datasets.load_dataset("AI4EPS/quakeflow_nc", split="train", name=args.dataset_config)
-            #    dataset_test = datasets.load_dataset("AI4EPS/quakeflow_nc", split="test", name=args.dataset_config)
-
             dataset = dataset.with_format("torch")
             dataset_test = dataset_test.with_format("torch")
             if args.distributed and world_size > 1:
@@ -452,8 +439,6 @@ def main(args):
                 dataset_test = dataset_test.map(lambda x: cut_reorder_keys(x, num_stations_list=args.num_stations_list, is_pad=True), desc="cut_reorder_keys", num_proc=args.workers)
 
             if args.distributed:
-                # dataset = split_dataset_by_node(dataset, rank, world_size)
-                # dataset_test = split_dataset_by_node(dataset_test, rank, world_size)
                 train_sampler = torch.utils.data.distributed.DistributedSampler(dataset)
                 test_sampler = torch.utils.data.distributed.DistributedSampler(dataset_test, shuffle=False)
             else:
@@ -461,7 +446,6 @@ def main(args):
                 test_sampler = torch.utils.data.SequentialSampler(dataset_test)
 
             train_batch_sampler = StationSampler(train_sampler, group_ids, args.batch_size, args.num_stations_list)
-            # dataset_test = dataset_test.map(lambda x: reorder_keys(x))
 
         else:
             dataset = SeismicNetworkIterableDataset(
@@ -634,7 +618,7 @@ def main(args):
                 #tasks = ["loss_phase", "loss_event", "loss_offset", "loss_hypocenter"]
                 tasks = ["loss_phase", "loss_event", "loss_offset", "loss_origin_time", "loss_x", "loss_y", "loss_depth", "loss_magnitude"]
                 # pre_weight = args.pre_weight
-                pre_weight = [1.0,]+model.event_detector.weights
+                pre_weight = model.phase_picker.weights+model.event_detector.weights
                 print(f"{args.model}: {args.mtl} pre_weight: ", end="\t")
                 for i, k in enumerate(tasks):
                     print(f"{k}: {pre_weight[i]:.4f}", end="\t")
