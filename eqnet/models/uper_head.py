@@ -7,9 +7,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
-from .centernet import convolution, \
-    cross_entropy_loss, focal_loss, smoothl1_reg_loss, weighted_l1_reg_loss, \
-        l1_reg_loss, vector_l1_reg_loss, modulus_l1_reg_loss, balanced_l1_reg_loss
+from .centernet import convolution
+from .losses import cross_entropy_loss, focal_loss, smooth_focal_loss, \
+        smoothl1_reg_loss, weighted_l1_reg_loss, l1_reg_loss,\
+        vector_l1_reg_loss,modulus_l1_reg_loss, balanced_l1_reg_loss
+from ..utils import CSLCoder, TrigonoCoder
 
 
 class Sample(nn.Module):
@@ -300,10 +302,11 @@ class EventHead(nn.Module):
                  hidden_channels=[256, 128, 64, 32, 16],
                  dilations=[1, 4, 8, 16],
                  kernel_size=7,
-                 loss_dict: dict = {"hm_loss": "focal", "hw_loss": "wl1", "reg_loss": "vl1", "angle_loss": "vl1", "depth_loss": "bl1", "mag_loss": "bl1"},
+                 loss_dict: dict = {"hm_loss": "focal", "hw_loss": "wl1", "reg_loss": "vl1", "angle_loss": "sl1", "depth_loss": "bl1", "mag_loss": "bl1"},
                  weights=[1.495, 0.018, 0.047],
                  offset_weight=[1, 1], 
                  reg_weight=[0.75,2,20,0.9, 0.6],
+                 angle_coder="trigono",
                  depth_center=8.0,
                  mag_center=1.5,
                  ):
@@ -317,6 +320,14 @@ class EventHead(nn.Module):
         self.reg_weight = reg_weight
         self.depth_center = depth_center
         self.mag_center = mag_center
+        
+        if angle_coder == "csl":
+            self.omega = 5
+            self.angle_dims = 360 // self.omega
+            self.angle_coder = CSLCoder(self.omega)
+        elif angle_coder == "trigono":
+            self.angle_dims = 2
+            self.angle_coder = TrigonoCoder()
         
         #TODO: subhead layers? dilation?
         self.heatmap = nn.Sequential(
@@ -380,7 +391,7 @@ class EventHead(nn.Module):
             #sample(scale_factor=2, mode='linear', align_corners=False),
             nn.Conv1d(
                 hidden_channels[2],
-                5,
+                3+self.angle_dims,
                 kernel_size=kernel_size,
                 dilation=dilations[1],
                 padding=((kernel_size - 1) * dilations[1] + 1) // 2,
@@ -422,8 +433,9 @@ class EventHead(nn.Module):
         )
 
 
-        loss_factory = {"mse": F.mse_loss, "focal": focal_loss, "l1": l1_reg_loss, "sl1": smoothl1_reg_loss, \
-            "wl1": weighted_l1_reg_loss, "vl1": vector_l1_reg_loss, "ml1": modulus_l1_reg_loss, \
+        loss_factory = {"mse": F.mse_loss, "focal": focal_loss, "sfocal": smooth_focal_loss, \
+            "l1": l1_reg_loss, "sl1": smoothl1_reg_loss, "wl1": weighted_l1_reg_loss, \
+            "vl1": vector_l1_reg_loss, "ml1": modulus_l1_reg_loss, \
             "bl1": balanced_l1_reg_loss, "cross_entropy": cross_entropy_loss}
         self.weights = weights
         self.hm_loss = loss_factory[loss_dict["hm_loss"]]
@@ -490,11 +502,13 @@ class EventHead(nn.Module):
         
         if self.training:            
             return None, self.losses({"event": heatmap, "offset": offset, "hypocenter": hypocenter}, event_center, event_location, event_location_mask)
-        elif event_center is not None:
-            return {"event": heatmap, "offset": offset, "hypocenter": hypocenter}, \
-                self.losses({"event": heatmap, "offset": offset, "hypocenter": hypocenter}, event_center, event_location, event_location_mask)
         else:
-            return {"event": heatmap, "offset": offset, "hypocenter": hypocenter}, {}
+            loss = {}
+            if event_center is not None:
+                loss = self.losses({"event": heatmap, "offset": offset, "hypocenter": hypocenter}, event_center, event_location, event_location_mask)
+            hypocenter = torch.cat([hypocenter[:, :2, :, :], self.angle_coder.decode(hypocenter[:, 2:(2+self.angle_dims), :, :]),
+                                    hypocenter[:, (2+self.angle_dims):, :, :]], dim=1)
+            return {"event": heatmap, "offset": offset, "hypocenter": hypocenter}, loss
     
     def losses(self, outputs, event_center, event_location, event_location_mask):
         """
@@ -515,14 +529,12 @@ class EventHead(nn.Module):
         hm_loss = self.hm_loss(outputs["event"], event_center, station_mask)
         hw_loss = self.hw_loss(outputs["offset"], event_location[:, 5:, :, :], event_location_mask, weights=self.offset_weight)
         
-        outputs["hypocenter"] = outputs["hypocenter"].float()
         reg_loss = self.reg_loss(outputs["hypocenter"][:, :2, :, :], event_location[:, :2, :, :], event_location_mask)
-        angle_loss = self.angle_loss(outputs["hypocenter"][:, 2:4, :, :],# torch.cat([torch.sin(outputs["hypocenter"][:, 2:3, :, :]), torch.cos(outputs["hypocenter"][:, 2:3, :, :]),], dim=1),
-                                        torch.cat([torch.sin(event_location[:, 2:3, :, :]), torch.cos(event_location[:, 2:3, :, :]),], dim=1),
+        angle_loss = self.angle_loss(outputs["hypocenter"][:, 2:(2+self.angle_dims), :, :], # torch.cat([torch.sin(outputs["hypocenter"][:, 2:3, :, :]), torch.cos(outputs["hypocenter"][:, 2:3, :, :]),], dim=1),
+                                        self.angle_coder.encode(event_location[:, 2:3, :, :]), # torch.cat([torch.sin(event_location[:, 2:3, :, :]), torch.cos(event_location[:, 2:3, :, :]),], dim=1),
                                         event_location_mask)
-        angle_loss = angle_loss.sum()
-        depth_loss = self.depth_loss(outputs["hypocenter"][:, 4:5, :, :], event_location[:, 3:4, :, :], event_location_mask, center=self.depth_center, scale=0.2)
-        mag_loss = self.mag_loss(outputs["hypocenter"][:, 5:6, :, :], event_location[:, 4:5, :, :], event_location_mask, center=self.mag_center, scale=1.2)
+        depth_loss = self.depth_loss(outputs["hypocenter"][:, (2+self.angle_dims):(2+self.angle_dims+1), :, :], event_location[:, 3:4, :, :], event_location_mask, center=self.depth_center, scale=0.2)
+        mag_loss = self.mag_loss(outputs["hypocenter"][:, (2+self.angle_dims+1):(2+self.angle_dims+2), :, :], event_location[:, 4:5, :, :], event_location_mask, center=self.mag_center, scale=1.2)
         
         loss = hm_loss * self.weights[0] + hw_loss * self.weights[1] \
             + reg_loss[0] * self.weights[2] \
@@ -541,7 +553,7 @@ class PhaseHead(nn.Module):
                  hidden_channels=[256, 128, 64, 32],
                  dilations=[1, 8, 16, 32],
                  kernel_size=7,
-                 weights=[0.9,],
+                 weights=[0.85,],
                  ):
         super().__init__()
         

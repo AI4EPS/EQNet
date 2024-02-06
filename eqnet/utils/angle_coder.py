@@ -104,7 +104,7 @@ class CSLCoder:
         angle_cls_inds = torch.argmax(angle_preds, dim=angle_dim)
         angle_pred = ((angle_cls_inds + 0.5) *
                       self.omega) % self.angle_range
-        return angle_pred.unsqueeze(angle_dim)
+        return torch.deg2rad(angle_pred.unsqueeze(angle_dim))
     
 class TrigonoCoder:
     '''Trigonometric function coder, use sine and cosine values to represent angle
