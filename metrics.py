@@ -38,6 +38,7 @@ parser.add_argument('--h5_file', type=str, default="/home/wanghy/tests/quakeflow
 parser.add_argument('--pick_dir', type=str, default="/home/wanghy/tests/EQNet/test_eqnet_predict/picks_eqnet", help='pick dir path')
 parser.add_argument('--event_dir', type=str, default="/home/wanghy/tests/EQNet/test_eqnet_predict/events_eqnet", help='event dir path')
 parser.add_argument('--suffix', type=str, default="", help='suffix of the pics')
+parser.add_argument('--model', type=str, default="eqnet", help='the model that performed prediction')
 
 args = parser.parse_args()
 h5_file = args.h5_file
@@ -64,7 +65,10 @@ degree2km = 111.32
 
 # %%
 # 获取csv_dir下所有的CSV文件的路径
-pick_files = [os.path.join(pick_dir, f) for f in os.listdir(pick_dir) if f.endswith(".csv")]
+if args.model == "eqnet":
+    pick_files = [os.path.join(pick_dir, f) for f in os.listdir(pick_dir) if f.endswith(".csv")]
+elif args.model == "phasenet_plus":
+    pick_files = [os.path.join(pick_dir, f) for f in os.listdir(pick_dir) if os.path.isdir(os.path.join(pick_dir, f))]
 
 class PickMetric:
     def __init__(self, sample_rate=100):
@@ -208,7 +212,11 @@ pick_metric_thld = PickMetric(sample_rate=sample_rate)
 # %%
 with h5py.File(h5_file, "r") as fp:
     for pick in tqdm(pick_files):
-        event_id = re.sub(r'\.csv$', '', os.path.basename(pick))
+        if args.model == "eqnet":
+            event_id = re.sub(r'\.csv$', '', os.path.basename(pick))
+        elif args.model == "phasenet_plus":
+            event_id = pick.split('/')[-1]
+
         try:
             event = fp[event_id]
         except:
@@ -217,7 +225,17 @@ with h5py.File(h5_file, "r") as fp:
         num_stations = len(list(event.keys()))
 
         # skip the empty pick file
-        if os.path.getsize(pick) == 0:
+        empty = False
+        if args.model == "eqnet" and os.path.getsize(pick) == 0:
+            empty = True
+        elif args.model == "phasenet_plus":
+            empty = True
+            stations=[os.path.join(pick, f) for f in os.listdir(pick) if f.endswith(".csv")]
+            for sta in stations:
+                if os.path.getsize(sta) != 0:
+                    empty = False
+                    break
+        if empty:
             pick_metric.empty_files += 1
             pick_metric_thld.empty_files +=1 if num_stations>=station_threshold else 0
             
@@ -236,7 +254,16 @@ with h5py.File(h5_file, "r") as fp:
                 pick_metric_thld.num_s_picks_label += len(s_picks_gt) if num_stations>=station_threshold else 0
             continue
         
-        df = pd.read_csv(pick)
+        if args.model == "eqnet":
+            df = pd.read_csv(pick)
+        elif args.model == "phasenet_plus":
+            dfs = []
+            stations=[os.path.join(pick, f) for f in os.listdir(pick) if f.endswith(".csv")]
+            for sta in stations:
+                if os.path.getsize(sta) == 0:
+                    continue
+                dfs.append(pd.read_csv(sta))
+            df = pd.concat(dfs)
         df = df.sort_values(by=["station_id", "phase_index"], ignore_index=True)
         
         for sta_id in list(event.keys()):
@@ -318,7 +345,10 @@ print("\n")
 
 # %%
 # 获取csv_dir下所有的CSV文件的路径
-event_files = [os.path.join(event_dir, f) for f in os.listdir(event_dir) if f.endswith(".csv")]
+if args.model == "eqnet":
+    event_files = [os.path.join(event_dir, f) for f in os.listdir(event_dir) if f.endswith(".csv")]
+elif args.model == "phasenet_plus":
+    event_files = [os.path.join(event_dir, f) for f in os.listdir(event_dir) if os.path.isdir(os.path.join(event_dir, f))]
 
 class EventMetric:
     def __init__(self):
@@ -500,7 +530,11 @@ dbscan = DBSCAN(eps=dbscan_epsilon, min_samples=1)
 
 with h5py.File(h5_file, "r") as fp:
     for pick in tqdm(event_files):
-        event_id = re.sub(r'\.csv$', '', os.path.basename(pick))
+        if args.model == "eqnet":
+            event_id = re.sub(r'\.csv$', '', os.path.basename(pick))
+        elif args.model == "phasenet_plus":
+            event_id = pick.split('/')[-1]
+
         event = fp[event_id]
         num_stations = len(list(event.keys()))
         event_metric.num_event_picks_label += 1
@@ -511,7 +545,12 @@ with h5py.File(h5_file, "r") as fp:
             event_metric.empty_files += 1
             event_metric_thld.empty_files +=1 if num_stations>=station_threshold else 0
             continue
-        df = pd.read_csv(pick)
+        if args.model == "eqnet":
+            df = pd.read_csv(pick)
+        elif args.model == "phasenet_plus":
+            df = pd.concat(
+                [pd.read_csv(os.path.join(pick, f)) for f in os.listdir(pick) if f.endswith(".csv")]
+            )
         assert 'event_center_index' in df.columns, f'event_center_index not in {event_id}.columns'
         assert 'p_index' in df.columns, f'p_index not in {event_id}.columns'
         assert 's_index' in df.columns, f's_index not in {event_id}.columns'
@@ -576,7 +615,8 @@ with h5py.File(h5_file, "r") as fp:
                 y_diff = (y_pred - label_y)
                 z_diff = (z_pred - label_z)
                 dist_diff = (cluster_picks[:,6] - label_dist)
-                azi_diff = cluster_picks[:,7] - label_azi
+                azi_diff = (cluster_picks[:,7] - label_azi) % 360
+                azi_diff[azi_diff>180] = azi_diff[azi_diff>180] - 360
                 magnitude_pr = np.median(cluster_picks[:,8])
                 min_time_diff = time_diff
         event_metric.update_matched_picks([min_time_diff], [x_diff], [y_diff], [z_diff], [x_pred], [y_pred], [z_pred], [event.attrs["magnitude"]], [magnitude_pr], [cluster_picks[:,6]], [dist_diff], [azi_diff])
