@@ -605,10 +605,10 @@ def plot_eqnet_train(meta, phase, event, epoch, figure_dir="figures", prefix="",
                 offset_ground_truth = offset_ground_truth[cut_idx]
 
                 #axes[2].scatter((feature_scale*(event_center+offset_ground_truth))/feature_scale, np.arange(event_center.shape[-1]), c=np.arange(event_center.shape[-1]), s=50, marker=".")
-                axes[2].scatter((feature_scale*(event_center+offset_pred)-dt)/feature_scale, np.arange(event_center.shape[-1]), c=np.arange(event_center.shape[-1]), s=50, marker="^")
-                axes[2].scatter((feature_scale*(event_center+offset_ground_truth)-dt_ground_truth)/feature_scale, np.arange(event_center.shape[-1]), c=np.arange(event_center.shape[-1]), s=50, marker="*")
-                axes[2].scatter(((feature_scale*(event_center+offset_pred)-dt).sum()/true_station_number)/feature_scale, event_center.shape[-1], c="C1", s=100, marker="^")
-                axes[2].scatter(((feature_scale*(event_center+offset_ground_truth)-dt_ground_truth).sum()/true_station_number)/feature_scale, event_center.shape[-1], c="C0", s=100, marker="*")
+                axes[2].scatter((feature_scale*(event_center)-dt)/feature_scale, np.arange(event_center.shape[-1]), c=np.arange(event_center.shape[-1]), s=50, marker="^")
+                axes[2].scatter((feature_scale*(event_center)-dt_ground_truth)/feature_scale, np.arange(event_center.shape[-1]), c=np.arange(event_center.shape[-1]), s=50, marker="*")
+                axes[2].scatter(((feature_scale*(event_center)-dt).sum()/true_station_number)/feature_scale, event_center.shape[-1], c="C1", s=100, marker="^")
+                axes[2].scatter(((feature_scale*(event_center)-dt_ground_truth).sum()/true_station_number)/feature_scale, event_center.shape[-1], c="C0", s=100, marker="*")
 
                 #width_pred = (offset[i, 1,:,:]*mask)
                 #width_pred = width_pred.sum(axis=-2)/mask_divide
@@ -622,13 +622,13 @@ def plot_eqnet_train(meta, phase, event, epoch, figure_dir="figures", prefix="",
 
                 for k in range(len(event_center)):
                     # use arrow to show the prediction
-                    axes[2].annotate("", xy=(event_center[k], k), xytext=(event_center[k]-width_pred[k], k), arrowprops=dict(color='red', arrowstyle='<-', mutation_scale=0.7))
-                    axes[2].annotate("", xy=(event_center[k], k), xytext=(event_center[k]+width_pred[k], k), arrowprops=dict(color='blue', arrowstyle='<-', mutation_scale=0.7))
+                    axes[2].annotate("", xy=(event_center[k], k), xytext=(event_center[k]+offset_pred[k]-width_pred[k], k), arrowprops=dict(color='red', arrowstyle='<-', mutation_scale=0.7))
+                    axes[2].annotate("", xy=(event_center[k], k), xytext=(event_center[k]+offset_pred[k]+width_pred[k], k), arrowprops=dict(color='blue', arrowstyle='<-', mutation_scale=0.7))
                     axes[2].annotate("", xy=(event_center[k], k), xytext=(event_center[k]+offset_pred[k], k), arrowprops=dict(color='green', arrowstyle='<-', mutation_scale=0.7))
 
                     # use vertical line to show the ground truth
-                    axes[2].vlines(event_center[k]-width_ground_truth[k], k-0.2, k+0.2, color="C3", linestyle="--")
-                    axes[2].vlines(event_center[k]+width_ground_truth[k], k-0.2, k+0.2, color="C0", linestyle="--")
+                    axes[2].vlines(event_center[k]+offset_ground_truth[k]-width_ground_truth[k], k-0.2, k+0.2, color="C3", linestyle="--")
+                    axes[2].vlines(event_center[k]+offset_ground_truth[k]+width_ground_truth[k], k-0.2, k+0.2, color="C0", linestyle="--")
                     axes[2].vlines(event_center[k]+offset_ground_truth[k], k-0.2, k+0.2, color="C2", linestyle="--")
 
                 distance = (hypocenter[i, 1:4,:,:]*mask[None, :, :])
