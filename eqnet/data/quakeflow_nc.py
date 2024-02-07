@@ -75,7 +75,7 @@ _FILES = [
     "NC2020.h5",
 ]
 
-_PATH = "/nfs/quakeflow_dataset/waveform_h5"
+_PATH = "/nfs/quakeflow_dataset/NC/waveform_h5"
 _NAMES = ["2014.h5", "2015.h5", "2016.h5", "2017.h5", "2018.h5", "2019.h5", "2020.h5"]#, "2021.h5", "2022.h5"]
 _URLS = {
     "station": [f"{_REPO}/{x}" for x in _FILES],
