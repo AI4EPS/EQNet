@@ -487,7 +487,7 @@ def main(args):
             world_size = 1
 
     device = torch.device(args.device)
-    dtype = "float32" if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else "float16"
+    dtype = "float16" if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else "float16"
     #TODO: check if bfloat16 decreases the accuracy
     ptdtype = {"float32": torch.float32, "bfloat16": torch.bfloat16, "float16": torch.float16}[dtype]
     args.dtype, args.ptdtype = dtype, ptdtype
@@ -617,24 +617,26 @@ def main(args):
         else:
             raise NotImplementedError("Missing pretrained model for this model")
 
-        ## load model from wandb
-        # if utils.is_main_process():
-        #     with wandb.init() as run:
-        #         artifact = run.use_artifact(model_url, type="model")
-        #         artifact_dir = artifact.download()
-        #     checkpoint = torch.load(glob(os.path.join(artifact_dir, "*.pth"))[0], map_location="cpu")
-        #     model.load_state_dict(checkpoint["model"], strict=True)
+        if utils.is_main_process():
+            ## load model from wandb
+            if args.model == "eqnet":
+                with wandb.init() as run:
+                    artifact = run.use_artifact(model_url, type="model")
+                    artifact_dir = artifact.download()
+                checkpoint = torch.load(glob(os.path.join(artifact_dir, "*.pth"))[0], map_location="cpu")
+                model.load_state_dict(checkpoint["model"], strict=True)
+            ## load model from url
+            else:
+                state_dict = torch.hub.load_state_dict_from_url(
+                    model_url, model_dir="./", progress=True, check_hash=True, map_location="cpu"
+                )
+                model.load_state_dict(state_dict["model"], strict=True)
 
     model_without_ddp = model
     if args.distributed:
         torch.distributed.barrier()
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
-        model_without_ddp = model.module
-    ## load model from url
-    state_dict = torch.hub.load_state_dict_from_url(
-        model_url, model_dir="./", progress=True, check_hash=True, map_location="cpu"
-    )
-    model_without_ddp.load_state_dict(state_dict["model"], strict=True)
+        model_without_ddp = model.module    
 
     if args.model == "phasenet":
         pred_phasenet(args, model, data_loader, pick_path, figure_path)
