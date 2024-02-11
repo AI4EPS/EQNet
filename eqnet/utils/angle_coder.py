@@ -38,13 +38,13 @@ class CSLCoder:
                 scale level. Has shape (..., coding_len, ...)
         """
         ori_shape = angle_targets.squeeze(angle_dim).shape
-        angle_targets = angle_targets.flatten().unsqueeze(1)
+        angle_targets = torch.rad2deg(angle_targets.flatten().unsqueeze(1))
         # empty label
         smooth_label = torch.zeros_like(angle_targets).repeat(
             1, self.coding_len)
-        angle_targets_deg = (angle_targets) / self.omega
+        angle_targets_cls = (angle_targets) / self.omega
         # Float to Int
-        angle_targets_long = angle_targets_deg.long()
+        angle_targets_long = angle_targets_cls.long()
 
         if self.window == 'pulse':
             radius_range = angle_targets_long % self.coding_len
