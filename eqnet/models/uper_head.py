@@ -305,7 +305,7 @@ class EventHead(nn.Module):
                  loss_dict: dict = {"hm_loss": "focal", "hw_loss": "wl1", "reg_loss": "vl1", "angle_loss": "sl1", "depth_loss": "bl1", "mag_loss": "bl1"},
                  weights=[1.495, 0.018, 0.047],
                  offset_weight=[1, 1], 
-                 reg_weight=[0.75,2,20,0.9, 0.6],
+                 reg_weight=[0.8,2,20,0.9, 0.6],
                  angle_coder="trigono",
                  depth_center=8.0,
                  mag_center=1.5,
@@ -379,24 +379,82 @@ class EventHead(nn.Module):
         self.hypocenter = nn.Sequential(
             nn.Conv1d(
                 self.channels,
-                hidden_channels[2],
+                hidden_channels[1],
+                kernel_size=kernel_size,
+                dilation=dilations[2],
+                padding=((kernel_size - 1) * dilations[2] + 1) // 2,
+                padding_mode="reflect",
+                bias=False,
+            ),
+            nn.BatchNorm1d(hidden_channels[1]),
+            nn.ReLU(inplace=True),
+            #sample(scale_factor=2, mode='linear', align_corners=False),
+        )
+        self.distance = nn.Sequential(
+            nn.Conv1d(
+                hidden_channels[1],
+                hidden_channels[3],
                 kernel_size=kernel_size,
                 dilation=dilations[3],
                 padding=((kernel_size - 1) * dilations[3] + 1) // 2,
                 padding_mode="reflect",
                 bias=False,
             ),
-            nn.BatchNorm1d(hidden_channels[2]),
+            nn.BatchNorm1d(hidden_channels[3]),
             nn.ReLU(inplace=True),
-            #sample(scale_factor=2, mode='linear', align_corners=False),
             nn.Conv1d(
-                hidden_channels[2],
-                3+self.angle_dims,
+                hidden_channels[3],
+                2,
                 kernel_size=kernel_size,
                 dilation=dilations[1],
                 padding=((kernel_size - 1) * dilations[1] + 1) // 2,
                 padding_mode="reflect",
-            )
+                bias=False,
+            ),
+        )
+        self.angle = nn.Sequential(
+            nn.Conv1d(
+                hidden_channels[1],
+                hidden_channels[1],
+                kernel_size=kernel_size,
+                dilation=dilations[3],
+                padding=((kernel_size - 1) * dilations[3] + 1) // 2,
+                padding_mode="reflect",
+                bias=False,
+            ),
+            nn.BatchNorm1d(hidden_channels[1]),
+            nn.ReLU(inplace=True),
+            nn.Conv1d(
+                hidden_channels[1],
+                self.angle_dims,
+                kernel_size=kernel_size,
+                dilation=dilations[1],
+                padding=((kernel_size - 1) * dilations[1] + 1) // 2,
+                padding_mode="reflect",
+                bias=False,
+            ),
+        )
+        self.depth = nn.Sequential(
+            nn.Conv1d(
+                hidden_channels[1],
+                hidden_channels[3],
+                kernel_size=kernel_size,
+                dilation=dilations[3],
+                padding=((kernel_size - 1) * dilations[3] + 1) // 2,
+                padding_mode="reflect",
+                bias=False,
+            ),
+            nn.BatchNorm1d(hidden_channels[3]),
+            nn.ReLU(inplace=True),
+            nn.Conv1d(
+                hidden_channels[3],
+                1,
+                kernel_size=kernel_size,
+                dilation=dilations[1],
+                padding=((kernel_size - 1) * dilations[1] + 1) // 2,
+                padding_mode="reflect",
+                bias=False,
+            ),
         )
         
         self.magnitude = nn.Sequential(
@@ -420,7 +478,7 @@ class EventHead(nn.Module):
                 padding=((kernel_size - 1) * dilations[2] + 1) // 2,
                 padding_mode="reflect",
             ),
-            nn.BatchNorm1d(16),
+            nn.BatchNorm1d(hidden_channels[4]),
             nn.ReLU(inplace=True),
             nn.Conv1d(
                 hidden_channels[4],
@@ -476,8 +534,9 @@ class EventHead(nn.Module):
         
         # hypocenter
         hypocenter = self.hypocenter(x)
-        hypocenter = hypocenter.view(bt, st, hypocenter.shape[1], hypocenter.shape[2])
-        hypocenter = hypocenter.permute(0, 2, 3, 1)
+        distance = self.distance(hypocenter)
+        angle = self.angle(hypocenter)
+        depth = self.depth(hypocenter)
         
         bt, ch, nt, st = amplitude.shape
         #amplitude = F.avg_pool2d(amplitude, kernel_size=(1024, 1), stride=(128, 1))
@@ -496,9 +555,9 @@ class EventHead(nn.Module):
         #print(f"feature scale: min {x.min()}, max {x.max()}", force=True)
         
         magnitude = self.magnitude(torch.cat([x, amplitude], dim=1))
-        magnitude = magnitude.view(bt, st, magnitude.shape[1], magnitude.shape[2]).permute(0, 2, 3, 1)
-        hypocenter = torch.cat([hypocenter, magnitude], dim=1)
-        #hypocenter[:, 2, :, :] = torch.rad2deg(hypocenter[:, 2, :, :])
+        hypocenter = torch.cat([distance, angle, depth, magnitude], dim=1)
+        hypocenter = hypocenter.view(bt, st, hypocenter.shape[1], hypocenter.shape[2])
+        hypocenter = hypocenter.permute(0, 2, 3, 1)
         
         if self.training:            
             return None, self.losses({"event": heatmap, "offset": offset, "hypocenter": hypocenter}, event_center, event_location, event_location_mask)
@@ -530,8 +589,9 @@ class EventHead(nn.Module):
         hw_loss = self.hw_loss(outputs["offset"], event_location[:, 5:, :, :], event_location_mask, weights=self.offset_weight)
         
         reg_loss = self.reg_loss(outputs["hypocenter"][:, :2, :, :], event_location[:, :2, :, :], event_location_mask)
-        angle_loss = self.angle_loss(outputs["hypocenter"][:, 2:(2+self.angle_dims), :, :], # torch.cat([torch.sin(outputs["hypocenter"][:, 2:3, :, :]), torch.cos(outputs["hypocenter"][:, 2:3, :, :]),], dim=1),
-                                        self.angle_coder.encode(event_location[:, 2:3, :, :]), # torch.cat([torch.sin(event_location[:, 2:3, :, :]), torch.cos(event_location[:, 2:3, :, :]),], dim=1),
+        angle_loss = self.angle_loss(outputs["hypocenter"][:, 2:(2+self.angle_dims), :, :],# torch.cat([torch.sin(outputs["hypocenter"][:, 2:3, :, :]), torch.cos(outputs["hypocenter"][:, 2:3, :, :]),], dim=1),
+                                        #torch.cat([torch.sin(event_location[:, 2:3, :, :]), torch.cos(event_location[:, 2:3, :, :]),], dim=1),
+                                        self.angle_coder.encode(event_location[:, 2:3, :, :]),
                                         event_location_mask)
         depth_loss = self.depth_loss(outputs["hypocenter"][:, (2+self.angle_dims):(2+self.angle_dims+1), :, :], event_location[:, 3:4, :, :], event_location_mask, center=self.depth_center, scale=0.2)
         mag_loss = self.mag_loss(outputs["hypocenter"][:, (2+self.angle_dims+1):(2+self.angle_dims+2), :, :], event_location[:, 4:5, :, :], event_location_mask, center=self.mag_center, scale=1.2)
@@ -628,4 +688,3 @@ class PhaseHead(nn.Module):
         loss = torch.sum(-targets * F.log_softmax(inputs, dim=1) * num_stations.unsqueeze(1).unsqueeze(1))/(num*targets.shape[2])
 
         return loss
-
