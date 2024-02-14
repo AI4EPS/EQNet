@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.distributions import MultivariateNormal as MVN
 
 
 def cross_entropy_loss(inputs, targets, mask):
@@ -221,3 +222,44 @@ def balanced_l1_reg_loss(output, target, mask, center, scale=1.0, type="sl1"):
     regr_loss = (regr_loss * (torch.abs(ground_truth - center)*scale + 1)).sum() / (num + 1e-4)
     
     return regr_loss
+
+
+def bmc_loss(pred, target, mask, noise_var):
+    """Compute the Balanced MSE Loss (BMC) between `pred` and the ground truth `targets`.
+    
+    `Balanced MSE for Imbalanced Visual Regression
+    <https://arxiv.org/abs/2203.16427>`_ .
+    
+    Args:
+      pred: A float tensor of size [batch, 1].
+      target: A float tensor of size [batch, 1].
+      noise_var: A float number or tensor.
+    Returns:
+      loss: A float tensor. Balanced MSE Loss.
+    """
+    pred = pred.float()
+    target = target.float()
+    mask = mask.unsqueeze(1)
+    pred = pred[mask].unsqueeze(1)
+    target = target[mask].unsqueeze(1)
+    logits = - (pred - target.T).pow(2) / (2 * noise_var)   # logit size: [batch, batch]
+    loss = F.cross_entropy(logits, torch.arange(pred.shape[0]))     # contrastive-like loss
+    loss = loss * (2 * noise_var).detach()  # optional: restore the loss scale, 'detach' when noise is learnable 
+
+    return loss
+
+def bmc_loss_md(pred, target, noise_var):
+    """Compute the Multidimensional Balanced MSE Loss (BMC) between `pred` and the ground truth `targets`.
+    Args:
+      pred: A float tensor of size [batch, d].
+      target: A float tensor of size [batch, d].
+      noise_var: A float number or tensor.
+    Returns:
+      loss: A float tensor. Balanced MSE Loss.
+    """
+    I = torch.eye(pred.shape[-1])
+    logits = MVN(pred.unsqueeze(1), noise_var*I).log_prob(target.unsqueeze(0))  # logit size: [batch, batch]
+    loss = F.cross_entropy(logits, torch.arange(pred.shape[0]))     # contrastive-like loss
+    loss = loss * (2 * noise_var).detach()  # optional: restore the loss scale, 'detach' when noise is learnable 
+    
+    return loss
