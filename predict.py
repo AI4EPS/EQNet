@@ -305,10 +305,12 @@ def pred_eqnet(args, model, data_loader, pick_path, figure_path, event_path=None
             num_stations = len(meta["station_id"])
             with ctx:
                 output = model(meta)
-            output["phase"] = output["phase"][:, :, :, :num_stations]
-            output["event"] = output["event"][:, :, :num_stations]
-            output["offset"] = output["offset"][:, :, :, :num_stations]
-            output["hypocenter"] = output["hypocenter"][:, :, :, :num_stations]
+            if "phase" in output:
+                output["phase"] = output["phase"][:, :, :, :num_stations]
+            if "event" in output:
+                output["event"] = output["event"][:, :, :num_stations]
+                output["offset"] = output["offset"][:, :, :, :num_stations]
+                output["hypocenter"] = output["hypocenter"][:, :, :, :num_stations]
             meta["station_location"] = meta["station_location"][:, :num_stations]
             for k in meta.keys():
                 try:
@@ -361,66 +363,68 @@ def pred_eqnet(args, model, data_loader, pick_path, figure_path, event_path=None
                 if args.save_score:
                     torch.save(phase_scores[i], os.path.join(pick_path, filename + "_score.pt"))
                     torch.save(event_scores[i], os.path.join(event_path, filename + "_score.pt"))
-                if len(phase_picks_[i]) == 0:
-                    ## keep an empty file for the file with no picks to make it easier to track processed files
-                    with open(os.path.join(pick_path, filename + ".csv"), "a"):
-                        pass
-                else:
-                    picks_df = pd.DataFrame(phase_picks_[i])
+                if "phase" in output:
+                    if len(phase_picks_[i]) == 0:
+                        ## keep an empty file for the file with no picks to make it easier to track processed files
+                        with open(os.path.join(pick_path, filename + ".csv"), "a"):
+                            pass
+                    else:
+                        picks_df = pd.DataFrame(phase_picks_[i])
+                        picks_df.sort_values(by=["phase_time"], inplace=True)
+                        picks_df.to_csv(os.path.join(pick_path, filename + ".csv"), index=False)
+                    
+                if ("event" in output) and (output["event"] is not None):
+                    if len(event_picks_[i]) == 0:
+                        with open(os.path.join(event_path, filename + ".csv"), "a"):
+                            pass
+                        continue
+                    for pick_dict in event_picks_[i]:
+                        sta_order = pick_dict["station_index"]
+                        station_loc = meta["station_location"][sta_order[1], sta_order[0]]
+                        time_shift = meta["begin_time_index"][sta_order[1]] if "begin_time_index" in meta.keys() else 0
+                        # offset = output["offset"][i, 0, pick_dict["phase_index"]-time_shift, sta_order[0]].float().item()
+                        # width = output["offset"][i, 1, pick_dict["phase_index"]-time_shift, sta_order[0]].float().item()
+                        # dt = output["hypocenter"][i, 0, pick_dict["phase_index"]-time_shift, sta_order[0]].float().item()
+                        offset = output["offset"][i, 0, pick_dict["phase_mask"], sta_order[0]].float().mean().item()
+                        # assert 0, f"phase_mask: {pick_dict['phase_mask']}, phase_index: {pick_dict['phase_index']}, offset: {offset}"
+                        width = output["offset"][i, 1, pick_dict["phase_mask"], sta_order[0]].float().mean().item()
+                        dt = output["hypocenter"][i, 0, pick_dict["phase_mask"], sta_order[0]].float().mean().item()
+                        # dx = output["hypocenter"][i, 1, pick_dict["phase_index"]-time_shift, sta_order[0]].float().item()
+                        # dy = output["hypocenter"][i, 2, pick_dict["phase_index"]-time_shift, sta_order[0]].float().item()
+                        # dz = output["hypocenter"][i, 3, pick_dict["phase_index"]-time_shift, sta_order[0]].float().item()
+                        event_center_index = pick_dict["phase_index"]#+offset
+                        event_index = event_center_index - dt/(meta["dt_s"][i].item())/feature_scale
+                        p_index = event_center_index - width
+                        s_index = event_center_index + width
+                        pick_dict["event_center_index"] = event_center_index
+                        pick_dict["event_index"] = event_index
+                        pick_dict["p_index"] = p_index
+                        pick_dict["s_index"] = s_index
+                        pick_dict["event_original_time"] = (datetime.fromisoformat(pick_dict["phase_time"])
+                                                            + timedelta(seconds=(-dt))).isoformat(
+                                timespec="milliseconds"
+                        )
+
+                        dist = output["hypocenter"][i, 1, pick_dict["phase_mask"], sta_order[0]].mean()
+                        azimuth = output["hypocenter"][i, 2, pick_dict["phase_mask"], sta_order[0]].mean()
+                        pick_dict["epicentral_distance"] = dist.item()
+                        pick_dict["azimuth"] = torch.rad2deg(azimuth).item()
+                        dist = dist/6371
+                        sta_lon = torch.deg2rad(station_loc[0]) # longitude
+                        sta_lat = torch.deg2rad(station_loc[1]) # latitude
+                        pick_dict["event_latitude"] = torch.asin(torch.sin(sta_lat)*torch.cos(dist) + torch.cos(sta_lat)*torch.sin(dist)*torch.cos(azimuth))
+                        pick_dict["event_longitude"] = sta_lon + torch.atan2(torch.sin(azimuth)*torch.sin(dist)*torch.cos(sta_lat), torch.cos(dist)-torch.sin(sta_lat)*torch.sin(pick_dict["event_latitude"]))
+                        pick_dict["event_location_x"] = (pick_dict["event_longitude"]*torch.cos(pick_dict["event_latitude"]) * 6371).item()
+                        pick_dict["event_location_y"] = (pick_dict["event_latitude"] * 6371).item()
+                        pick_dict["event_location_z"] = (station_loc[2] + output["hypocenter"][i, 3, pick_dict["phase_mask"], sta_order[0]].mean()).item() #output["hypocenter"][i, 3, pick_dict["phase_index"]-time_shift, sta_order[0]]).item()
+                        pick_dict["magnitude"] = output["hypocenter"][i, 4, pick_dict["phase_mask"], sta_order[0]].mean().float().item()#output["hypocenter"][i, 4, pick_dict["phase_index"]-time_shift, sta_order[0]].float().item()
+                        pick_dict["phase_mask"] = [int(pick_dict["phase_mask"].item()), int(pick_dict["phase_mask"].item())]
+                        pick_dict["event_latitude"] = torch.rad2deg(pick_dict["event_latitude"]).item()
+                        pick_dict["event_longitude"] = torch.rad2deg(pick_dict["event_longitude"]).item()
+
+                    picks_df = pd.DataFrame(event_picks_[i])
                     picks_df.sort_values(by=["phase_time"], inplace=True)
-                    picks_df.to_csv(os.path.join(pick_path, filename + ".csv"), index=False)
-                    
-                if len(event_picks_[i]) == 0:
-                    with open(os.path.join(event_path, filename + ".csv"), "a"):
-                        pass
-                    continue
-                for pick_dict in event_picks_[i]:
-                    sta_order = pick_dict["station_index"]
-                    station_loc = meta["station_location"][sta_order[1], sta_order[0]]
-                    time_shift = meta["begin_time_index"][sta_order[1]] if "begin_time_index" in meta.keys() else 0
-                    # offset = output["offset"][i, 0, pick_dict["phase_index"]-time_shift, sta_order[0]].float().item()
-                    # width = output["offset"][i, 1, pick_dict["phase_index"]-time_shift, sta_order[0]].float().item()
-                    # dt = output["hypocenter"][i, 0, pick_dict["phase_index"]-time_shift, sta_order[0]].float().item()
-                    offset = output["offset"][i, 0, pick_dict["phase_mask"], sta_order[0]].float().mean().item()
-                    # assert 0, f"phase_mask: {pick_dict['phase_mask']}, phase_index: {pick_dict['phase_index']}, offset: {offset}"
-                    width = output["offset"][i, 1, pick_dict["phase_mask"], sta_order[0]].float().mean().item()
-                    dt = output["hypocenter"][i, 0, pick_dict["phase_mask"], sta_order[0]].float().mean().item()
-                    # dx = output["hypocenter"][i, 1, pick_dict["phase_index"]-time_shift, sta_order[0]].float().item()
-                    # dy = output["hypocenter"][i, 2, pick_dict["phase_index"]-time_shift, sta_order[0]].float().item()
-                    # dz = output["hypocenter"][i, 3, pick_dict["phase_index"]-time_shift, sta_order[0]].float().item()
-                    event_center_index = pick_dict["phase_index"]#+offset
-                    event_index = event_center_index - dt/(meta["dt_s"][i].item())/feature_scale
-                    p_index = event_center_index - width
-                    s_index = event_center_index + width
-                    pick_dict["event_center_index"] = event_center_index
-                    pick_dict["event_index"] = event_index
-                    pick_dict["p_index"] = p_index
-                    pick_dict["s_index"] = s_index
-                    pick_dict["event_original_time"] = (datetime.fromisoformat(pick_dict["phase_time"])
-                                                        + timedelta(seconds=(-dt))).isoformat(
-                            timespec="milliseconds"
-                    )
-                    
-                    dist = output["hypocenter"][i, 1, pick_dict["phase_mask"], sta_order[0]].mean()
-                    azimuth = output["hypocenter"][i, 2, pick_dict["phase_mask"], sta_order[0]].mean()
-                    pick_dict["epicentral_distance"] = dist.item()
-                    pick_dict["azimuth"] = torch.rad2deg(azimuth).item()
-                    dist = dist/6371
-                    sta_lon = torch.deg2rad(station_loc[0]) # longitude
-                    sta_lat = torch.deg2rad(station_loc[1]) # latitude
-                    pick_dict["event_latitude"] = torch.asin(torch.sin(sta_lat)*torch.cos(dist) + torch.cos(sta_lat)*torch.sin(dist)*torch.cos(azimuth))
-                    pick_dict["event_longitude"] = sta_lon + torch.atan2(torch.sin(azimuth)*torch.sin(dist)*torch.cos(sta_lat), torch.cos(dist)-torch.sin(sta_lat)*torch.sin(pick_dict["event_latitude"]))
-                    pick_dict["event_location_x"] = (pick_dict["event_longitude"]*torch.cos(pick_dict["event_latitude"]) * 6371).item()
-                    pick_dict["event_location_y"] = (pick_dict["event_latitude"] * 6371).item()
-                    pick_dict["event_location_z"] = (station_loc[2] + output["hypocenter"][i, 3, pick_dict["phase_mask"], sta_order[0]].mean()).item() #output["hypocenter"][i, 3, pick_dict["phase_index"]-time_shift, sta_order[0]]).item()
-                    pick_dict["magnitude"] = output["hypocenter"][i, 4, pick_dict["phase_mask"], sta_order[0]].mean().float().item()#output["hypocenter"][i, 4, pick_dict["phase_index"]-time_shift, sta_order[0]].float().item()
-                    pick_dict["phase_mask"] = [int(pick_dict["phase_mask"].item()), int(pick_dict["phase_mask"].item())]
-                    pick_dict["event_latitude"] = torch.rad2deg(pick_dict["event_latitude"]).item()
-                    pick_dict["event_longitude"] = torch.rad2deg(pick_dict["event_longitude"]).item()
-                    
-                picks_df = pd.DataFrame(event_picks_[i])
-                picks_df.sort_values(by=["phase_time"], inplace=True)
-                picks_df.to_csv(os.path.join(event_path, filename + ".csv"), index=False)
+                    picks_df.to_csv(os.path.join(event_path, filename + ".csv"), index=False)
 
             if args.plot_figure:
                 # meta["waveform_raw"] = meta["waveform"].clone()

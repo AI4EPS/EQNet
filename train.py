@@ -267,7 +267,10 @@ def plot_results(meta, model, output, args, epoch, prefix=""):
         elif args.model == "eqnet":
             output = model(meta)
             phase = F.softmax(output["phase"], dim=1).cpu().float()
-            event = torch.sigmoid(output["event"]).cpu().float()
+            try:
+                event = torch.sigmoid(output["event"]).cpu().float()
+            except:
+                event = None
             try:
                 offset = output["offset"].cpu().float()
                 hypocenter = output["hypocenter"].cpu().float()

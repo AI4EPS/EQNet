@@ -559,7 +559,8 @@ def plot_eqnet_train(meta, phase, event, epoch, figure_dir="figures", prefix="",
             axes[1].plot(meta["phase_pick"][i, 1, :, j] + j, "--C3")
             axes[1].plot(meta["phase_pick"][i, 2, :, j] + j, "--C0")
 
-            axes[2].plot(event[i, :, j] + j, "b")
+            if event is not None:
+                axes[2].plot(event[i, :, j] + j, "b")
             axes[2].plot(meta["event_center"][i, :, j] + j, "--C0")
                 
         # draw t, xy and xz scatter, show the station location, and the event location

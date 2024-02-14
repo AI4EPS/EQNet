@@ -401,7 +401,7 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                                     auto_count += 1
                             if auto_count >= len(station_ids):
                                 is_sick = True
-                                print(f"\n{event_id} all auto picks")
+                                print(f"\nevent {event_id} all auto picks")
                             if is_sick:
                                 continue
                             
