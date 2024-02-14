@@ -72,10 +72,13 @@ datasets/*.h5
 
 metrics.ipynb
 metrics/
+ridgecrest_metrics/
 test_predict_mseed.txt
 test_centernet.txt
 test_predict.txt
 test_*.txt
+test_*.sh
+test_*.py
 train_*.txt
 eqnet/models/uper_head_old.py
 test_metric.sh
