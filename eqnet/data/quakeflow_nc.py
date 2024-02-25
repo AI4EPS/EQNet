@@ -76,7 +76,7 @@ _FILES = [
 ]
 
 _PATH = "/nfs/quakeflow_dataset/NC/waveform_h5"
-_NAMES = ["2014.h5", "2015.h5", "2016.h5", "2017.h5", "2018.h5", "2019.h5", "2020.h5"]#, "2021.h5", "2022.h5"]
+_NAMES = ["2013.h5", "2014.h5", "2015.h5", "2016.h5", "2017.h5", "2018.h5", "2019.h5", "2020.h5"]#, "2021.h5", "2022.h5"]
 _URLS = {
     "station": [f"{_REPO}/{x}" for x in _FILES],
     #"event": [f"{_REPO}/{x}" for x in _FILES],
@@ -554,7 +554,6 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                                     event_location[i, 0, :] += (
                                         self.feature_scale * np.arange(self.feature_nt) - event_attrs["event_time_index"]
                                     ) / self.sampling_rate * mask.astype(np.float32)
-                                    # event_location[0, :, i] = (np.arange(self.feature_nt) - 3000 / self.feature_scale) / self.sampling_rate
                                     # print(event_location[i, 1:, mask].shape, event_location.shape, event_location[i][1:, mask].shape)
                                     event_location[i][1:, mask] += np.array([dist, azimuth, dz, magnitude, (c0-c0_int)[0], c0_width])[:, np.newaxis]
                                     event_location_mask[i, :] = np.logical_or(event_location_mask[i, :], mask)
@@ -575,7 +574,7 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                             # waveforms = (waveforms - np.mean(waveforms, axis=-1, keepdims=True)) / std
                             # waveforms = waveforms.astype(np.float32)
                             len_manual = len(manual_stas)
-                            assert len_manual>0, f"{event_id} no manual picks"
+                            assert len_manual>0, f"event {event_id} no manual picks"
                             assert len_manual==np.any(event_location_mask>0, axis=1).sum(), f"{event_id} manual picks num don't match"
                             manual_cluster_index = np.array(manual_stas+auto_stas)
                             waveforms = waveforms[manual_cluster_index]
