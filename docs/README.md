@@ -1,4 +1,4 @@
-## EQNet: an End‐to‐End EarthQuake Nerual NETwork
+## EQNet: an End‐to‐End EarthQuake Neural NETwork
 
 ### [PhaseNet](https://github.com/AI4EPS/PhaseNet)
 Orginal PhaseNet for picking arrival time.
