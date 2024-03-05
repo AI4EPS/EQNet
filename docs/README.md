@@ -1,7 +1,7 @@
 ## EQNet: an End‐to‐End EarthQuake Neural NETwork
 
 ### [PhaseNet](https://github.com/AI4EPS/PhaseNet)
-Orginal PhaseNet for picking arrival time.
+Original PhaseNet for picking arrival time.
 
 
 ### PhaseNet+
@@ -55,7 +55,7 @@ python predict.py --model phasenet_das --amp  --data_path /net/kuafu/mnt/tank/da
 ```
 python predict.py --model phasenet_das --amp --data_path Forge_Utah/data --result_path ./results --location forge --phases P S PS
 ```
-Continous data:
+Continuous data:
 ```
 torchrun --standalone --nproc_per_node=4 predict.py --data_path /kuafu/DASdata/Hawaii_desampled/ --result_path Hawaii_5Hz --system optasense --cut_patch --nt=20480 --nx=3000 --workers=4 --batch_size=1 --amp --highpass_filter=5.0
 ```
