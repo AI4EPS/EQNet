@@ -303,9 +303,9 @@ class EventHead(nn.Module):
                  dilations=[1, 4, 8, 16],
                  kernel_size=7,
                  loss_dict: dict = {"hm_loss": "focal", "hw_loss": "wl1", "reg_loss": "vl1", "angle_loss": "sl1", "depth_loss": "bl1", "mag_loss": "bl1"},
-                 weights=[1.495, 0.018, 0.047],
+                 weights=[1.497, 0.018, 0.047],
                  offset_weight=[1, 1], 
-                 reg_weight=[0.8,2,20,0.9, 0.6],
+                 reg_weight=[0.8,2,20,1.0, 0.7],
                  angle_coder="trigono",
                  depth_center=8.0,
                  mag_center=1.5,
@@ -457,21 +457,23 @@ class EventHead(nn.Module):
             ),
         )
         
-        self.magnitude = nn.Sequential(
+        self.magnitude_1 = nn.Sequential(
             nn.Conv1d(
-                self.channels+3,
-                hidden_channels[2],
+                self.channels,
+                hidden_channels[3],
                 kernel_size=kernel_size,
                 dilation=dilations[3],
                 padding=((kernel_size - 1) * dilations[3] + 1) // 2,
                 padding_mode="reflect",
                 bias=False,
             ),
-            nn.BatchNorm1d(hidden_channels[2]),
+            nn.BatchNorm1d(hidden_channels[3]),
             nn.ReLU(inplace=True),
+        )
+        self.magnitude_2 = nn.Sequential(
             #Sample(scale_factor=2, mode='linear', align_corners=False),
             nn.Conv1d(
-                hidden_channels[2],
+                hidden_channels[3]+3,
                 hidden_channels[4],
                 kernel_size=kernel_size,
                 dilation=dilations[2],
@@ -554,7 +556,7 @@ class EventHead(nn.Module):
         #print(f"feature scale: avg {x.mean()}, abs avg {torch.abs(x).mean()}, std {x.std()}", force=True)
         #print(f"feature scale: min {x.min()}, max {x.max()}", force=True)
         
-        magnitude = self.magnitude(torch.cat([x, amplitude], dim=1))
+        magnitude = self.magnitude_2(torch.cat([self.magnitude_1(x), amplitude], dim=1))
         hypocenter = torch.cat([distance, angle, depth, magnitude], dim=1)
         hypocenter = hypocenter.view(bt, st, hypocenter.shape[1], hypocenter.shape[2])
         hypocenter = hypocenter.permute(0, 2, 3, 1)
@@ -593,8 +595,8 @@ class EventHead(nn.Module):
                                         #torch.cat([torch.sin(event_location[:, 2:3, :, :]), torch.cos(event_location[:, 2:3, :, :]),], dim=1),
                                         self.angle_coder.encode(event_location[:, 2:3, :, :]),
                                         event_location_mask)
-        depth_loss = self.depth_loss(outputs["hypocenter"][:, (2+self.angle_dims):(2+self.angle_dims+1), :, :], event_location[:, 3:4, :, :], event_location_mask, center=self.depth_center, scale=0.2)
-        mag_loss = self.mag_loss(outputs["hypocenter"][:, (2+self.angle_dims+1):(2+self.angle_dims+2), :, :], event_location[:, 4:5, :, :], event_location_mask, center=self.mag_center, scale=1.2)
+        depth_loss = self.depth_loss(outputs["hypocenter"][:, (2+self.angle_dims):(2+self.angle_dims+1), :, :], event_location[:, 3:4, :, :], event_location_mask, scale=10.80, shape=0.47, loc=-3.90, base=0.5, weight=1.3)
+        mag_loss = self.mag_loss(outputs["hypocenter"][:, (2+self.angle_dims+1):(2+self.angle_dims+2), :, :], event_location[:, 4:5, :, :], event_location_mask, scale=2.29, shape=0.30, loc=-1.32, base=0.3, weight=2.3)
         
         loss = hm_loss * self.weights[0] + hw_loss * self.weights[1] \
             + reg_loss[0] * self.weights[2] \
@@ -613,7 +615,7 @@ class PhaseHead(nn.Module):
                  hidden_channels=[256, 128, 64, 32],
                  dilations=[1, 8, 16, 32],
                  kernel_size=7,
-                 weights=[0.85,],
+                 weights=[0.9,],
                  ):
         super().__init__()
         
