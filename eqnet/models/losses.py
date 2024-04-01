@@ -206,7 +206,13 @@ def modulus_l1_reg_loss(output, target, mask, type="sl1"):
     
     return regr_loss
 
-def balanced_l1_reg_loss(output, target, mask, center, scale=1.0, type="sl1"):
+def balanced_l1_reg_loss(output, target, mask, scale, shape, loc, base=1.0, weight=1.0, type="sl1"):
+    '''
+    The ground truth is assumed to be log-normal distributed, 
+    which means ln(gt - loc) ~ N(ln(scale), shape^2)
+    the extra weight of loss is how many times std the ground truth is away from the mean,
+    namely, weight = abs(ln(gt - loc) - ln(scale))/shape + 1
+    '''
     output = output.float()
     target = target.float()
     num = mask.float().sum()
@@ -218,8 +224,11 @@ def balanced_l1_reg_loss(output, target, mask, center, scale=1.0, type="sl1"):
         regr_loss = F.l1_loss(pred, ground_truth, reduction='none')
     elif type == "sl1":
         regr_loss = F.smooth_l1_loss(pred, ground_truth, reduction='none')
-        
-    regr_loss = (regr_loss * (torch.abs(ground_truth - center)*scale + 1)).sum() / (num + 1e-4)
+    
+    regr_loss = (regr_loss * \
+        (torch.abs(torch.log(torch.clamp(ground_truth-loc, min=0.1)) - torch.log(torch.tensor(scale)))/shape \
+            * weight + base).detach()\
+            ).sum() / (num + 1e-4)
     
     return regr_loss
 
