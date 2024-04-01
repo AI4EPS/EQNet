@@ -818,17 +818,17 @@ class SeismicTraceIterableDataset(IterableDataset):
         }
 
     def read_hdf5(self, trace_id):
+        hdf5_fp = h5py.File(self.hdf5_file, "r", libver="latest", swmr=True)
         meta = {}
-        if self.hdf5_fp is None:
+        if hdf5_fp is None:
             raise ("HDF5 file is not opened")
         else:
-            hdf5_fp = self.hdf5_fp
             event_id, sta_id = trace_id.split("/")
             waveform = hdf5_fp[trace_id][:, :]
             if waveform.shape[1] == 3:
                 waveform = waveform.T  # [3, Nt]
             waveform = waveform[:, :, np.newaxis]
-            meta["waveform"] = waveform.astype(np.float32)
+            meta["waveform"] = torch.from_numpy(waveform.astype(np.float32))
             meta["station_id"] = [sta_id]
             meta["begin_time"] = hdf5_fp[event_id].attrs["begin_time"]
             meta["dt_s"] = hdf5_fp[trace_id].attrs["dt_s"]

@@ -37,7 +37,9 @@ logger = logging.getLogger()
 
 
 def postprocess(meta, output, polarity_scale=4, event_scale=16):
-    nt, nx = meta["nt"], meta["nx"]
+    assert torch.all(meta["nt"]==meta["nt"][0]), "nt should be the same for all data"
+    assert torch.all(meta["nx"]==meta["nx"][0]), "nx should be the same for all data"
+    nt, nx = meta["nt"][0], meta["nx"][0]
     data = meta["data"][:, :, :nt, :nx]
     # data = moving_normalize(data)
     meta["data"] = data
@@ -392,6 +394,7 @@ def pred_eqnet(args, model, data_loader, pick_path, figure_path, event_path=None
                         # dx = output["hypocenter"][i, 1, pick_dict["phase_index"]-time_shift, sta_order[0]].float().item()
                         # dy = output["hypocenter"][i, 2, pick_dict["phase_index"]-time_shift, sta_order[0]].float().item()
                         # dz = output["hypocenter"][i, 3, pick_dict["phase_index"]-time_shift, sta_order[0]].float().item()
+                        dt = dt * meta["dt_s"][i].item()
                         event_center_index = pick_dict["phase_index"]#+offset
                         event_index = event_center_index - dt/(meta["dt_s"][i].item())/feature_scale
                         p_index = event_center_index - width
@@ -408,7 +411,7 @@ def pred_eqnet(args, model, data_loader, pick_path, figure_path, event_path=None
                         dist = output["hypocenter"][i, 1, pick_dict["phase_mask"], sta_order[0]].mean()
                         azimuth = output["hypocenter"][i, 2, pick_dict["phase_mask"], sta_order[0]].mean()
                         pick_dict["epicentral_distance"] = dist.item()
-                        pick_dict["azimuth"] = torch.rad2deg(azimuth).item()
+                        pick_dict["azimuth"] = torch.rad2deg(azimuth).item() % 360
                         dist = dist/6371
                         sta_lon = torch.deg2rad(station_loc[0]) # longitude
                         sta_lat = torch.deg2rad(station_loc[1]) # latitude
