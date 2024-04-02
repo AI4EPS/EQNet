@@ -98,9 +98,9 @@ def generate_event_label(
         gaussian = np.exp(-(t**2) / (2 * (w / 6) ** 2))
         gaussian[gaussian < 0.05] = 0.0
         target_center += gaussian
-        mask[int(c0) - m : int(c0) + m] = 1.0
+        mask[max(0, int(c0) - m) : min(nt, int(c0) + m)] = 1.0
         t = np.arange(nt) - t0
-        target_time[int(c0) - m : int(c0) + m] = t[int(c0) - m : int(c0) + m]
+        target_time[max(0, int(c0) - m) : min(nt, int(c0) + m)] = t[max(0, int(c0) - m) : min(nt, int(c0) + m)]
 
     return target_center, target_time, mask
 
