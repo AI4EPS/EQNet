@@ -24,6 +24,12 @@ class Sample(nn.Module):
     def forward(self, x):
         return F.interpolate(x, scale_factor=self.scale_factor, mode=self.mode, align_corners=self.align_corners)
 
+class Sine(nn.Module):
+    def  __init__(self):
+        super().__init__()
+    
+    def forward(self, x):
+        return torch.sin(x)
 
 class PPM(nn.ModuleList):
     """Pooling Pyramid Module used in PSPNet.
@@ -302,8 +308,8 @@ class EventHead(nn.Module):
                  hidden_channels=[256, 128, 64, 32, 16],
                  dilations=[1, 4, 8, 16],
                  kernel_size=7,
-                 loss_dict: dict = {"hm_loss": "focal", "hw_loss": "wl1", "reg_loss": "vl1", "angle_loss": "sl1", "depth_loss": "bl1", "mag_loss": "bl1"},
-                 weights=[1.497, 0.018, 0.047],
+                 loss_dict: dict = {"hm_loss": "focal", "hw_loss": "wl1", "travel_time_loss": "sl1", "dist_loss": "sl1", "angle_loss": "sl1", "depth_loss": "bl1", "mag_loss": "bl1"},
+                 weights=[1.497, 0.018, 0.05],
                  offset_weight=[1, 1], 
                  reg_weight=[0.8,2,20,1.0, 0.7],
                  angle_coder="trigono",
@@ -347,8 +353,8 @@ class EventHead(nn.Module):
                 hidden_channels[2],
                 1,
                 kernel_size=kernel_size,
-                dilation=dilations[3],
-                padding=((kernel_size - 1) * dilations[3] + 1) // 2,
+                dilation=dilations[1],
+                padding=((kernel_size - 1) * dilations[1] + 1) // 2,
                 padding_mode="reflect",
             )
         )
@@ -364,7 +370,7 @@ class EventHead(nn.Module):
                 bias=False,
             ),
             nn.BatchNorm1d(hidden_channels[2]),
-            nn.ReLU(inplace=True),
+            nn.GELU(),
             #Sample(scale_factor=2, mode='linear', align_corners=False),
             nn.Conv1d(
                 hidden_channels[2],
@@ -387,30 +393,52 @@ class EventHead(nn.Module):
                 bias=False,
             ),
             nn.BatchNorm1d(hidden_channels[1]),
-            nn.ReLU(inplace=True),
+            nn.GELU(),
             #sample(scale_factor=2, mode='linear', align_corners=False),
+        )
+        self.travel_time = nn.Sequential(
+            nn.Conv1d(
+                hidden_channels[1],
+                hidden_channels[3],
+                kernel_size=kernel_size,
+                dilation=dilations[1],
+                padding=((kernel_size - 1) * dilations[1] + 1) // 2,
+                padding_mode="reflect",
+                #bias=False,
+            ),
+            #nn.BatchNorm1d(hidden_channels[3]),
+            nn.GELU(),
+            nn.Conv1d(
+                hidden_channels[3],
+                1,
+                kernel_size=kernel_size,
+                dilation=dilations[0],
+                padding=((kernel_size - 1) * dilations[0] + 1) // 2,
+                padding_mode="reflect",
+            ),
+            #nn.LeakyReLU(inplace=True), # the origin time and the distance should be positive
         )
         self.distance = nn.Sequential(
             nn.Conv1d(
                 hidden_channels[1],
                 hidden_channels[3],
                 kernel_size=kernel_size,
-                dilation=dilations[3],
-                padding=((kernel_size - 1) * dilations[3] + 1) // 2,
-                padding_mode="reflect",
-                bias=False,
-            ),
-            nn.BatchNorm1d(hidden_channels[3]),
-            nn.ReLU(inplace=True),
-            nn.Conv1d(
-                hidden_channels[3],
-                2,
-                kernel_size=kernel_size,
                 dilation=dilations[1],
                 padding=((kernel_size - 1) * dilations[1] + 1) // 2,
                 padding_mode="reflect",
                 bias=False,
             ),
+            nn.BatchNorm1d(hidden_channels[3]),
+            nn.GELU(),
+            nn.Conv1d(
+                hidden_channels[3],
+                1,
+                kernel_size=kernel_size,
+                dilation=dilations[0],
+                padding=((kernel_size - 1) * dilations[0] + 1) // 2,
+                padding_mode="reflect",
+            ),
+            #nn.LeakyReLU(inplace=True), # the origin time and the distance should be positive
         )
         self.angle = nn.Sequential(
             nn.Conv1d(
@@ -423,7 +451,7 @@ class EventHead(nn.Module):
                 bias=False,
             ),
             nn.BatchNorm1d(hidden_channels[1]),
-            nn.ReLU(inplace=True),
+            nn.GELU(),
             nn.Conv1d(
                 hidden_channels[1],
                 self.angle_dims,
@@ -431,9 +459,13 @@ class EventHead(nn.Module):
                 dilation=dilations[1],
                 padding=((kernel_size - 1) * dilations[1] + 1) // 2,
                 padding_mode="reflect",
-                bias=False,
             ),
+            Sine(),
         )
+        # first channel is sin, second channel is cos
+        # so the initial bias should be 0 and pi/2
+        #self.angle[-2].bias.data[::2].fill_(0)
+        #self.angle[-2].bias.data[1::2].fill_(1.5708)
         self.depth = nn.Sequential(
             nn.Conv1d(
                 hidden_channels[1],
@@ -445,7 +477,7 @@ class EventHead(nn.Module):
                 bias=False,
             ),
             nn.BatchNorm1d(hidden_channels[3]),
-            nn.ReLU(inplace=True),
+            nn.GELU(),
             nn.Conv1d(
                 hidden_channels[3],
                 1,
@@ -453,7 +485,6 @@ class EventHead(nn.Module):
                 dilation=dilations[1],
                 padding=((kernel_size - 1) * dilations[1] + 1) // 2,
                 padding_mode="reflect",
-                bias=False,
             ),
         )
         
@@ -468,7 +499,7 @@ class EventHead(nn.Module):
                 bias=False,
             ),
             nn.BatchNorm1d(hidden_channels[3]),
-            nn.ReLU(inplace=True),
+            nn.GELU(),
         )
         self.magnitude_2 = nn.Sequential(
             #Sample(scale_factor=2, mode='linear', align_corners=False),
@@ -479,9 +510,10 @@ class EventHead(nn.Module):
                 dilation=dilations[2],
                 padding=((kernel_size - 1) * dilations[2] + 1) // 2,
                 padding_mode="reflect",
+                bias=False,
             ),
             nn.BatchNorm1d(hidden_channels[4]),
-            nn.ReLU(inplace=True),
+            nn.GELU(),
             nn.Conv1d(
                 hidden_channels[4],
                 1,
@@ -500,7 +532,8 @@ class EventHead(nn.Module):
         self.weights = weights
         self.hm_loss = loss_factory[loss_dict["hm_loss"]]
         self.hw_loss = loss_factory[loss_dict["hw_loss"]]
-        self.reg_loss = loss_factory[loss_dict["reg_loss"]]
+        self.travel_time_loss = loss_factory[loss_dict["travel_time_loss"]]
+        self.dist_loss = loss_factory[loss_dict["dist_loss"]]
         self.angle_loss = loss_factory[loss_dict["angle_loss"]]
         self.depth_loss = loss_factory[loss_dict["depth_loss"]]
         self.mag_loss = loss_factory[loss_dict["mag_loss"]]
@@ -536,6 +569,7 @@ class EventHead(nn.Module):
         
         # hypocenter
         hypocenter = self.hypocenter(x)
+        travel_time = self.travel_time(hypocenter)
         distance = self.distance(hypocenter)
         angle = self.angle(hypocenter)
         depth = self.depth(hypocenter)
@@ -557,7 +591,7 @@ class EventHead(nn.Module):
         #print(f"feature scale: min {x.min()}, max {x.max()}", force=True)
         
         magnitude = self.magnitude_2(torch.cat([self.magnitude_1(x), amplitude], dim=1))
-        hypocenter = torch.cat([distance, angle, depth, magnitude], dim=1)
+        hypocenter = torch.cat([travel_time, distance, angle, depth, magnitude], dim=1)
         hypocenter = hypocenter.view(bt, st, hypocenter.shape[1], hypocenter.shape[2])
         hypocenter = hypocenter.permute(0, 2, 3, 1)
         
@@ -590,7 +624,8 @@ class EventHead(nn.Module):
         hm_loss = self.hm_loss(outputs["event"], event_center, station_mask)
         hw_loss = self.hw_loss(outputs["offset"], event_location[:, 5:, :, :], event_location_mask, weights=self.offset_weight)
         
-        reg_loss = self.reg_loss(outputs["hypocenter"][:, :2, :, :], event_location[:, :2, :, :], event_location_mask)
+        travel_time_loss = self.travel_time_loss(outputs["hypocenter"][:, :1, :, :], event_location[:, :1, :, :], event_location_mask)
+        dist_loss = self.dist_loss(outputs["hypocenter"][:, 1:2, :, :], event_location[:, 1:2, :, :], event_location_mask)
         angle_loss = self.angle_loss(outputs["hypocenter"][:, 2:(2+self.angle_dims), :, :],# torch.cat([torch.sin(outputs["hypocenter"][:, 2:3, :, :]), torch.cos(outputs["hypocenter"][:, 2:3, :, :]),], dim=1),
                                         #torch.cat([torch.sin(event_location[:, 2:3, :, :]), torch.cos(event_location[:, 2:3, :, :]),], dim=1),
                                         self.angle_coder.encode(event_location[:, 2:3, :, :]),
@@ -599,14 +634,14 @@ class EventHead(nn.Module):
         mag_loss = self.mag_loss(outputs["hypocenter"][:, (2+self.angle_dims+1):(2+self.angle_dims+2), :, :], event_location[:, 4:5, :, :], event_location_mask, scale=2.29, shape=0.30, loc=-1.32, base=0.3, weight=2.3)
         
         loss = hm_loss * self.weights[0] + hw_loss * self.weights[1] \
-            + reg_loss[0] * self.weights[2] \
-            + reg_loss[1] * self.weights[3] \
+            + travel_time_loss * self.weights[2] \
+            + dist_loss * self.weights[3] \
             + angle_loss * self.weights[4] \
             + depth_loss * self.weights[5] \
             + mag_loss * self.weights[6]
         # print(f"loss {loss}, hm_loss {hm_loss}, hw_loss {hw_loss}, reg_loss {reg_loss}", force=True)
         # return {"loss": loss, "loss_event": hm_loss, "loss_offset": hw_loss, "loss_hypocenter": reg_loss}
-        return {"loss": loss, "loss_event": hm_loss, "loss_offset": hw_loss, "loss_origin_time": reg_loss[0], "loss_x": reg_loss[1], "loss_y": angle_loss, "loss_depth": depth_loss, "loss_magnitude": mag_loss}
+        return {"loss": loss, "loss_event": hm_loss, "loss_offset": hw_loss, "loss_origin_time": travel_time_loss, "loss_x": dist_loss, "loss_y": angle_loss, "loss_depth": depth_loss, "loss_magnitude": mag_loss}
     
     
 class PhaseHead(nn.Module):
