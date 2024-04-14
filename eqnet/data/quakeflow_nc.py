@@ -22,6 +22,7 @@ import numpy as np
 import torch
 from typing import Dict, List, Optional, Tuple, Union
 import fsspec
+from datetime import datetime, timedelta
 
 import datasets
 from scipy.sparse.csgraph import minimum_spanning_tree
@@ -112,7 +113,9 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
     degree2km = 111.32
     nt = 8192
     feature_nt = 512
+    raw_nt = 12000 # temporary hard code
     feature_scale = int(nt / feature_nt)
+    raw_feature_nt = int(raw_nt / feature_scale)
     sampling_rate = 100.0
 
     # This is an example of a dataset with multiple configurations.
@@ -411,20 +414,20 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                             
                             b, a = butter(4, 0.1, btype="highpass", analog=False)
                             
-                            waveforms = np.zeros([len(station_ids), 3, self.nt], dtype="float32")
+                            waveforms = np.zeros([len(station_ids), 3, self.raw_nt], dtype="float32")
                             amplitude = np.zeros_like(waveforms)
                             phase_pick = np.zeros_like(waveforms)
-                            event_center = np.zeros([len(station_ids), self.feature_nt])
-                            event_location = np.zeros([len(station_ids), 7, self.feature_nt])
-                            event_location_mask = np.zeros([len(station_ids), self.feature_nt])
+                            event_center = np.zeros([len(station_ids), self.raw_feature_nt])
+                            event_location = np.zeros([len(station_ids), 7, self.raw_feature_nt])
+                            event_location_mask = np.zeros([len(station_ids), self.raw_feature_nt])
                             station_location = np.zeros([len(station_ids), 3])
                             # reference_point = np.array([reference_longitude, reference_latitude])
                             manual_stas = [] # index of stations with at least one manual pick pair 
                             auto_stas = [] # index of stations with only automatic picks
 
                             for i, sta_id in enumerate(station_ids):
-                                waveforms[i, :, :] = event[sta_id][:, :self.nt]
-                                amplitude[i, :, :] = event[sta_id][:, :self.nt]
+                                waveforms[i, :, :] = event[sta_id][:, :]
+                                amplitude[i, :, :] = event[sta_id][:, :]
                                 attrs = event[sta_id].attrs
                                 if attrs["unit"][-6:] == "m/s**2":
                                     # integrate acceleration to velocity
@@ -463,6 +466,8 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                                 manual_event_ids = []
                                 p_pick_stas = []
                                 s_pick_stas = []
+                                
+                                event_time0 = datetime.fromisoformat(event_attrs["event_time"])
                                 for e_id in sorted(np.unique(attrs["event_id"])):
                                     e_attrs = fp[e_id].attrs
                                     if len(np.unique(attrs["phase_type"][attrs["event_id"]==e_id])) < 2:
@@ -512,7 +517,15 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                                     x = np.cos(np.radians(attrs["latitude"])) * np.sin(np.radians(e_attrs["latitude"])) \
                                         - np.sin(np.radians(attrs["latitude"])) * np.cos(np.radians(e_attrs["latitude"])) * np.cos(np.radians(dlon))
                                     azimuth = round(np.arctan2(y, x), 4)
+                                    
                                     magnitude = round(e_attrs["magnitude"], 2)
+                                    
+                                    begin_time_index_shift = (int(round(
+                                        (datetime.fromisoformat(e_attrs["event_time"]) - event_time0).total_seconds()
+                                        / attrs["dt_s"]
+                                    )) if e_id != event_id else 0
+                                    )
+                                    t0 = e_attrs["event_time_index"] + begin_time_index_shift
 
                                     assert len(c0)==1, f"{event_id}/{sta_id} multiple phase centers at {e_id}: {c0}"
                                     assert c0[0]<self.nt
@@ -535,7 +548,7 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                                         label_width=[
                                             10,
                                         ],
-                                        nt=self.feature_nt,
+                                        nt=self.raw_feature_nt,
                                         # nt=self.nt,
                                     )[1, :]
                                     #mask = event_center_eid >= 0.5
@@ -548,9 +561,9 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                                         continue
                                     
                                     event_center[i, :] += event_center_eid
-                                    event_location[i, 0, :] += (
-                                        self.feature_scale * np.arange(self.feature_nt) - e_attrs['event_time_index']
-                                    ) * mask.astype(np.float32)
+                                    event_location[i, 0, max(0, c0_int[0]-4):min(self.feature_nt, c0_int[0]+4)] = ((
+                                        self.feature_scale * np.arange(self.raw_feature_nt) - t0
+                                    )/self.sampling_rate * mask.astype(np.float32))[max(0, c0_int[0]-4):min(self.feature_nt, c0_int[0]+4)]
                                     # print(event_location[i, 1:, mask].shape, event_location.shape, event_location[i][1:, mask].shape)
                                     event_location[i][1:, mask] += np.array([dist, azimuth, dz, magnitude, (c0-c0_int)[0], c0_width])[:, np.newaxis]
                                     event_location_mask[i, :] = np.logical_or(event_location_mask[i, :], mask)
@@ -561,13 +574,14 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                                     
                                 if len(manual_event_ids) == 0:
                                     auto_stas.append(i)
-                                    x
+                                    phase_pick[i, 1:, :] = 0
+                                    phase_pick[i, 0, :] = 1
                                     event_center[i, :] = 0
                                     event_location[i, :, :] = 0
                                     event_location_mask[i, :] = 0
                                 else:
                                     manual_stas.append(i)
-                                    phase_pick[i, :, :] = generate_label([np.concatenate(p_pick_stas), np.concatenate(s_pick_stas)], nt=self.nt)
+                                    phase_pick[i, :, :] = generate_label([np.concatenate(p_pick_stas), np.concatenate(s_pick_stas)], nt=self.raw_nt)
 
                             # std = np.std(waveforms, axis=-1, keepdims=True)
                             # std[std == 0] = 1.0
@@ -577,12 +591,23 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                             assert len_manual>0, f"event {event_id} no manual picks"
                             assert len_manual==np.any(event_location_mask>0, axis=1).sum(), f"{event_id} manual picks num don't match, len_manual:{len_manual}, manual_stas:{manual_stas}, event_location_mask:{np.any(event_location_mask>0, axis=1)}"
                             manual_cluster_index = np.array(manual_stas+auto_stas)
-                            waveforms = waveforms[manual_cluster_index]
-                            amplitude = amplitude[manual_cluster_index]
-                            phase_pick = phase_pick[manual_cluster_index]
-                            event_center = event_center[manual_cluster_index]
-                            event_location = event_location[manual_cluster_index]
-                            event_location_mask = event_location_mask[manual_cluster_index]
+                            meta, it = cut_data({
+                                "waveforms": waveforms,
+                                "amplitude": amplitude,
+                                "phase_pick": phase_pick,
+                                "event_center": event_center,
+                                "event_location": event_location,
+                                "event_location_mask": event_location_mask,
+                                "num_manual_stations": len_manual,
+                            }, nt=self.nt, feature_scale=self.feature_scale, if_reverse_roll=False)
+                            if abs(it) <= 160:
+                                print(f"\n{event_id} data cut off shift smaller than {160/self.sampling_rate} s: {it/self.sampling_rate} s")
+                            waveforms = meta["waveforms"][manual_cluster_index]
+                            amplitude = meta["amplitude"][manual_cluster_index]
+                            phase_pick = meta["phase_pick"][manual_cluster_index]
+                            event_center = meta["event_center"][manual_cluster_index]
+                            event_location = meta["event_location"][manual_cluster_index]
+                            event_location_mask = meta["event_location_mask"][manual_cluster_index]
                             station_location = station_location[manual_cluster_index]
                             
                             if (self.config.name == "event_large" or self.config.name == "event") and len(station_ids) > 10:
@@ -644,3 +669,91 @@ def generate_label(phase_list, label_width=[150, 150], nt=8192):
     target[0:1, :] = np.maximum(0, 1 - np.sum(target[1:, :], axis=0, keepdims=True))
 
     return target
+
+def generate_event_label(
+    reference_center,
+    event_param,
+    label_width=[100],
+    nt=8192,
+    mask_width=None,
+):
+    target_center = np.zeros(nt, dtype=np.float32)
+    target_param = np.zeros([len(event_param[0]), nt], dtype=np.float32)
+    mask = np.zeros(nt, dtype=np.float32)
+
+    if len(label_width) == 1:
+        label_width = label_width * len(reference_center)
+    if mask_width is None:
+        mask_width = [int(x * 1.5) for x in label_width]
+    else:
+        mask_width = [min(int(x * 1.5), label_width) for x in label_width]
+
+    for i, (c0, t0, w, m) in enumerate(zip(reference_center, event_param, label_width, mask_width)):
+        t = np.arange(nt) - c0
+        gaussian = np.exp(-(t**2) / (2 * (w / 6) ** 2))
+        gaussian[gaussian < 0.05] = 0.0
+        target_center += gaussian
+        mask[max(0, int(c0) - m) : min(nt, int(c0) + m)] = 1.0
+        t = np.arange(nt) - t0
+        target_param[max(0, int(c0) - m) : min(nt, int(c0) + m)] = t[max(0, int(c0) - m) : min(nt, int(c0) + m)]
+
+    return target_center, target_param, mask
+
+def cut_data(meta, nt=8192, nt0=2560, feature_scale=16, if_reverse_roll=False):
+
+    tries = 0
+    max_tries = 100
+    phase_mask = meta["phase_pick"].copy().sum(axis=0)
+    event_mask = meta["event_location_mask"].copy().sum(axis=0)
+    p_start = np.nonzero(phase_mask[1, :])[0].min() // feature_scale
+    event_start = np.nonzero(event_mask[:])[0].min()
+    if not if_reverse_roll:
+        rand_lower = 0
+    else:
+        s_end = np.nonzero(phase_mask[2, :])[0].max() // feature_scale
+        event_end = np.nonzero(event_mask[:])[0].max()
+        rand_lower = -max(100, nt//feature_scale-10-max(s_end, event_end))
+    rand_upper = max(1, min(nt0//feature_scale, min(p_start, event_start)-5))
+    raw_rand_upper = max(1, nt0//feature_scale)
+    it = np.random.randint(rand_lower, raw_rand_upper)
+    
+    p_points = np.nonzero(phase_mask[1, :nt])[0].shape[0]
+    s_points = np.nonzero(phase_mask[2, :nt])[0].shape[0]
+    event_points = np.nonzero(event_mask[:nt//feature_scale])[0].shape[0]
+    tmp_phase = np.roll(phase_mask, -it*feature_scale, axis=-1)
+    tmp_event = np.roll(event_mask, -it, axis=-1)
+    tmp_p_points = np.nonzero(tmp_phase[1, :nt])[0].shape[0]
+    tmp_s_points = np.nonzero(tmp_phase[2, :nt])[0].shape[0]
+    tmp_event_points = np.nonzero(tmp_event[:nt//feature_scale])[0].shape[0]
+    
+    if not all([tmp_p_points>=5, tmp_s_points>=5, tmp_event_points>=5]):
+        print(f"using smaller rand_upper={rand_upper}")
+    
+        while any([tmp_p_points < p_points, tmp_s_points < s_points, tmp_event_points < event_points]):
+            it = np.random.randint(rand_lower, rand_upper)
+            tmp_phase = np.roll(phase_mask, -it*feature_scale, axis=-1)
+            tmp_event = np.roll(event_mask, -it, axis=-1)
+            tmp_p_points = np.nonzero(tmp_phase[1, :nt])[0].shape[0]
+            tmp_s_points = np.nonzero(tmp_phase[2, :nt])[0].shape[0]
+            tmp_event_points = np.nonzero(tmp_event[:nt//feature_scale])[0].shape[0]
+            tries += 1
+            if tries > max_tries:
+                print(f"cut data failed, tries={tries}, it={it}")
+                it = 0
+                break
+
+    waveforms = np.roll(meta["waveforms"], -it*feature_scale, axis=-1)[:, :, :nt]
+    amplitude = np.roll(meta["amplitude"], -it*feature_scale, axis=-1)[:, :, :nt]
+    phase_pick = np.roll(meta["phase_pick"], -it*feature_scale, axis=-1)[:, :, :nt]
+    event_center = np.roll(meta["event_center"], -it, axis=-1)[:, :nt//feature_scale]
+    event_location = np.roll(meta["event_location"], -it, axis=-1)[:, :, :nt//feature_scale]
+    event_location_mask = np.roll(meta["event_location_mask"], -it, axis=-1)[:, :nt//feature_scale]
+
+    return {
+        "waveforms": waveforms,
+        "amplitude": amplitude,
+        "phase_pick": phase_pick,
+        "event_center": event_center,
+        "event_location": event_location,
+        "event_location_mask": event_location_mask,
+    }, it*feature_scale
