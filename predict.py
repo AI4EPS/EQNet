@@ -394,7 +394,8 @@ def pred_eqnet(args, model, data_loader, pick_path, figure_path, event_path=None
                         # dx = output["hypocenter"][i, 1, pick_dict["phase_index"]-time_shift, sta_order[0]].float().item()
                         # dy = output["hypocenter"][i, 2, pick_dict["phase_index"]-time_shift, sta_order[0]].float().item()
                         # dz = output["hypocenter"][i, 3, pick_dict["phase_index"]-time_shift, sta_order[0]].float().item()
-                        dt = dt * meta["dt_s"][i].item()
+                        #dt = dt * meta["dt_s"][i].item()
+                        assert dt<99999, f"dt: {dt}, offset: {offset}, width: {width}, dt_s: {meta['dt_s'][i].item()}"
                         event_center_index = pick_dict["phase_index"]#+offset
                         event_index = event_center_index - dt/(meta["dt_s"][i].item())/feature_scale
                         p_index = event_center_index - width
