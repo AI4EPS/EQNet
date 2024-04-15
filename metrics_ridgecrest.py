@@ -298,6 +298,7 @@ dbscan = DBSCAN(eps=dbscan_epsilon, min_samples=1)
 station_info = json.load(open(station_info_dir, "r"))
 
 events = []
+raw_picks = []
 for pick in tqdm(event_files):
     # skip the empty pick file
     if os.path.getsize(pick) == 0:
@@ -318,6 +319,8 @@ for pick in tqdm(event_files):
     hypoparameters[:,6] = df["epicentral_distance"].values
     hypoparameters[:,7] = df["azimuth"].values
     hypoparameters[:,8] = df["magnitude"].values
+    
+    raw_picks.append(df[['event_longitude', 'event_latitude', 'event_location_x', 'event_location_y', 'event_location_z', 'magnitude']])
     
     labels = dbscan.fit_predict(hypoparameters[:,:4]*np.array(time_space_weight)[None,:]) # weighted
     classes, counts = np.unique(labels, return_counts=True)
@@ -352,6 +355,7 @@ for pick in tqdm(event_files):
         ridgecrest_metric.num_event_picks += 1
         
 events = pd.concat(events, ignore_index=True)
+raw_picks = pd.concat(raw_picks, ignore_index=True)
 events = events.sort_values(by="time", ascending=True)
 events['time'] = events['time'].apply(lambda x: x.strftime('%Y-%m-%dT%H:%M:%S.%fZ'))
 events.to_csv(catalog_pred_dir, index=False)
@@ -528,6 +532,100 @@ axes[8].set_ylabel('Depth (km)')
 
 if save_path is not None:
     plt.savefig(save_path+f'event_location{suffix}.png')
+else:
+    plt.show()
+
+raw_picks = catalog_pred[catalog_pred['magnitude']>=0.5]
+# %%
+# plot the distribution of the event location (raw picks)
+fig = plt.figure(figsize=(14, 24), dpi=300)
+axes=[]
+axes.append(plt.subplot2grid((39, 13), (0, 0), colspan=8, rowspan=11))
+axes.append(plt.subplot2grid((39, 13), (0, 8), colspan=6, rowspan=5))
+axes.append(plt.subplot2grid((39, 13), (6, 8), colspan=6, rowspan=5))
+axes.append(plt.subplot2grid((39, 13), (13, 0), colspan=8, rowspan=11))
+axes.append(plt.subplot2grid((39, 13), (13, 8), colspan=6, rowspan=5))
+axes.append(plt.subplot2grid((39, 13), (19, 8), colspan=6, rowspan=5))
+axes.append(plt.subplot2grid((39, 13), (26, 0), colspan=8, rowspan=11))
+axes.append(plt.subplot2grid((39, 13), (26, 8), colspan=6, rowspan=5))
+axes.append(plt.subplot2grid((39, 13), (32, 8), colspan=6, rowspan=5))
+
+## whole
+axes[0].scatter(raw_picks['longitude'], raw_picks['latitude'], s=1, c='C0', label='Prediction')
+#axes[0].scatter(raw_picks['event_longitude'], raw_picks['event_latitude'], s=1, c='C0', label='Prediction')
+axes[0].scatter(catalog['longitude'], catalog['latitude'], s=1, c='C3', label='SCSN')
+axes[0].scatter(valid_stations['longitude'], valid_stations['latitude'], s=10, marker='^', c='k', label='Stations')
+axes[0].set_xlim(-118.2, -117.0)
+axes[0].set_xlabel('Longitude')
+axes[0].set_ylabel('Latitude')
+axes[0].set_aspect("equal")
+axes[0].legend()
+
+axes[1].scatter(catalog['longitude'], catalog['depth_km'], s=1, c='C3', label='SCSN')
+axes[1].scatter(raw_picks['longitude'], raw_picks['z_km'], s=1, c='C0', label='Prediction')
+#axes[1].scatter(raw_picks['event_longitude'], raw_picks['event_location_z'], s=1, c='C0', label='Prediction')
+# reverse the y axis
+axes[1].set_ylim(axes[1].get_ylim()[::-1])
+axes[1].set_xlim(-118.2, -117.0)
+axes[1].set_xlabel('Longitude')
+axes[1].set_ylabel('Depth (km)')
+
+axes[2].scatter(catalog['latitude'], catalog['depth_km'], s=1, c='C3', label='SCSN')
+axes[2].scatter(raw_picks['latitude'], raw_picks['z_km'], s=1, c='C0', label='Prediction')
+#axes[2].scatter(raw_picks['event_latitude'], raw_picks['event_location_z'], s=1, c='C0', label='Prediction')
+# reverse the y axis
+axes[2].set_ylim(axes[2].get_ylim()[::-1])
+axes[2].set_xlabel('Latitude')
+axes[2].set_ylabel('Depth (km)')
+
+## prediction
+axes[3].scatter(raw_picks['longitude'], raw_picks['latitude'], s=1, c='C0', label='Prediction')
+axes[3].scatter(valid_stations['longitude'], valid_stations['latitude'], s=10, marker='^', c='k', label='Stations')
+axes[3].set_xlim(-118.2, -117.0)
+axes[3].set_xlabel('Longitude')
+axes[3].set_ylabel('Latitude')
+axes[3].set_aspect("equal")
+axes[3].legend()
+
+axes[4].scatter(raw_picks['longitude'], raw_picks['z_km'], s=1, c='C0', label='Prediction')
+#axes[4].scatter(raw_picks['event_longitude'], raw_picks['event_location_z'], s=1, c='C0', label='Prediction')
+# reverse the y axis
+axes[4].set_ylim(axes[4].get_ylim()[::-1])
+axes[4].set_xlim(-118.2, -117.0)
+axes[4].set_xlabel('Longitude')
+axes[4].set_ylabel('Depth (km)')
+
+axes[5].scatter(raw_picks['latitude'], raw_picks['z_km'], s=1, c='C0', label='Prediction')
+#axes[5].scatter(raw_picks['event_latitude'], raw_picks['event_location_z'], s=1, c='C0', label='Prediction')
+# reverse the y axis
+axes[5].set_ylim(axes[5].get_ylim()[::-1])
+axes[5].set_xlabel('Latitude')
+axes[5].set_ylabel('Depth (km)')
+
+## SCSN
+axes[6].scatter(catalog['longitude'], catalog['latitude'], s=1, c='C3', label='SCSN')
+axes[6].scatter(valid_stations['longitude'], valid_stations['latitude'], s=10, marker='^', c='k', label='Stations')
+axes[6].set_xlim(-118.2, -117.0)
+axes[6].set_xlabel('Longitude')
+axes[6].set_ylabel('Latitude')
+axes[6].set_aspect("equal")
+axes[6].legend()
+
+axes[7].scatter(catalog['longitude'], catalog['depth_km'], s=1, c='C3', label='SCSN')
+# reverse the y axis
+axes[7].set_ylim(axes[7].get_ylim()[::-1])
+axes[7].set_xlim(-118.2, -117.0)
+axes[7].set_xlabel('Longitude')
+axes[7].set_ylabel('Depth (km)')
+
+axes[8].scatter(catalog['latitude'], catalog['depth_km'], s=1, c='C3', label='SCSN')
+# reverse the y axis
+axes[8].set_ylim(axes[8].get_ylim()[::-1])
+axes[8].set_xlabel('Latitude')
+axes[8].set_ylabel('Depth (km)')
+
+if save_path is not None:
+    plt.savefig(save_path+f'event_location_raw{suffix}.png')
 else:
     plt.show()
 
