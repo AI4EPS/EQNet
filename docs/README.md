@@ -1,8 +1,7 @@
-## EQNet: an End‐to‐End EarthQuake Neural NETwork
+## EQNet: EarthQuake Neural NETworks
 
 ### [PhaseNet](https://github.com/AI4EPS/PhaseNet)
 Original PhaseNet for picking arrival time.
-
 
 ### PhaseNet+
 PhaseNet for picking arrival time and polarity.
@@ -18,7 +17,6 @@ PhaseNet in time-frequency domain for deep earthquakes
 PhaseNet for Distributed Acoustic Sensing (DAS) data.
 
 - Example: [notebook](https://ai4eps.github.io/EQNet/phasenet_das)
-
 
 <!-- e.g.,
 ```
