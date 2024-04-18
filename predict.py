@@ -76,7 +76,7 @@ def pred_phasenet(args, model, data_loader, pick_path, figure_path):
 
             for i in range(len(meta["file_name"])):
                 tmp = meta["file_name"][i].split("/")
-                parent_dir = "/".join(tmp[-args.folder_depth : -1])
+                parent_dir = "/".join(tmp[min(-1, -args.folder_depth) : -1])
                 filename = tmp[-1].replace("*", "").replace("?", "").replace(".mseed", "")
 
                 if not os.path.exists(os.path.join(pick_path, parent_dir)):
@@ -170,7 +170,7 @@ def pred_phasenet_plus(args, model, data_loader, pick_path, event_path, figure_p
 
             for i in range(len(meta["file_name"])):
                 tmp = meta["file_name"][i].split("/")
-                parent_dir = "/".join(tmp[-args.folder_depth : -1])
+                parent_dir = "/".join(tmp[min(-1, -args.folder_depth) : -1])
                 filename = tmp[-1].replace("*", "").replace("?", "").replace(".mseed", "")
 
                 if not os.path.exists(os.path.join(pick_path, parent_dir)):
@@ -246,7 +246,7 @@ def pred_phasenet_das(args, model, data_loader, pick_path, figure_path):
 
             for i in range(len(meta["file_name"])):
                 tmp = meta["file_name"][i].split("/")
-                parent_dir = "/".join(tmp[-args.folder_depth : -1])
+                parent_dir = "/".join(tmp[min(-1, -args.folder_depth) : -1])
                 filename = tmp[-1].replace("*", "").replace(f".{args.format}", "")
                 if not os.path.exists(os.path.join(pick_path, parent_dir)):
                     os.makedirs(os.path.join(pick_path, parent_dir), exist_ok=True)
