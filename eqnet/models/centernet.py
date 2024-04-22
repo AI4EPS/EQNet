@@ -7,16 +7,16 @@ from .losses import cross_entropy_loss, focal_loss, l1_reg_loss, smoothl1_reg_lo
 
 
 class convolution(nn.Module):
-    def __init__(self, inp_dim, out_dim, k, stride=1, dilation=1, with_bn=True, padding_mode='zeros', inplace=True):
+    def __init__(self, inp_dim, out_dim, k, stride=1, dilation=1, with_bn=True, padding_mode='zeros', inplace=True, act='relu'):
         super(convolution, self).__init__()
 
         pad = ((k - 1)*dilation) // 2
         self.conv = nn.Conv1d(inp_dim, out_dim, kernel_size=k, padding=pad, stride=stride, dilation=dilation, bias=not with_bn, padding_mode=padding_mode)
         self.bn   = nn.BatchNorm1d(out_dim) if with_bn else nn.Sequential()
-        self.relu = nn.ReLU(inplace=inplace)
+        self.act = nn.ReLU(inplace=inplace) if act == 'relu' else nn.GELU()
 
     def forward(self, x):
-        x = self.relu(self.bn(self.conv(x)))
+        x = self.act(self.bn(self.conv(x)))
         return x
 
 def make_kp_layer(cnv_dim, curr_dim, out_dim, kernel_size=3, stride=1, dilation=1, with_bn=True):
