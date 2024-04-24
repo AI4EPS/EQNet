@@ -207,7 +207,7 @@ class UNet(nn.Module):
 
         if self.add_polarity:
             self.encoder_polarity = self.encoder_block(
-                1, features, kernel_size=kernel_size, stride=stride, padding=padding, name="enc1_polarity"
+                1, features, kernel_size=kernel_size, stride=(1, 1), padding=padding, name="enc1_polarity"
             )
             self.output_polarity = nn.Sequential(
                 OrderedDict(
@@ -215,7 +215,7 @@ class UNet(nn.Module):
                         (
                             "output_polarity_conv",
                             nn.Conv2d(
-                                in_channels=features * 5,
+                                in_channels=features * 2,
                                 out_channels=features,
                                 kernel_size=kernel_size,
                                 padding=padding,
@@ -235,7 +235,7 @@ class UNet(nn.Module):
                         (
                             "output_event_conv",
                             nn.Conv2d(
-                                in_channels=(features * 4) * 2,
+                                in_channels=features * 4,
                                 out_channels=features * 2,
                                 kernel_size=kernel_size,
                                 padding=padding,
@@ -281,28 +281,6 @@ class UNet(nn.Module):
 
         dec4 = torch.cat((dec4, enc4), dim=1)
         dec3 = self.decoder43(dec4)
-        dec3 = torch.cat((dec3, enc3), dim=1)
-        dec2 = self.decoder32(dec3)
-        dec2 = torch.cat((dec2, enc2), dim=1)
-        dec1 = self.decoder21(dec2)
-        dec1 = torch.cat((dec1, enc1), dim=1)
-        out_phase = self.output_conv(dec1)
-        if self.output_upsample is not None:
-            out_phase = self.output_upsample(out_phase)
-        # TODO: Check AGAIN if these part is needed.
-        # out_phase = out_phase[:, :, :nt, :nx]
-
-        if self.add_polarity:
-            dec_polarity = torch.cat((dec2, enc_polarity), dim=1)
-            out_polarity = self.output_polarity(dec_polarity)
-            if self.output_upsample is not None:
-                out_polarity = self.output_upsample(out_polarity)
-            #     out_polarity = out_polarity[:, :, :nt, :nx]
-            # else:
-            #     out_polarity = out_polarity[:, :, : nt // 4, :nx]
-        else:
-            out_polarity = None
-
         if self.add_event:
             out_event = self.output_event(dec3)
             if self.output_upsample is not None:
@@ -312,6 +290,26 @@ class UNet(nn.Module):
             #     out_event = out_event[:, :, : nt // 16, :nx]
         else:
             out_event = None
+        dec3 = torch.cat((dec3, enc3), dim=1)
+        dec2 = self.decoder32(dec3)
+        dec2 = torch.cat((dec2, enc2), dim=1)
+        dec1 = self.decoder21(dec2)
+        if self.add_polarity:
+            dec_polarity = torch.cat((dec1, enc_polarity), dim=1)
+            out_polarity = self.output_polarity(dec_polarity)
+            if self.output_upsample is not None:
+                out_polarity = self.output_upsample(out_polarity)
+            #     out_polarity = out_polarity[:, :, :nt, :nx]
+            # else:
+            #     out_polarity = out_polarity[:, :, : nt // 4, :nx]
+        else:
+            out_polarity = None
+        dec1 = torch.cat((dec1, enc1), dim=1)
+        out_phase = self.output_conv(dec1)
+        if self.output_upsample is not None:
+            out_phase = self.output_upsample(out_phase)
+        # TODO: Check AGAIN if these part is needed.
+        # out_phase = out_phase[:, :, :nt, :nx]
 
         result = {"phase": out_phase, "polarity": out_polarity, "event": out_event}
 

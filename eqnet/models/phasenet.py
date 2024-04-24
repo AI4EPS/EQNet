@@ -306,7 +306,7 @@ class PhaseNet(nn.Module):
                 self.event_detector = UNetHead(32, 1, feature_names="event")
                 self.event_timer = EventHead(32, 1, feature_names="event")
             if self.add_polarity:
-                self.polarity_picker = UNetHead(16, 1, feature_names="polarity")
+                self.polarity_picker = UNetHead(16, 3, feature_names="polarity")
         else:
             self.phase_picker = DeepLabHead(128, 3, scale_factor=32)
             if self.add_event:

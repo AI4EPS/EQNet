@@ -261,18 +261,21 @@ def main(args):
             world_size=world_size,
         )
         train_sampler = None
-        dataset_test = SeismicTraceIterableDataset(
-            data_path=args.test_data_path,
-            data_list=args.test_data_list,
-            hdf5_file=args.test_hdf5_file,
-            format="h5",
-            training=True,
-            stack_event=False,
-            flip_polarity=False,
-            drop_channel=False,
-            rank=rank,
-            world_size=world_size,
-        )
+        if args.test_hdf5_file is not None:
+            dataset_test = SeismicTraceIterableDataset(
+                data_path=args.test_data_path,
+                data_list=args.test_data_list,
+                hdf5_file=args.test_hdf5_file,
+                format="h5",
+                training=True,
+                stack_event=False,
+                flip_polarity=False,
+                drop_channel=False,
+                rank=rank,
+                world_size=world_size,
+            )
+        else:
+            dataset_test = None
         test_sampler = None
     elif args.model == "phasenet_das":
         dataset = DASIterableDataset(
@@ -529,13 +532,14 @@ def main(args):
             print(f"No checkpoint found")
         if checkpoint is not None:
             model_without_ddp.load_state_dict(checkpoint["model"])
-            optimizer.load_state_dict(checkpoint["optimizer"])
-            lr_scheduler.load_state_dict(checkpoint["lr_scheduler"])
-            args.start_epoch = checkpoint["epoch"] + 1
             if model_ema:
                 model_ema.load_state_dict(checkpoint["model_ema"])
-            if scaler:
-                scaler.load_state_dict(checkpoint["scaler"])
+            if args.resume_opt:
+                optimizer.load_state_dict(checkpoint["optimizer"])
+                lr_scheduler.load_state_dict(checkpoint["lr_scheduler"])
+                args.start_epoch = checkpoint["epoch"] + 1
+                if scaler:
+                    scaler.load_state_dict(checkpoint["scaler"])
 
     start_time = time.time()
     best_loss = float("inf")
@@ -557,11 +561,12 @@ def main(args):
         )
         print(f"Training time of epoch {epoch} of rank {rank}: {time.time() - tmp_time:.3f}")
 
-        tmp_time = time.time()
-        metric = evaluate(model, data_loader_test, scaler, args, epoch, len(dataset_test))
-        if model_ema:
-            metric = evaluate(model_ema, data_loader_test, scaler, args, epoch, len(dataset_test))
-        print(f"Testing time of epoch {epoch} of rank {rank}: {time.time() - tmp_time:.3f}")
+        if args.test_hdf5_file is not None:
+            tmp_time = time.time()
+            metric = evaluate(model, data_loader_test, scaler, args, epoch, len(dataset_test))
+            if model_ema:
+                metric = evaluate(model_ema, data_loader_test, scaler, args, epoch, len(dataset_test))
+            print(f"Testing time of epoch {epoch} of rank {rank}: {time.time() - tmp_time:.3f}")
 
         tmp_time = time.time()
         checkpoint = {
@@ -578,8 +583,11 @@ def main(args):
 
         utils.save_on_master(checkpoint, os.path.join(args.output_dir, f"model_{epoch}.pth"))
         utils.save_on_master(checkpoint, os.path.join(args.output_dir, "checkpoint.pth"))
-        if utils.is_main_process() and metric.loss.global_avg < best_loss:
-            best_loss = metric.loss.global_avg
+        if utils.is_main_process():
+            if args.test_hdf5_file is None:
+                best_loss = None
+            elif metric.loss.global_avg < best_loss:
+                best_loss = metric.loss.global_avg
             torch.save(checkpoint, os.path.join(args.output_dir, "model_best.pth"))
             if args.wandb:
                 best_model = wandb.Artifact(
@@ -637,7 +645,7 @@ def get_args_parser(add_help=True):
     )
     parser.add_argument(
         "--epochs",
-        default=30,
+        default=100,
         type=int,
         metavar="N",
         help="number of total epochs to run",
@@ -714,6 +722,7 @@ def get_args_parser(add_help=True):
     parser.add_argument("--print-freq", default=10, type=int, help="print frequency")
     parser.add_argument("--output-dir", default="./output", type=str, help="path to save outputs")
     parser.add_argument("--resume", default="", type=str, help="path of checkpoint")
+    parser.add_argument("--resume_opt", action="store_true", help="if resume optimizer states")
     parser.add_argument("--resume_wandb", action="store_true", help="resume from wandb")
     parser.add_argument("--start-epoch", default=0, type=int, metavar="N", help="start epoch")
     parser.add_argument(

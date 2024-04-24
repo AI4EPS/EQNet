@@ -9,11 +9,11 @@ import pandas as pd
 import torch
 import torch.multiprocessing as mp
 import torch.utils.data
-import wandb
 from tqdm import tqdm
 
 import eqnet
 import utils
+import wandb
 from eqnet.data import DASIterableDataset, SeismicTraceIterableDataset
 from eqnet.models.unet import moving_normalize
 from eqnet.utils import (
@@ -198,10 +198,10 @@ def pred_phasenet_plus(args, model, data_loader, pick_path, event_path, figure_p
             if args.plot_figure:
                 plot_phasenet_plus(
                     meta,
-                    phase_scores.cpu(),
-                    polarity_scores.cpu() if polarity_scores is not None else None,
-                    event_center.cpu() if "event_center" in output else None,
-                    event_time.cpu() if "event_time" in output else None,
+                    phase_scores.cpu().float(),
+                    polarity_scores.cpu().float() if polarity_scores is not None else None,
+                    event_center.cpu().float() if "event_center" in output else None,
+                    event_time.cpu().float() if "event_time" in output else None,
                     file_name=meta["file_name"],
                     dt=dt,
                     figure_dir=figure_path,
@@ -344,6 +344,7 @@ def main(args):
             format=args.format,
             dataset=args.dataset,
             training=False,
+            sampling_rate=args.sampling_rate,
             highpass_filter=args.highpass_filter,
             response_path=args.response_path,
             response_xml=args.response_xml,
@@ -407,7 +408,10 @@ def main(args):
         if args.model == "phasenet":
             raise ("No pretrained model for phasenet, please use phasenet_plus instead")
         elif args.model == "phasenet_plus":
-            model_url = "https://github.com/AI4EPS/models/releases/download/PhaseNet-Plus-v1/PhaseNet-Plus-v1.pth"
+            if args.location is None:
+                model_url = "https://github.com/AI4EPS/models/releases/download/PhaseNet-Plus-v1/PhaseNet-Plus-v1.pth"
+            elif args.location == "LCSN":
+                model_url = "https://github.com/AI4EPS/models/releases/download/PhaseNet-Plus-LCSN/model_99.pth"
         elif args.model == "phasenet_das":
             if args.location is None:
                 # model_url = "ai4eps/model-registry/PhaseNet-DAS:latest"
@@ -493,6 +497,7 @@ def get_args_parser(add_help=True):
     ## Seismic
     parser.add_argument("--add_polarity", action="store_true", help="If use polarity information")
     parser.add_argument("--add_event", action="store_true", help="If use event information")
+    parser.add_argument("--sampling_rate", type=float, default=100.0, help="sampling rate; default 100.0 Hz")
     parser.add_argument("--highpass_filter", type=float, default=0.0, help="highpass filter; default 0.0 is no filter")
     parser.add_argument("--response_path", default=None, type=str, help="response path")
     parser.add_argument("--response_xml", default=None, type=str, help="response xml file")

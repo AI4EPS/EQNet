@@ -29,7 +29,7 @@ def detect_peaks(scores, vmin=0.3, kernel=101, stride=1, K=0, dt=0.01):
         topk_scores, topk_inds = torch.topk(scores, K)
     else:
         topk_scores, topk_inds = torch.topk(scores[:, 1:, :, :].view(batch, chn - 1, ns, -1), K)
-    topk_inds = topk_inds % nt
+    # topk_inds = topk_inds % nt
 
     return topk_scores.detach().cpu(), topk_inds.detach().cpu()
 
@@ -131,9 +131,9 @@ def extract_picks(
                         }
 
                         if polarity_score is not None:
-                            pick_dict[
-                                "phase_polarity"
-                            ] = f"{polarity_score[i, 0, index.item()//polarity_scale, k].item():.3f}"
+                            pick_dict["phase_polarity"] = (
+                                f"{polarity_score[i, 0, index.item()//polarity_scale, k].item():.3f}"
+                            )
 
                         if waveform is not None:
                             j1 = topk_index_ijk[ii]
