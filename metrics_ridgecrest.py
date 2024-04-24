@@ -183,7 +183,7 @@ class EventMetric:
             print(f"sigma_lon: {self.metric_dict['sigma_lon']:.4f}, sigma_lat: {self.metric_dict['sigma_lat']:.4f}")
 
         fig, ax = plt.subplots(2, 4, figsize=(20, 10))
-        ax[0, 0].hist(self.tp_picks, bins=11, range=(-3, 3))
+        ax[0, 0].hist(self.tp_picks, bins=31, range=(-3, 3))
         ax[0, 0].set_title("event time residual")
         ax[0, 1].hist(self.tp_x_res, bins=31, range=(-30, 30))
         ax[0, 1].set_title("event x residual")
@@ -691,7 +691,7 @@ axes[2].set_xticks(ticks=np.arange(4, len(counts_catalog), 1), labels=[idx[2:] i
            rotation=30, fontsize=8)
 #axes[2].set_title('Prediction')
 
-axes[3].hist(ridgecrest_metric.time_res, bins=11, range=(-3, 3))
+axes[3].hist(ridgecrest_metric.time_res, bins=31, range=(-3, 3))
 axes[3].set_xlabel('Event origin time residual (s)')
 axes[3].set_ylabel('Frequency')
 #axes[3].legend(loc='upper left', bbox_to_anchor=(1.0, 1.0), ncol=1, fancybox=True, labels=['Prediction', 'SCSN'])
