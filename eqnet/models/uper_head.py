@@ -315,7 +315,7 @@ class EventHead(nn.Module):
                  angle_coder="trigono",
                  depth_center=8.0,
                  mag_center=1.5,
-                 act_layer='relu'
+                 act_layer='gelu'
                  ):
         super().__init__()
         
@@ -338,18 +338,9 @@ class EventHead(nn.Module):
         
         #TODO: subhead layers? dilation?
         self.heatmap = nn.Sequential(
-            nn.Conv1d(
-                self.channels,
-                hidden_channels[2],
-                kernel_size=kernel_size,
-                dilation=dilations[2],
-                padding=((kernel_size - 1) * dilations[2] + 1) // 2,
-                padding_mode="reflect",
-                bias=False,
-            ),
-            nn.BatchNorm1d(hidden_channels[2]),
-            nn.ReLU(inplace=True),
-            #Sample(scale_factor=2, mode='linear', align_corners=False),
+            convolution(self.channels, hidden_channels[2],
+                k=kernel_size, dilation=dilations[2],
+                padding_mode="reflect", act='relu',),
             nn.Conv1d(
                 hidden_channels[2],
                 1,
@@ -363,17 +354,9 @@ class EventHead(nn.Module):
         
         
         self.offset = nn.Sequential(
-            nn.Conv1d(
-                self.channels,
-                hidden_channels[2],
-                kernel_size=kernel_size,
-                dilation=dilations[3],
-                padding=((kernel_size - 1) * dilations[3] + 1) // 2,
-                padding_mode="reflect",
-                bias=False,
-            ),
-            nn.BatchNorm1d(hidden_channels[2]),
-            nn.GELU(),
+            convolution(self.channels, hidden_channels[2],
+                k=kernel_size, dilation=dilations[3],
+                padding_mode="reflect", act=act_layer,),
             #Sample(scale_factor=2, mode='linear', align_corners=False),
             nn.Conv1d(
                 hidden_channels[2],
@@ -387,95 +370,40 @@ class EventHead(nn.Module):
         
         
         self.hypocenter = nn.Sequential(
-            nn.Conv1d(
-                self.channels,
-                hidden_channels[1],
-                kernel_size=kernel_size,
-                dilation=dilations[2],
-                padding=((kernel_size - 1) * dilations[2] + 1) // 2,
-                padding_mode="reflect",
-                bias=False,
-            ),
-            nn.BatchNorm1d(hidden_channels[1]),
-            nn.GELU(),
+            convolution(self.channels, hidden_channels[1],
+                k=kernel_size, dilation=dilations[2],
+                padding_mode="reflect", act=act_layer,),
         )
         
         self.amplitude = nn.Sequential(
-            nn.Conv1d(
-                3,
-                hidden_channels[3],
-                kernel_size=kernel_size,
-                dilation=dilations[2],
-                padding=((kernel_size - 1) * dilations[2] + 1) // 2,
-                padding_mode="reflect",
-                bias=False,
-            ),
-            nn.BatchNorm1d(hidden_channels[3]),
-            nn.GELU(),
-            nn.Conv1d(
-                hidden_channels[3],
-                hidden_channels[2],
-                kernel_size=kernel_size,
-                dilation=dilations[1],
-                padding=((kernel_size - 1) * dilations[1] + 1) // 2,
-                padding_mode="reflect",
-                bias=False,
-            ),
-            nn.BatchNorm1d(hidden_channels[2]),
-            nn.GELU(),
+            convolution(3, hidden_channels[3],
+                k=kernel_size, dilation=dilations[2],
+                padding_mode="reflect", act=act_layer,),
+            convolution(hidden_channels[3], hidden_channels[2],
+                k=kernel_size, dilation=dilations[1],
+                padding_mode="reflect", act=act_layer,)
         )
         
         self.angle = nn.Sequential(
-            nn.Conv1d(
-                3,
-                hidden_channels[3],
-                kernel_size=kernel_size,
-                dilation=dilations[2],
-                padding=((kernel_size - 1) * dilations[2] + 1) // 2,
-                padding_mode="reflect",
-                bias=False,
-            ),
-            nn.BatchNorm1d(hidden_channels[3]),
-            nn.GELU(),
-            nn.Conv1d(
-                hidden_channels[3],
-                hidden_channels[2],
-                kernel_size=kernel_size,
-                dilation=dilations[1],
-                padding=((kernel_size - 1) * dilations[1] + 1) // 2,
-                padding_mode="reflect",
-                bias=False,
-            ),
-            nn.BatchNorm1d(hidden_channels[2]),
-            nn.GELU(),
+            convolution(3, hidden_channels[3],
+                k=kernel_size, dilation=dilations[2],
+                padding_mode="reflect", act=act_layer,),
+            convolution(hidden_channels[3], hidden_channels[2],
+                k=kernel_size, dilation=dilations[1],
+                padding_mode="reflect", act=act_layer,)
         )
         
         self.fuse = nn.Sequential(
-            nn.Conv1d(
-                hidden_channels[1]+hidden_channels[1],
-                hidden_channels[1],
-                kernel_size=kernel_size,
-                dilation=dilations[2],
-                padding=((kernel_size - 1) * dilations[2] + 1) // 2,
-                padding_mode="reflect",
-                bias=False,
-            ),
-            nn.BatchNorm1d(hidden_channels[1]),
-            nn.GELU(),
+            convolution(hidden_channels[1]+hidden_channels[1],
+                hidden_channels[1], 
+                k=kernel_size, dilation=dilations[2],
+                padding_mode="reflect", act=act_layer,)
         )
         
         self.travel_time = nn.Sequential(
-            nn.Conv1d(
-                hidden_channels[1],
-                hidden_channels[3],
-                kernel_size=kernel_size,
-                dilation=dilations[1],
-                padding=((kernel_size - 1) * dilations[1] + 1) // 2,
-                padding_mode="reflect",
-                bias=False,
-            ),
-            nn.BatchNorm1d(hidden_channels[3]),
-            nn.GELU(),
+            convolution(hidden_channels[1], hidden_channels[3],
+                k=kernel_size, dilation=dilations[1],
+                padding_mode="reflect", act=act_layer,),
             nn.Conv1d(
                 hidden_channels[3],
                 1,
@@ -487,17 +415,9 @@ class EventHead(nn.Module):
             #nn.LeakyReLU(inplace=True), # the origin time and the distance should be positive
         )
         self.distance = nn.Sequential(
-            nn.Conv1d(
-                hidden_channels[1],
-                hidden_channels[3],
-                kernel_size=kernel_size,
-                dilation=dilations[1],
-                padding=((kernel_size - 1) * dilations[1] + 1) // 2,
-                padding_mode="reflect",
-                bias=False,
-            ),
-            nn.BatchNorm1d(hidden_channels[3]),
-            nn.GELU(),
+            convolution(hidden_channels[1], hidden_channels[3],
+                k=kernel_size, dilation=dilations[1],
+                padding_mode="reflect", act=act_layer,),
             nn.Conv1d(
                 hidden_channels[3],
                 1,
@@ -509,17 +429,9 @@ class EventHead(nn.Module):
             #nn.LeakyReLU(inplace=True), # the origin time and the distance should be positive
         )
         self.azimuth = nn.Sequential(
-            nn.Conv1d(
-                hidden_channels[1],
-                hidden_channels[3],
-                kernel_size=kernel_size,
-                dilation=dilations[3],
-                padding=((kernel_size - 1) * dilations[3] + 1) // 2,
-                padding_mode="reflect",
-                bias=False,
-            ),
-            nn.BatchNorm1d(hidden_channels[3]),
-            nn.GELU(),
+            convolution(hidden_channels[1], hidden_channels[3],
+                k=kernel_size, dilation=dilations[3],
+                padding_mode="reflect", act=act_layer,),
             nn.Conv1d(
                 hidden_channels[3],
                 self.angle_dims,
@@ -535,17 +447,9 @@ class EventHead(nn.Module):
         #self.angle[-2].bias.data[::2].fill_(0)
         #self.angle[-2].bias.data[1::2].fill_(1.5708)
         self.depth = nn.Sequential(
-            nn.Conv1d(
-                hidden_channels[1],
-                hidden_channels[3],
-                kernel_size=kernel_size,
-                dilation=dilations[3],
-                padding=((kernel_size - 1) * dilations[3] + 1) // 2,
-                padding_mode="reflect",
-                bias=False,
-            ),
-            nn.BatchNorm1d(hidden_channels[3]),
-            nn.GELU(),
+            convolution(hidden_channels[1], hidden_channels[3],
+                k=kernel_size, dilation=dilations[3],
+                padding_mode="reflect", act=act_layer,),
             nn.Conv1d(
                 hidden_channels[3],
                 1,
@@ -557,31 +461,16 @@ class EventHead(nn.Module):
         )
         
         self.magnitude_1 = nn.Sequential(
-            nn.Conv1d(
-                self.channels,
-                hidden_channels[2],
-                kernel_size=kernel_size,
-                dilation=dilations[3],
-                padding=((kernel_size - 1) * dilations[3] + 1) // 2,
-                padding_mode="reflect",
-                bias=False,
-            ),
-            nn.BatchNorm1d(hidden_channels[2]),
-            nn.GELU(),
+            convolution(self.channels, hidden_channels[2],
+                k=kernel_size, dilation=dilations[3],
+                padding_mode="reflect", act=act_layer,),
         )
         self.magnitude_2 = nn.Sequential(
             #Sample(scale_factor=2, mode='linear', align_corners=False),
-            nn.Conv1d(
-                hidden_channels[2]+hidden_channels[2],
+            convolution(hidden_channels[2]+hidden_channels[2],
                 hidden_channels[4],
-                kernel_size=kernel_size,
-                dilation=dilations[2],
-                padding=((kernel_size - 1) * dilations[2] + 1) // 2,
-                padding_mode="reflect",
-                bias=False,
-            ),
-            nn.BatchNorm1d(hidden_channels[4]),
-            nn.GELU(),
+                k=kernel_size, dilation=dilations[2],
+                padding_mode="reflect", act=act_layer,),
             nn.Conv1d(
                 hidden_channels[4],
                 1,

@@ -53,8 +53,8 @@ dt_bar = 0.5 # s
 distribution_bar = 0.5 # s
 station_threshold = 10
 event_dt_bar = 3 # s
-dbscan_epsilon = 8
-time_space_weight = [1, 0.2, 0.2, 0.3]
+dbscan_epsilon = 5
+time_space_weight = [1, 0.5, 0.5, 1]
 
 sample_rate = 100
 feature_scale = 16
@@ -479,7 +479,7 @@ class EventMetric:
         print(f"sigma_t: {self.metric_dict['sigma_t']:.4f}, sigma_x: {self.metric_dict['sigma_x']:.4f}, sigma_y: {self.metric_dict['sigma_y']:.4f}, sigma_z: {self.metric_dict['sigma_z']:.4f}, sigma_m: {self.metric_dict['sigma_m']:.4f}, sigma_dist: {self.metric_dict['sigma_dist']:.4f}, sigma_azi: {self.metric_dict['sigma_azi']:.4f}")
 
         fig, ax = plt.subplots(2, 4, figsize=(20, 10))
-        ax[0, 0].hist(self.tp_picks, bins=11, range=(-3, 3))
+        ax[0, 0].hist(self.tp_picks, bins=31, range=(-3, 3))
         ax[0, 0].set_title("event time residual")
         ax[0, 1].hist(self.tp_x_res, bins=31, range=(-30, 30))
         ax[0, 1].set_title("event x residual")
@@ -601,10 +601,11 @@ with h5py.File(h5_file, "r") as fp:
         labels_azi = np.degrees(np.arctan2(y, x))
         for c in classes:
             cluster_picks = hypoparameters[labels==c]
-            label_dist = labels_dist[labels==c]
-            label_azi = labels_azi[labels==c]
-            cluster_picks = cluster_picks[np.argsort(cluster_picks[:,6])]#[:5]
-            time_diff = (np.median(cluster_picks[:,0])*feature_scale - event.attrs["event_time_index"])/sample_rate
+            idx = np.argsort(cluster_picks[:,6])
+            label_dist = labels_dist[labels==c][idx]
+            label_azi = labels_azi[labels==c][idx]
+            cluster_picks = cluster_picks[idx]#[:5]
+            time_diff = (np.median(cluster_picks[:5,0])*feature_scale - event.attrs["event_time_index"])/sample_rate
             if abs(time_diff) < abs(min_time_diff):
                 #avg_center = average_location(cluster_picks[:,4:6])
                 avg_center = np.median(cluster_picks[:,4:6], axis=0)
@@ -639,5 +640,7 @@ event_metric_thld.calc_metrics(event_dt_bar=event_dt_bar)
 # %%
 print("\nWhole dataset:\n")
 event_metric.plot_residual(f"./metrics/event_residual{suffix}.png")
+print(f"azimuth residual: len: {len(event_metric.azimuth_res.flatten())}, abs medium: {np.median(np.abs(event_metric.azimuth_res.flatten()))}, max: {event_metric.azimuth_res.flatten()[np.argmax(np.abs(event_metric.azimuth_res.flatten()))]}, min: {event_metric.azimuth_res.flatten()[np.argmin(np.abs(event_metric.azimuth_res.flatten()))]}")
 print(f"\nnum_station >= {station_threshold} subset:\n")
 event_metric_thld.plot_residual(f"./metrics/event_residual_threshold{station_threshold}{suffix}.png")
+print(f"azimuth residual: len: {len(event_metric_thld.azimuth_res.flatten())}, abs medium: {np.median(np.abs(event_metric_thld.azimuth_res.flatten()))}, max: {event_metric_thld.azimuth_res.flatten()[np.argmax(np.abs(event_metric_thld.azimuth_res.flatten()))]}, min: {event_metric_thld.azimuth_res.flatten()[np.argmin(np.abs(event_metric_thld.azimuth_res.flatten()))]}")
