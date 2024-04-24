@@ -375,6 +375,8 @@ class SeismicTraceIterableDataset(IterableDataset):
 
         self.data_path = data_path
         self.hdf5_file = hdf5_file
+        if not training:
+            self.hdf5_fp = h5py.File(hdf5_file, "r", libver="latest", swmr=True)
         self.phases = phases
         self.response_path = response_path
         self.response_xml = response_xml
@@ -858,7 +860,7 @@ class SeismicTraceIterableDataset(IterableDataset):
             if waveform.shape[1] == 3:
                 waveform = waveform.T  # [3, Nt]
             waveform = waveform[:, :, np.newaxis]
-            meta["waveform"] = waveform.astype(np.float32)
+            meta["waveform"] = torch.from_numpy(waveform.astype(np.float32))
             meta["station_id"] = [sta_id]
             meta["begin_time"] = hdf5_fp[event_id].attrs["begin_time"]
             meta["dt_s"] = hdf5_fp[trace_id].attrs["dt_s"]
