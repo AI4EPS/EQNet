@@ -309,12 +309,13 @@ class EventHead(nn.Module):
                  dilations=[1, 4, 8, 16],
                  kernel_size=7,
                  loss_dict: dict = {"hm_loss": "focal", "hw_loss": "wl1", "travel_time_loss": "sl1", "dist_loss": "sl1", "angle_loss": "sl1", "depth_loss": "bl1", "mag_loss": "bl1"},
-                 weights=[1.497, 0.018, 0.05],
+                 weights=[1.495, 0.018, 0.055],
                  offset_weight=[1, 1], 
-                 reg_weight=[0.8,2,20,1.0, 0.7],
+                 reg_weight=[0.8,2,20,1.0, 0.8],
                  angle_coder="trigono",
                  depth_center=8.0,
                  mag_center=1.5,
+                 act_layer='relu'
                  ):
         super().__init__()
         
@@ -359,6 +360,8 @@ class EventHead(nn.Module):
             )
         )
         self.heatmap[-1].bias.data.fill_(-2.19) # if use the initial value, the loss from 200 to 5 (v2)
+        
+        
         self.offset = nn.Sequential(
             nn.Conv1d(
                 self.channels,
@@ -382,6 +385,7 @@ class EventHead(nn.Module):
             )
         )
         
+        
         self.hypocenter = nn.Sequential(
             nn.Conv1d(
                 self.channels,
@@ -394,8 +398,72 @@ class EventHead(nn.Module):
             ),
             nn.BatchNorm1d(hidden_channels[1]),
             nn.GELU(),
-            #sample(scale_factor=2, mode='linear', align_corners=False),
         )
+        
+        self.amplitude = nn.Sequential(
+            nn.Conv1d(
+                3,
+                hidden_channels[3],
+                kernel_size=kernel_size,
+                dilation=dilations[2],
+                padding=((kernel_size - 1) * dilations[2] + 1) // 2,
+                padding_mode="reflect",
+                bias=False,
+            ),
+            nn.BatchNorm1d(hidden_channels[3]),
+            nn.GELU(),
+            nn.Conv1d(
+                hidden_channels[3],
+                hidden_channels[2],
+                kernel_size=kernel_size,
+                dilation=dilations[1],
+                padding=((kernel_size - 1) * dilations[1] + 1) // 2,
+                padding_mode="reflect",
+                bias=False,
+            ),
+            nn.BatchNorm1d(hidden_channels[2]),
+            nn.GELU(),
+        )
+        
+        self.angle = nn.Sequential(
+            nn.Conv1d(
+                3,
+                hidden_channels[3],
+                kernel_size=kernel_size,
+                dilation=dilations[2],
+                padding=((kernel_size - 1) * dilations[2] + 1) // 2,
+                padding_mode="reflect",
+                bias=False,
+            ),
+            nn.BatchNorm1d(hidden_channels[3]),
+            nn.GELU(),
+            nn.Conv1d(
+                hidden_channels[3],
+                hidden_channels[2],
+                kernel_size=kernel_size,
+                dilation=dilations[1],
+                padding=((kernel_size - 1) * dilations[1] + 1) // 2,
+                padding_mode="reflect",
+                bias=False,
+            ),
+            nn.BatchNorm1d(hidden_channels[2]),
+            nn.GELU(),
+        )
+        
+        self.fuse = nn.Sequential(
+            nn.Conv1d(
+                hidden_channels[1]+hidden_channels[1],
+                hidden_channels[1],
+                kernel_size=kernel_size,
+                dilation=dilations[2],
+                padding=((kernel_size - 1) * dilations[2] + 1) // 2,
+                padding_mode="reflect",
+                bias=False,
+            ),
+            nn.BatchNorm1d(hidden_channels[1]),
+            nn.GELU(),
+        )
+        
         self.travel_time = nn.Sequential(
             nn.Conv1d(
                 hidden_channels[1],
@@ -404,9 +472,9 @@ class EventHead(nn.Module):
                 dilation=dilations[1],
                 padding=((kernel_size - 1) * dilations[1] + 1) // 2,
                 padding_mode="reflect",
-                #bias=False,
+                bias=False,
             ),
-            #nn.BatchNorm1d(hidden_channels[3]),
+            nn.BatchNorm1d(hidden_channels[3]),
             nn.GELU(),
             nn.Conv1d(
                 hidden_channels[3],
@@ -440,20 +508,20 @@ class EventHead(nn.Module):
             ),
             #nn.LeakyReLU(inplace=True), # the origin time and the distance should be positive
         )
-        self.angle = nn.Sequential(
+        self.azimuth = nn.Sequential(
             nn.Conv1d(
                 hidden_channels[1],
-                hidden_channels[1],
+                hidden_channels[3],
                 kernel_size=kernel_size,
                 dilation=dilations[3],
                 padding=((kernel_size - 1) * dilations[3] + 1) // 2,
                 padding_mode="reflect",
                 bias=False,
             ),
-            nn.BatchNorm1d(hidden_channels[1]),
+            nn.BatchNorm1d(hidden_channels[3]),
             nn.GELU(),
             nn.Conv1d(
-                hidden_channels[1],
+                hidden_channels[3],
                 self.angle_dims,
                 kernel_size=kernel_size,
                 dilation=dilations[1],
@@ -491,20 +559,20 @@ class EventHead(nn.Module):
         self.magnitude_1 = nn.Sequential(
             nn.Conv1d(
                 self.channels,
-                hidden_channels[3],
+                hidden_channels[2],
                 kernel_size=kernel_size,
                 dilation=dilations[3],
                 padding=((kernel_size - 1) * dilations[3] + 1) // 2,
                 padding_mode="reflect",
                 bias=False,
             ),
-            nn.BatchNorm1d(hidden_channels[3]),
+            nn.BatchNorm1d(hidden_channels[2]),
             nn.GELU(),
         )
         self.magnitude_2 = nn.Sequential(
             #Sample(scale_factor=2, mode='linear', align_corners=False),
             nn.Conv1d(
-                hidden_channels[3]+3,
+                hidden_channels[2]+hidden_channels[2],
                 hidden_channels[4],
                 kernel_size=kernel_size,
                 dilation=dilations[2],
@@ -567,31 +635,38 @@ class EventHead(nn.Module):
         heatmap = heatmap.view(bt, st, heatmap.shape[2])  # chn = 1
         heatmap = heatmap.permute(0, 2, 1)
         
-        # hypocenter
-        hypocenter = self.hypocenter(x)
-        travel_time = self.travel_time(hypocenter)
-        distance = self.distance(hypocenter)
-        angle = self.angle(hypocenter)
-        depth = self.depth(hypocenter)
-        
         bt, ch, nt, st = amplitude.shape
         #amplitude = F.avg_pool2d(amplitude, kernel_size=(1024, 1), stride=(128, 1))
         #amplitude = F.interpolate(amplitude, scale_factor=(1024, 1), mode="bilinear", align_corners=False)[:, :, :nt, :nx]
         amplitude[torch.abs(amplitude)<1e-6] = 1e-6
+        horizon_amp = torch.sqrt(torch.sum(amplitude[:,:2,:,:]**2, dim=1, keepdim=True))
+        horizon_amp[torch.abs(horizon_amp)<1e-6] = 1e-6
+        angle = torch.cat([amplitude[:, :2, :, :]/horizon_amp, torch.atan2(amplitude[:, 2:, :, :], horizon_amp)], dim=1) # sin, cos, takeoff angle
+        #assert torch.all(angle<100), "angle should be finite"
         amplitude = torch.log10(torch.abs(amplitude))
+        amplitude = torch.cat([amplitude, angle], dim=1)
         assert torch.all(torch.isfinite(amplitude)), "amplitude should be finite"
         assert not torch.any(torch.isnan(amplitude)), "amplitude should not be nan"
-        amplitude = amplitude.permute(0, 3, 1, 2).contiguous().view(bt*st, ch, nt)
+        amplitude = amplitude.permute(0, 3, 1, 2).contiguous().view(bt*st, ch*2, nt)
         # downsample amplitude
         amplitude = F.interpolate(amplitude, size=x.shape[-1], mode='linear', align_corners=False)
+        
+        # hypocenter
+        hypocenter = self.hypocenter(x)
+        amp_feature = self.amplitude(amplitude[:, :ch, :])
+        hypocenter = self.fuse(torch.cat([hypocenter, amp_feature, self.angle(amplitude[:, ch:, :])], dim=1))
+        travel_time = self.travel_time(hypocenter)
+        distance = self.distance(hypocenter)
+        azimuth = self.azimuth(hypocenter)
+        depth = self.depth(hypocenter)
+        magnitude = self.magnitude_2(torch.cat([self.magnitude_1(x), amp_feature], dim=1))
         
         #print(f"amplitude scale: avg {amplitude.mean()}, abs avg {torch.abs(amplitude).mean()}, std {amplitude.std()}", force=True)
         #print(f"amplitude scale: min {amplitude.min()}, max {amplitude.max()}", force=True)
         #print(f"feature scale: avg {x.mean()}, abs avg {torch.abs(x).mean()}, std {x.std()}", force=True)
         #print(f"feature scale: min {x.min()}, max {x.max()}", force=True)
         
-        magnitude = self.magnitude_2(torch.cat([self.magnitude_1(x), amplitude], dim=1))
-        hypocenter = torch.cat([travel_time, distance, angle, depth, magnitude], dim=1)
+        hypocenter = torch.cat([travel_time, distance, azimuth, depth, magnitude], dim=1)
         hypocenter = hypocenter.view(bt, st, hypocenter.shape[1], hypocenter.shape[2])
         hypocenter = hypocenter.permute(0, 2, 3, 1)
         
