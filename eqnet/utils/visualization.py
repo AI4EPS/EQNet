@@ -371,7 +371,8 @@ def plot_phasenet_plus(
     **kwargs,
 ):
     nb, nc, nt, ns = meta["data"].shape
-    dt = 0.01
+    if isinstance(dt, torch.Tensor):
+        dt = dt.item()
     nt_event = event_center.shape[2]
     dt_event = dt * nt / nt_event
     nt_polarity = polarity.shape[2]
@@ -413,6 +414,11 @@ def plot_phasenet_plus(
         t = pd.date_range(pd.Timestamp(begin_time[i]), periods=nt, freq=pd.Timedelta(seconds=dt))
         axes[k].plot(t, phase[i, 1, :, 0], "b", label="P-phase")
         axes[k].plot(t, phase[i, 2, :, 0], "r", label="S-phase")
+        color = {"P": "b", "S": "r"}
+        for ii, pick in enumerate(phase_picks[i]):
+            tt = pd.to_datetime(pick["phase_time"])
+            axes[k].plot([tt, tt], [-0.05, 1.05], f"--{color[pick['phase_type']]}", linewidth=2.0)
+
         axes[k].set_xlim(t[0], t[-1])
         axes[k].set_ylim(-0.05, 1.05)
         axes[k].set_xticklabels([])
