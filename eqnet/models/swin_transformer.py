@@ -1,5 +1,5 @@
 from functools import partial
-from typing import Any, Callable, List, Optional, Dict, Union
+from typing import Any, Callable, List, Optional, Dict, Union, Tuple
 from collections import OrderedDict
 
 import numpy as np
@@ -172,6 +172,24 @@ class PatchMerging(nn.Module):
 
         return {"x": x, "loc": loc}
 
+
+@torch.fx.wrap
+def apply_rotary_emb(
+    xq: torch.Tensor,
+    xk: torch.Tensor,
+    freqs_cis: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    '''
+    Note: you must ensure that the freq_cis can match the shape of xq and xk through broadcasting
+    '''
+    xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))
+    xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))
+    #assert 0, f"xq_.shape: {xq_.shape} xk_.shape: {xk_.shape} freqs_cis.shape: {freqs_cis.shape}"
+    xq_out = torch.view_as_real(xq_ * freqs_cis).flatten(3)
+    xk_out = torch.view_as_real(xk_ * freqs_cis).flatten(3)
+    return xq_out.type_as(xq).to(xq.device), xk_out.type_as(xk).to(xk.device)
+
+
 @torch.fx.wrap
 def shifted_window_attention(
     input: Tensor,
@@ -187,6 +205,9 @@ def shifted_window_attention(
     proj_bias: Optional[Tensor] = None,
     logit_scale: Optional[torch.Tensor] = None,
     use_station_location=True,
+    use_relative_position_bias=True,
+    use_rope=False,
+    freq_cis: Optional[Tensor] = None,
     training: bool = True,
 ) -> Tensor:
     """
@@ -209,7 +230,7 @@ def shifted_window_attention(
     Returns:
         Tensor[N, H, W, C]: The output tensor after shifted window attention.
     """
-    B, H, W, C = input.shape # batch, nt, nsta, nhead
+    B, H, W, C = input.shape # batch, nt, nsta, ndim
     # pad feature maps to multiples of window size
     pad_r = (window_size[1] - W % window_size[1]) % window_size[1]
     pad_b = (window_size[0] - H % window_size[0]) % window_size[0]
@@ -249,6 +270,13 @@ def shifted_window_attention(
     qkv = F.linear(x, qkv_weight, qkv_bias)
     qkv = qkv.reshape(x.size(0), x.size(1), 3, num_heads, C // num_heads).permute(2, 0, 3, 1, 4) # 3, B*nW, nH, Ws*Ws, C//nH
     q, k, v = qkv[0], qkv[1], qkv[2]
+    if use_rope and freq_cis is not None:
+        freq_cis = F.pad(freq_cis, (0, 0, 0, pad_r))
+        freq_cis = freq_cis.view(B, 1, window_size[0], pad_W // window_size[1], window_size[1], -1).repeat(1, pad_H // window_size[0], 1, 1, 1, 1).permute(0, 1, 3, 2, 4, 5)
+        freq_cis = freq_cis.reshape(B * num_windows, window_size[0] * window_size[1], num_heads, -1).permute(0, 2, 1, 3)  # B*nW, nH, Ws*Ws, C//nH//2
+        #assert torch.allclose(freq_cis[:,0,:,:], freq_cis[:,1,:,:], atol=1e-6)
+        assert freq_cis.shape == (B * num_windows, num_heads, window_size[0] * window_size[1], C // num_heads//2)
+        q, k = apply_rotary_emb(q, k, freq_cis)
     if logit_scale is not None:
         # cosine attention
         attn = F.normalize(q, dim=-1) @ F.normalize(k, dim=-1).transpose(-2, -1)
@@ -263,7 +291,7 @@ def shifted_window_attention(
     ##relative_position_bias = relative_position_bias.repeat(1, (pad_H // window_size[0]), 1, 1, 1, 1, 1).view(B * num_windows, num_heads, window_size[0] * window_size[1], window_size[0] * window_size[1])
     #relative_position_bias_shape = relative_position_bias.shape # B, pad_W//Ww, nH, Ws*Ws, Ws*Ws
     #relative_position_bias = relative_position_bias.unsqueeze(1).repeat(1, num_windows, 1, 1, 1).view(B * num_windows, *relative_position_bias_shape[1:])
-    if use_station_location:
+    if use_station_location and use_relative_position_bias:
         # use bias shape B, nH, Wh, nsta, Wh, nsta
         relative_position_bias = F.pad(relative_position_bias, (0, pad_r, 0, 0, 0, pad_r))
         if sum(shift_size) > 0:
@@ -274,9 +302,10 @@ def shifted_window_attention(
                                                          window_size[0], pad_W // window_size[1], window_size[1]).unsqueeze(1)
         relative_position_bias = torch.cat([relative_position_bias[:,:,:,:,i,:,:,i,:] for i in range(pad_W // window_size[1])], dim=1)
         assert relative_position_bias.shape == (B, pad_W // window_size[1], num_heads, window_size[0], window_size[1], window_size[0], window_size[1])
-        relative_position_bias = relative_position_bias.repeat(1, (pad_H // window_size[0]), 1, 1, 1, 1, 1).view(B * num_windows, num_heads, window_size[0] * window_size[1], window_size[0] * window_size[1])
+        relative_position_bias = relative_position_bias.unsqueeze(1).repeat(1, (pad_H // window_size[0]), 1, 1, 1, 1, 1, 1).view(B * num_windows, num_heads, window_size[0] * window_size[1], window_size[0] * window_size[1])
         
-    attn = attn + relative_position_bias
+    if use_relative_position_bias:    
+        attn = attn + relative_position_bias
     #print(f"relative_position_bias.shape: {relative_position_bias.shape} relative_position_bias.avg: {relative_position_bias.mean()} relative_position_bias.std: {relative_position_bias.std()} relative_position_bias.max: {relative_position_bias.max()} relative_position_bias.min: {relative_position_bias.min()}")
 
     if sum(shift_size) > 0:
@@ -581,6 +610,7 @@ class ShiftedWindowAttention(nn.Module):
         attention_dropout: float = 0.0,
         dropout: float = 0.0,
         use_station_location: bool = True,
+        use_relative_position_bias: bool = True,
     ):
         super().__init__()
         if len(window_size) != 2 or len(shift_size) != 2:
@@ -734,6 +764,7 @@ class ShiftedWindowAttentionV2(ShiftedWindowAttention):
         attention_dropout: float = 0.0,
         dropout: float = 0.0,
         use_station_location: bool = True,
+        use_relative_position_bias: bool = True,
     ):
         super().__init__(
             dim,
@@ -745,6 +776,7 @@ class ShiftedWindowAttentionV2(ShiftedWindowAttention):
             attention_dropout=attention_dropout,
             dropout=dropout,
             use_station_location=use_station_location,
+            use_relative_position_bias=use_relative_position_bias,
         )
 
         self.earth_radius = 6371
@@ -797,30 +829,35 @@ class ShiftedWindowAttentionV2(ShiftedWindowAttention):
     def get_relative_position_bias(self, loc: Union[Tensor, None]) -> Tensor:
         if self.use_station_location:
             relative_coords_t = self.relative_coords_t.repeat(loc.shape[0], loc.shape[1], loc.shape[1], 1) # B, nt*nx, nt*nx, 1
+            device = loc.device
             dtype = loc.dtype
-            loc = loc.float() # to avoid round error
-            loc[...,:2] = torch.deg2rad(loc[...,:2]) # to radians
-            # loc[:, :, None, :] station 1; loc[:, None, :, :] station 2
-            # from station 1 to station 2
-            relative_coords_sta = loc[:, None, :, :] - loc[:, :, None, :] # B, nx, nx, 3 (lon, lat, z)
-            a = torch.sin(relative_coords_sta[:, :, :, 1]/2)**2 + torch.cos(loc[:, :, None, 1]) * torch.cos(loc[:, None, :, 1]) * torch.sin(relative_coords_sta[:, :, :, 0]/2)**2
-            relative_dist = 2 * torch.atan2(torch.sqrt(a), torch.sqrt(1-a))*self.earth_radius # B, nx, nx
-            # y = torch.sin(relative_coords_sta[:, :, :, 0]) * torch.cos(loc[:, None, :, 1]) # B, nx, nx, 1
-            # x = torch.cos(loc[:, :, None, 1]) * torch.sin(loc[:, None, :, 1]) - torch.sin(loc[:, :, None, 1]) * torch.cos(loc[:, None, :, 1]) * torch.cos(relative_coords_sta[:, :, :, 0]) # B, nx, nx, 1
-            # relative_azi = torch.atan2(y, x) # B, nx, nx
-            relative_azi = torch.atan2(torch.sin(relative_coords_sta[:, :, :, 0]) * torch.cos(loc[:, None, :, 1]), 
-                                       torch.cos(loc[:, :, None, 1]) * torch.sin(loc[:, None, :, 1]) - torch.sin(loc[:, :, None, 1]) * torch.cos(loc[:, None, :, 1]) * torch.cos(relative_coords_sta[:, :, :, 0])
-                                       ) # B, nx, nx
-            relative_coords_sta = torch.cat((relative_dist.unsqueeze(-1), 
-                                            torch.sin(relative_azi).unsqueeze(-1), 
-                                            torch.cos(relative_azi).unsqueeze(-1),
-                                            relative_coords_sta[:, :, :, 2:]), dim=-1) # B, nx, nx, 4
+            device = device if isinstance(device, str) and device != "mps" else "cpu"
+            with torch.autocast(device_type=device, enabled=False):
+                # keep precision in small distance
+                loc = loc.float() # to avoid round error
+                loc[...,:2] = torch.deg2rad(loc[...,:2]) # to radians
+                # loc[:, :, None, :] station 1; loc[:, None, :, :] station 2
+                # from station 1 to station 2
+                relative_coords_sta = loc[:, None, :, :] - loc[:, :, None, :] # B, nx, nx, 3 (lon, lat, z)
+                a = torch.sin(relative_coords_sta[:, :, :, 1]/2)**2 + torch.cos(loc[:, :, None, 1]) * torch.cos(loc[:, None, :, 1]) * torch.sin(relative_coords_sta[:, :, :, 0]/2)**2
+                relative_dist = 2 * torch.atan2(torch.sqrt(a), torch.sqrt(1-a))*self.earth_radius # B, nx, nx
+                # y = torch.sin(relative_coords_sta[:, :, :, 0]) * torch.cos(loc[:, None, :, 1]) # B, nx, nx, 1
+                # x = torch.cos(loc[:, :, None, 1]) * torch.sin(loc[:, None, :, 1]) - torch.sin(loc[:, :, None, 1]) * torch.cos(loc[:, None, :, 1]) * torch.cos(relative_coords_sta[:, :, :, 0]) # B, nx, nx, 1
+                # relative_azi = torch.atan2(y, x) # B, nx, nx
+                relative_azi = torch.atan2(torch.sin(relative_coords_sta[:, :, :, 0]) * torch.cos(loc[:, None, :, 1]), 
+                                           torch.cos(loc[:, :, None, 1]) * torch.sin(loc[:, None, :, 1]) - torch.sin(loc[:, :, None, 1]) * torch.cos(loc[:, None, :, 1]) * torch.cos(relative_coords_sta[:, :, :, 0])
+                                           ) # B, nx, nx
+                relative_coords_sta = torch.cat((relative_dist.unsqueeze(-1), 
+                                                torch.sin(relative_azi).unsqueeze(-1), 
+                                                torch.cos(relative_azi).unsqueeze(-1),
+                                                relative_coords_sta[:, :, :, 2:]), dim=-1) # B, nx, nx, 4
             relative_coords_sta = relative_coords_sta.to(dtype) # recover to previous data type
             relative_coords_sta = relative_coords_sta.repeat(1, self.window_size[0], self.window_size[0], 1) # B, nt*nx, nt*nx, 4
             # relative_coords = torch.cat((relative_coords_t, relative_coords_sta), dim=-1) # B, nt*nx, nt*nx, 5
             # relative_position_bias = self.cpb_mlp(relative_coords) #bt, Wh*Ww, Wh*Ww, nH
             relative_position_bias = self.cpb_mlp(torch.cat((relative_coords_t, relative_coords_sta), dim=-1)) #bt, Wh*Ww, Wh*Ww, nH
             relative_position_bias = relative_position_bias.permute(0, 3, 1, 2).view(loc.shape[0], self.num_heads, self.window_size[0], loc.shape[1], self.window_size[0], loc.shape[1]) #bt, nH, nt, nx, nt, nx
+            relative_position_bias = 32 * torch.sigmoid(relative_position_bias)
         else:
             N = self.window_size[0] * self.window_size[1]
             relative_position_bias = (self.cpb_mlp(self.relative_coords_table).view(-1, self.num_heads))[self.relative_position_index]  # type: ignore[index]
@@ -855,42 +892,148 @@ class ShiftedWindowAttentionV2(ShiftedWindowAttention):
             proj_bias=self.proj.bias,
             logit_scale=self.logit_scale,
             use_station_location=self.use_station_location,
+            use_relative_position_bias=True,
             training=self.training,
         )
 
-# class ShiftedWindowAttentionRotary(nn.Module):
-#     def __init__(
-#         self,
-#         dim: int,
-#         window_size: List[int],
-#         shift_size: List[int],
-#         num_heads: int,
-#         qkv_bias: bool = True,
-#         proj_bias: bool = True,
-#         attention_dropout: float = 0.0,
-#         dropout: float = 0.0,
-#     ):
-#         super().__init__()
-#         if len(window_size) != 2 or len(shift_size) != 2:
-#             raise ValueError("window_size and shift_size must be of length 2")
-#         self.window_size = window_size
-#         self.shift_size = shift_size
-#         self.num_heads = num_heads
-#         self.attention_dropout = attention_dropout
-#         self.dropout = dropout
-#         #  grid of relative spatial position
-#         self.degree2km = 111.32
-#         self.grid_size = self.degree2km / 100
-#         self.bin_x = 51
-#         self.bin_y = 51
-#         self.bin_z = 11
-# 
-#         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
-#         self.proj = nn.Linear(dim, dim, bias=proj_bias)
-#     
-#     
-#     pass
+## RoPE functions
 
+def init_t_xy(end_x: int, end_y: int, zero_center=False):
+    t = torch.arange(end_x * end_y, dtype=torch.float32)
+    t_x = (t % end_x).float()
+    t_y = torch.div(t, end_x, rounding_mode='floor').float()
+    
+    return t_x, t_y
+
+def init_random_2d_freqs(head_dim: int, num_heads: int, theta: float = 10.0, rotate: bool = True):
+    freqs_x = []
+    freqs_y = []
+    theta = theta
+    mag = 1 / (theta ** (torch.arange(0, head_dim, 4)[: (head_dim // 4)].float() / head_dim))
+    for i in range(num_heads):
+        angles = torch.rand(1) * 2 * torch.pi if rotate else torch.zeros(1)
+        fx = torch.cat([mag * torch.cos(angles), mag * torch.cos(torch.pi/2 + angles)], dim=-1)
+        fy = torch.cat([mag * torch.sin(angles), mag * torch.sin(torch.pi/2 + angles)], dim=-1)
+        freqs_x.append(fx)
+        freqs_y.append(fy)
+    freqs_x = torch.stack(freqs_x, dim=0)
+    freqs_y = torch.stack(freqs_y, dim=0)
+    freqs = torch.stack([freqs_x, freqs_y], dim=0)
+    return freqs
+
+
+class RotaryAxialWindowAttention(ShiftedWindowAttentionV2):
+    def __init__(
+        self,
+        dim: int,
+        window_size: List[int],
+        shift_size: List[int],
+        num_heads: int,
+        qkv_bias: bool = True,
+        proj_bias: bool = True,
+        attention_dropout: float = 0.0,
+        dropout: float = 0.0,
+        theta_t: float = 100.0,
+        freq_horizon: Tuple[float, float] = (2.0, 16.0),
+        freq_vertical: Tuple[float, float] = (-6.0, 8.0),
+        use_station_location: bool = True,
+        use_relative_position_bias: bool = False,
+    ):
+        super().__init__(
+            dim,
+            window_size,
+            shift_size,
+            num_heads,
+            qkv_bias=qkv_bias,
+            proj_bias=proj_bias,
+            attention_dropout=attention_dropout,
+            dropout=dropout,
+            use_station_location=use_station_location,
+        )
+        
+        self.dim = dim
+        self.use_rope = True
+        self.theta_t = theta_t
+        self.freq_horizon = freq_horizon
+        self.freq_vertical = freq_vertical
+        self.use_relative_position_bias = use_relative_position_bias
+        if not self.use_relative_position_bias:
+            if use_station_location:
+                self.relative_coords_t = None
+            else:
+                self.relative_coords_table = None
+                self.relative_position_index = None
+            self.cpb_mlp = None
+                
+        self.init_freqs()
+        
+    def init_freqs(self):
+        dim = self.dim // self.num_heads
+        rope_t_t = torch.arange(self.window_size[0], dtype=torch.float32)
+        self.register_buffer("rope_t_t", rope_t_t)
+        freqs_t = 1.0 / (self.theta_t ** (torch.arange(0, dim, 8)[: (dim // 8)].float() / dim))
+        self.register_buffer("freqs_t", freqs_t)
+        freqs_xy = 2.**torch.linspace(self.freq_horizon[0], self.freq_horizon[1], dim // 8)
+        self.register_buffer("freqs_xy", freqs_xy)
+        freqs_z = 2.**torch.linspace(self.freq_vertical[0], self.freq_vertical[1], dim // 8)
+        self.register_buffer("freqs_z", freqs_z)
+        
+    def compute_cis_for_broadcast(self, loc: torch.Tensor):
+        B, nsta, ch = loc.shape
+        rope_t = torch.cat([self.rope_t_t[None, :, None, None].repeat(B, 1, nsta, 1),
+                            loc[:, None, :, :].repeat(1, self.window_size[0], 1, 1)], dim=-1)
+        device = loc.device
+        device = device if isinstance(device, str) and device != "mps" else "cpu"
+        # No float 16 for this range
+        with torch.autocast(device_type=device, enabled=False):
+            freqs_cis = []
+            freqs_t = rope_t[:, :, :, 0:1] * self.freqs_t[None, None, None, :]
+            freqs_x = rope_t[:, :, :, 1:2] * self.freqs_xy[None, None, None, :]
+            freqs_y = rope_t[:, :, :, 2:3] * self.freqs_xy[None, None, None, :]
+            freqs_z = rope_t[:, :, :, 3:4] * self.freqs_z[None, None, None, :]
+            freqs_cis.append(torch.polar(torch.ones_like(freqs_t), freqs_t))
+            freqs_cis.append(torch.polar(torch.ones_like(freqs_x), freqs_x))
+            freqs_cis.append(torch.polar(torch.ones_like(freqs_y), freqs_y))
+            freqs_cis.append(torch.polar(torch.ones_like(freqs_z), freqs_z))
+
+        return torch.cat(freqs_cis, dim=-1)
+    
+    def forward(self, x: Tensor, loc: Union[Tensor, None]):
+        """
+        Args:
+            x (Tensor): Tensor with layout of [B, H, W, C]
+            loc (Tensor): Station location with layout of [B, W, 3]
+        Returns:
+            Tensor with same layout as input, i.e. [B, H, W, C]
+        """
+        if self.use_relative_position_bias:
+            relative_position_bias = self.get_relative_position_bias(loc)
+        else:
+            relative_position_bias = None
+        # assert not torch.isnan(relative_position_bias).any(), "relative_position_bias contains NaN"
+        return shifted_window_attention(
+            x,
+            self.qkv.weight,
+            self.proj.weight,
+            relative_position_bias,
+            self.window_size,
+            self.num_heads,
+            shift_size=self.shift_size,
+            attention_dropout=self.attention_dropout,
+            dropout=self.dropout,
+            qkv_bias=self.qkv.bias,
+            proj_bias=self.proj.bias,
+            logit_scale=self.logit_scale,
+            use_station_location=self.use_station_location,
+            use_relative_position_bias=self.use_relative_position_bias,
+            use_rope=True,
+            freq_cis=self.compute_cis_for_broadcast(loc).unsqueeze(-2).repeat(1, 1, 1, self.num_heads, 1).flatten(-2, -1),
+            training=self.training,
+        )
+
+
+class RotaryMixedWindowAttention(RotaryAxialWindowAttention):
+    pass
 
 class SwinTransformerBlock(nn.Module):
     """
@@ -921,6 +1064,7 @@ class SwinTransformerBlock(nn.Module):
         norm_layer: Callable[..., nn.Module] = nn.LayerNorm,
         attn_layer: Callable[..., nn.Module] = ShiftedWindowAttention,
         use_station_location: bool = True,
+        use_relative_position_bias: bool = True,
     ):
         super().__init__()
 
@@ -933,6 +1077,7 @@ class SwinTransformerBlock(nn.Module):
             attention_dropout=attention_dropout,
             dropout=dropout,
             use_station_location=use_station_location,
+            use_relative_position_bias=use_relative_position_bias,
         )
         self.stochastic_depth = StochasticDepth(stochastic_depth_prob, "row")
         self.norm2 = norm_layer(dim)
@@ -984,6 +1129,8 @@ class SwinTransformerBlockV2(SwinTransformerBlock):
         norm_layer: Callable[..., nn.Module] = nn.LayerNorm,
         attn_layer: Callable[..., nn.Module] = ShiftedWindowAttentionV2,
         use_station_location: bool = True,
+        use_relative_position_bias: bool = True,
+        **kwargs,
     ):
         super().__init__(
             dim,
@@ -997,6 +1144,7 @@ class SwinTransformerBlockV2(SwinTransformerBlock):
             norm_layer=norm_layer,
             attn_layer=attn_layer,
             use_station_location=use_station_location,
+            use_relative_position_bias=use_relative_position_bias,
         )
 
     def forward(self, meta: Dict):
@@ -1006,6 +1154,39 @@ class SwinTransformerBlockV2(SwinTransformerBlock):
         x = x + self.stochastic_depth(self.norm1(self.attn(x, loc)))
         x = x + self.stochastic_depth(self.norm2(self.mlp(x)))
         return {"x": x, "loc": loc}
+
+class RotarySwinBlock(SwinTransformerBlockV2):
+    def __init__(
+        self,
+        dim: int,
+        num_heads: int,
+        window_size: List[int],
+        shift_size: List[int],
+        mlp_ratio: float = 4.0,
+        dropout: float = 0.0,
+        attention_dropout: float = 0.0,
+        stochastic_depth_prob: float = 0.0,
+        norm_layer: Callable[..., nn.Module] = nn.LayerNorm,
+        attn_layer: Callable[..., nn.Module] = RotaryAxialWindowAttention,
+        use_station_location: bool = True,
+        use_relative_position_bias: bool = False,
+        use_rope: bool = True,
+        use_rope_mixed: bool = False,
+    ):
+        super().__init__(
+            dim,
+            num_heads,
+            window_size,
+            shift_size,
+            mlp_ratio=mlp_ratio,
+            dropout=dropout,
+            attention_dropout=attention_dropout,
+            stochastic_depth_prob=stochastic_depth_prob,
+            norm_layer=norm_layer,
+            attn_layer=RotaryAxialWindowAttention if not use_rope_mixed else RotaryMixedWindowAttention,
+            use_station_location=use_station_location,
+            use_relative_position_bias=use_relative_position_bias,
+        )
 
 
 class SwinTransformer(nn.Module):
@@ -1044,6 +1225,9 @@ class SwinTransformer(nn.Module):
         downsample_layer: Callable[..., nn.Module] = PatchMerging,
         out_indices=(0, 1, 2, 3),
         use_station_location: bool = True,
+        use_relative_position_bias: bool = True,
+        use_rope: bool = False,
+        use_rope_mixed: bool = False,
     ):
         super().__init__()
 
@@ -1052,6 +1236,8 @@ class SwinTransformer(nn.Module):
             block = SwinTransformerBlock
         elif block_name == "SwinTransformerBlockV2":
             block = SwinTransformerBlockV2
+        elif block_name == "RotarySwinBlock":
+            block = RotarySwinBlock
         else:
             raise ValueError(f"Unknown Swin Transformer block: {block_name}")
 
@@ -1089,6 +1275,9 @@ class SwinTransformer(nn.Module):
                         stochastic_depth_prob=sd_prob,
                         norm_layer=norm_layer,
                         use_station_location=use_station_location,
+                        use_relative_position_bias=use_relative_position_bias if use_rope else True,
+                        use_rope=use_rope,
+                        use_rope_mixed=use_rope_mixed,
                     )
                 )
                 stage_block_id += 1
@@ -1141,6 +1330,9 @@ def _swin_transformer(
     progress: bool,
     block_name: Optional[str],
     use_station_location: bool,
+    use_relative_position_bias: bool,
+    use_rope: bool = False,
+    use_rope_mixed: bool = False,
     **kwargs: Any,
 ) -> SwinTransformer:
     model = SwinTransformer(
@@ -1152,6 +1344,9 @@ def _swin_transformer(
         stochastic_depth_prob=stochastic_depth_prob,
         block_name=block_name,
         use_station_location=use_station_location,
+        use_relative_position_bias=use_relative_position_bias,
+        use_rope=use_rope,
+        use_rope_mixed=use_rope_mixed,
         **kwargs,
     )
 

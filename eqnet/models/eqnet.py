@@ -298,6 +298,42 @@ class EQNet(nn.Module):
                 out_indices=out_indices,
                 use_station_location=use_station_location,
             )
+        elif backbone == "swin_rope_axial":
+            out_indices = [0, 1, 2, 3] if head == "upernet" else [3]
+            self.backbone = SwinTransformer(
+                patch_size=[4, 1],
+                embed_dim=96,
+                #embed_dim=16,
+                depths=[2, 2, 6, 2],
+                num_heads=[3, 6, 12, 24],
+                #num_heads=[2, 4, 8, 8],
+                window_size=[8, 10],
+                stochastic_depth_prob=0.2,
+                block_name="RotarySwinBlock",
+                out_indices=out_indices,
+                use_station_location=use_station_location,
+                use_relative_position_bias=False,
+                use_rope=True,
+                use_rope_mixed=False,
+            )
+        elif backbone == "swin_rope_mixed":
+            out_indices = [0, 1, 2, 3] if head == "upernet" else [3]
+            self.backbone = SwinTransformer(
+                patch_size=[4, 1],
+                embed_dim=96,
+                #embed_dim=16,
+                depths=[2, 2, 6, 2],
+                num_heads=[3, 6, 12, 24],
+                #num_heads=[2, 4, 8, 8],
+                window_size=[8, 10],
+                stochastic_depth_prob=0.2,
+                block_name="RotarySwinBlock",
+                out_indices=out_indices,
+                use_station_location=use_station_location,
+                use_relative_position_bias=False,
+                use_rope=True,
+                use_rope_mixed=True,
+            )
         elif backbone == "swin_1D": 
             out_indices = [0, 1, 2, 3] if head == "upernet" else [3]
             self.backbone = SwinTransformer1D(
