@@ -1,5 +1,7 @@
 ## EQNet: EarthQuake Neural Networks
 
+![](https://img.shields.io/badge/python-3.8%2B-blue)
+
 ### [PhaseNet](https://github.com/AI4EPS/PhaseNet)
 Original PhaseNet for picking arrival time.
 
