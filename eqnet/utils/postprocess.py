@@ -127,7 +127,7 @@ def extract_picks(
                             "phase_time": pick_time,
                             "phase_score": f"{score.item():.3f}",
                             "phase_type": phases[j],
-                            # "dt": dt[i],
+                            "dt_s": dt[i],
                         }
 
                         if polarity_score is not None:

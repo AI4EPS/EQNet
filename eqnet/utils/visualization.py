@@ -362,6 +362,8 @@ def plot_phasenet_plus(
     polarity=None,
     event_center=None,
     event_time=None,
+    phase_picks=None,
+    event_detects=None,
     dt=0.01,
     nt=6000 * 10,
     file_name=None,
@@ -419,7 +421,7 @@ def plot_phasenet_plus(
 
         t = pd.date_range(pd.Timestamp(begin_time[i]), periods=nt_polarity, freq=pd.Timedelta(seconds=dt_polarity))
         # axes[k + 1].plot(t, polarity[i, 0, :, 0], "b", label="polarity")
-        axes[k + 1].plot(t, polarity[i, 1, :, 0] - polarity[i, 2, :, 0], "b", label="polarity")
+        axes[k + 1].plot(t, polarity[i, 1, :, 0] - polarity[i, 2, :, 0], "b", label="Polarity")
         axes[k + 1].set_xlim(t[0], t[-1])
         axes[k + 1].set_ylim(-1.05, 1.05)
         axes[k + 1].set_xticklabels([])
@@ -427,16 +429,35 @@ def plot_phasenet_plus(
         axes[k + 1].legend(loc="upper right")
 
         t = pd.date_range(pd.Timestamp(begin_time[i]), periods=nt_event, freq=pd.Timedelta(seconds=dt_event))
-        axes[k + 2].plot(t, event_center[i, 0, :, 0], "b", label="event")
+        axes[k + 2].plot(t, event_center[i, 0, :, 0], "b", label="Event")
         axes[k + 2].set_xlim(t[0], t[-1])
         axes[k + 2].set_ylim(-0.05, 1.05)
         axes[k + 2].grid("on")
         axes[k + 2].legend(loc="upper right")
         axes[k + 2].set_xlabel("Time (s)")
 
-        axes2 = axes[k + 2].twinx()
-        axes2.plot(t, event_time[i, 0, :, 0], "--C1")
-        axes2.set_ylabel("Time (s)")
+        # axes2 = axes[k + 2].twinx()
+        # axes2.plot(t, event_time[i, 0, :, 0], "--C1")
+        # axes2.set_ylabel("Time (s)")
+
+        for ii, event in enumerate(event_detects[i]):
+            ot = pd.to_datetime(event["event_time"])
+            axes[k + 2].plot([ot, ot], [-0.05, 1.05], "--C3", linewidth=2.0)
+            at = pd.to_datetime(event["center_time"])
+            axes[k + 2].plot([at, at], [-0.05, 1.05], "--C0", linewidth=2.0)
+            axes[k + 2].annotate(
+                "",
+                xy=(at, 0.3),
+                xytext=(ot, 0.3),
+                arrowprops=dict(arrowstyle="<-", color="C1", lw=2),
+            )
+        axes[k + 2].plot([], [], "--C3", label="Origin time")
+
+        axes[k + 2].set_xlim(t[0], t[-1])
+        axes[k + 2].set_ylim(-0.05, 1.05)
+        axes[k + 2].grid("on")
+        axes[k + 2].legend(loc="upper right")
+        axes[k + 2].set_xlabel("Time (s)")
 
         fig.tight_layout()
 

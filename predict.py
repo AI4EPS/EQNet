@@ -76,7 +76,7 @@ def pred_phasenet(args, model, data_loader, pick_path, figure_path):
 
             for i in range(len(meta["file_name"])):
                 tmp = meta["file_name"][i].split("/")
-                parent_dir = "/".join(tmp[min(-1, -args.folder_depth) : -1])
+                parent_dir = "/".join(tmp[-args.subdir_level - 1 : -1])
                 filename = tmp[-1].replace("*", "").replace("?", "").replace(".mseed", "")
 
                 if not os.path.exists(os.path.join(pick_path, parent_dir)):
@@ -133,7 +133,7 @@ def pred_phasenet_plus(args, model, data_loader, pick_path, event_path, figure_p
                 topk_phase_scores, topk_phase_inds = detect_peaks(
                     phase_scores, vmin=args.min_prob, kernel=128, dt=dt.min().item()
                 )
-                phase_picks_ = extract_picks(
+                phase_picks = extract_picks(
                     topk_phase_inds,
                     topk_phase_scores,
                     file_name=meta["file_name"],
@@ -168,17 +168,17 @@ def pred_phasenet_plus(args, model, data_loader, pick_path, event_path, figure_p
 
             for i in range(len(meta["file_name"])):
                 tmp = meta["file_name"][i].split("/")
-                parent_dir = "/".join(tmp[min(-1, -args.folder_depth) : -1])
+                parent_dir = "/".join(tmp[-args.subdir_level - 1 : -1])
                 filename = tmp[-1].replace("*", "").replace("?", "").replace(".mseed", "")
 
                 if not os.path.exists(os.path.join(pick_path, parent_dir)):
                     os.makedirs(os.path.join(pick_path, parent_dir), exist_ok=True)
-                if len(phase_picks_[i]) == 0:
+                if len(phase_picks[i]) == 0:
                     ## keep an empty file for the file with no picks to make it easier to track processed files
                     with open(os.path.join(pick_path, parent_dir, filename + ".csv"), "a"):
                         pass
                     continue
-                picks_df = pd.DataFrame(phase_picks_[i])
+                picks_df = pd.DataFrame(phase_picks[i])
                 picks_df.sort_values(by=["phase_time"], inplace=True)
                 picks_df.to_csv(os.path.join(pick_path, parent_dir, filename + ".csv"), index=False)
 
@@ -200,6 +200,8 @@ def pred_phasenet_plus(args, model, data_loader, pick_path, event_path, figure_p
                     polarity_scores.cpu().float() if polarity_scores is not None else None,
                     event_center.cpu().float() if "event_center" in output else None,
                     event_time.cpu().float() if "event_time" in output else None,
+                    phase_picks=phase_picks,
+                    event_detects=event_detects,
                     file_name=meta["file_name"],
                     dt=dt,
                     figure_dir=figure_path,
@@ -244,7 +246,7 @@ def pred_phasenet_das(args, model, data_loader, pick_path, figure_path):
 
             for i in range(len(meta["file_name"])):
                 tmp = meta["file_name"][i].split("/")
-                parent_dir = "/".join(tmp[min(-1, -args.folder_depth) : -1])
+                parent_dir = "/".join(tmp[-args.subdir_level - 1 : -1])
                 filename = tmp[-1].replace("*", "").replace(f".{args.format}", "")
                 if not os.path.exists(os.path.join(pick_path, parent_dir)):
                     os.makedirs(os.path.join(pick_path, parent_dir), exist_ok=True)
@@ -370,7 +372,7 @@ def main(args):
             resample_space=args.resample_space,
             skip_existing=args.skip_existing,
             pick_path=pick_path,
-            folder_depth=args.folder_depth,
+            subdir_level=args.subdir_level,
             rank=rank,
             world_size=world_size,
         )
@@ -499,7 +501,7 @@ def get_args_parser(add_help=True):
     parser.add_argument("--highpass_filter", type=float, default=0.0, help="highpass filter; default 0.0 is no filter")
     parser.add_argument("--response_path", default=None, type=str, help="response path")
     parser.add_argument("--response_xml", default=None, type=str, help="response xml file")
-    parser.add_argument("--folder_depth", default=0, type=int, help="folder depth for data list")
+    parser.add_argument("--subdir_level", default=0, type=int, help="folder depth for data list")
 
     ## DAS
     parser.add_argument("--cut_patch", action="store_true", help="If cut patch for continuous data")
