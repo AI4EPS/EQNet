@@ -46,7 +46,7 @@ def extract_picks(
     polarity_score=None,
     waveform=None,
     window_amp=[10, 5],
-    polarity_scale=4,
+    polarity_scale=1,
     **kwargs,
 ):
     """Extract picks from prediction results.
@@ -132,7 +132,7 @@ def extract_picks(
 
                         if polarity_score is not None:
                             pick_dict["phase_polarity"] = (
-                                f"{polarity_score[i, 0, index.item()//polarity_scale, k].item():.3f}"
+                                f"{(polarity_score[i, 1, index.item()//polarity_scale, k].item() - polarity_score[i, 2, index.item()//polarity_scale, k].item()):.3f}"
                             )
 
                         if waveform is not None:

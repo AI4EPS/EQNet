@@ -375,7 +375,7 @@ class SeismicTraceIterableDataset(IterableDataset):
 
         self.data_path = data_path
         self.hdf5_file = hdf5_file
-        if not training:
+        if (hdf5_file is not None) and (not training):
             self.hdf5_fp = h5py.File(hdf5_file, "r", libver="latest", swmr=True)
         self.phases = phases
         self.response_path = response_path

@@ -418,7 +418,8 @@ def plot_phasenet_plus(
         axes[k].legend(loc="upper right")
 
         t = pd.date_range(pd.Timestamp(begin_time[i]), periods=nt_polarity, freq=pd.Timedelta(seconds=dt_polarity))
-        axes[k + 1].plot(t, polarity[i, 0, :, 0], "b", label="polarity")
+        # axes[k + 1].plot(t, polarity[i, 0, :, 0], "b", label="polarity")
+        axes[k + 1].plot(t, polarity[i, 1, :, 0] - polarity[i, 2, :, 0], "b", label="polarity")
         axes[k + 1].set_xlim(t[0], t[-1])
         axes[k + 1].set_ylim(-1.05, 1.05)
         axes[k + 1].set_xticklabels([])

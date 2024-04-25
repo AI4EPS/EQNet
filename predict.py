@@ -33,7 +33,7 @@ matplotlib.use("agg")
 logger = logging.getLogger()
 
 
-def postprocess(meta, output, polarity_scale=4, event_scale=16):
+def postprocess(meta, output, polarity_scale=1, event_scale=16):
     nt, nx = meta["nt"], meta["nx"]
     data = meta["data"][:, :, :nt, :nx]
     # data = moving_normalize(data)
@@ -128,10 +128,8 @@ def pred_phasenet_plus(args, model, data_loader, pick_path, event_path, figure_p
 
             if "phase" in output:
                 phase_scores = torch.softmax(output["phase"], dim=1)  # [batch, nch, nt, nsta]
-                if ("polarity" in output) and (output["polarity"] is not None):
-                    polarity_scores = (torch.sigmoid(output["polarity"]) - 0.5) * 2.0
-                else:
-                    polarity_scores = None
+                if "polarity" in output:
+                    polarity_scores = torch.softmax(output["polarity"], dim=1)
                 topk_phase_scores, topk_phase_inds = detect_peaks(
                     phase_scores, vmin=args.min_prob, kernel=128, dt=dt.min().item()
                 )
