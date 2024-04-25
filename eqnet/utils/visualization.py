@@ -417,7 +417,7 @@ def plot_phasenet_plus(
         color = {"P": "b", "S": "r"}
         for ii, pick in enumerate(phase_picks[i]):
             tt = pd.to_datetime(pick["phase_time"])
-            axes[k].plot([tt, tt], [-0.05, 1.05], f"--{color[pick['phase_type']]}", linewidth=2.0)
+            axes[k].plot([tt, tt], [-0.05, 1.05], f"--{color[pick['phase_type']]}", linewidth=0.5)
 
         axes[k].set_xlim(t[0], t[-1])
         axes[k].set_ylim(-0.05, 1.05)
