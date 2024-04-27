@@ -896,31 +896,6 @@ class ShiftedWindowAttentionV2(ShiftedWindowAttention):
             training=self.training,
         )
 
-## RoPE functions
-
-def init_t_xy(end_x: int, end_y: int, zero_center=False):
-    t = torch.arange(end_x * end_y, dtype=torch.float32)
-    t_x = (t % end_x).float()
-    t_y = torch.div(t, end_x, rounding_mode='floor').float()
-    
-    return t_x, t_y
-
-def init_random_2d_freqs(head_dim: int, num_heads: int, theta: float = 10.0, rotate: bool = True):
-    freqs_x = []
-    freqs_y = []
-    theta = theta
-    mag = 1 / (theta ** (torch.arange(0, head_dim, 4)[: (head_dim // 4)].float() / head_dim))
-    for i in range(num_heads):
-        angles = torch.rand(1) * 2 * torch.pi if rotate else torch.zeros(1)
-        fx = torch.cat([mag * torch.cos(angles), mag * torch.cos(torch.pi/2 + angles)], dim=-1)
-        fy = torch.cat([mag * torch.sin(angles), mag * torch.sin(torch.pi/2 + angles)], dim=-1)
-        freqs_x.append(fx)
-        freqs_y.append(fy)
-    freqs_x = torch.stack(freqs_x, dim=0)
-    freqs_y = torch.stack(freqs_y, dim=0)
-    freqs = torch.stack([freqs_x, freqs_y], dim=0)
-    return freqs
-
 
 class RotaryAxialWindowAttention(ShiftedWindowAttentionV2):
     def __init__(
@@ -996,7 +971,7 @@ class RotaryAxialWindowAttention(ShiftedWindowAttentionV2):
             freqs_cis.append(torch.polar(torch.ones_like(freqs_y), freqs_y))
             freqs_cis.append(torch.polar(torch.ones_like(freqs_z), freqs_z))
 
-        return torch.cat(freqs_cis, dim=-1)
+        return torch.cat(freqs_cis, dim=-1).unsqueeze(-2).repeat(1, 1, 1, self.num_heads, 1).flatten(-2, -1)
     
     def forward(self, x: Tensor, loc: Union[Tensor, None]):
         """
@@ -1027,13 +1002,92 @@ class RotaryAxialWindowAttention(ShiftedWindowAttentionV2):
             use_station_location=self.use_station_location,
             use_relative_position_bias=self.use_relative_position_bias,
             use_rope=True,
-            freq_cis=self.compute_cis_for_broadcast(loc).unsqueeze(-2).repeat(1, 1, 1, self.num_heads, 1).flatten(-2, -1),
+            freq_cis=self.compute_cis_for_broadcast(loc),
             training=self.training,
         )
 
 
 class RotaryMixedWindowAttention(RotaryAxialWindowAttention):
-    pass
+    def __init__(
+        self,
+        dim: int,
+        window_size: List[int],
+        shift_size: List[int],
+        num_heads: int,
+        qkv_bias: bool = True,
+        proj_bias: bool = True,
+        attention_dropout: float = 0.0,
+        dropout: float = 0.0,
+        theta_t: float = 10.0,
+        freq_horizon: Tuple[float, float] = (2.0, 16.0),
+        freq_vertical: Tuple[float, float] = (-6.0, 8.0),
+        use_station_location: bool = True,
+        use_relative_position_bias: bool = False,
+    ):
+        super().__init__(
+            dim,
+            window_size,
+            shift_size,
+            num_heads,
+            qkv_bias=qkv_bias,
+            proj_bias=proj_bias,
+            attention_dropout=attention_dropout,
+            dropout=dropout,
+            theta_t=theta_t,
+            freq_horizon=freq_horizon,
+            freq_vertical=freq_vertical,
+            use_station_location=use_station_location,
+            use_relative_position_bias=use_relative_position_bias,
+        )
+        
+    def init_freqs(self):
+        rope_t_t = torch.arange(self.window_size[0], dtype=torch.float32)
+        self.register_buffer("rope_t_t", rope_t_t)
+        head_dim = self.dim // self.num_heads
+        freqs_t = []
+        freqs_x = []
+        freqs_y = []
+        freqs_z = []
+        mag_t = 1 / (self.theta_t ** (torch.arange(0, head_dim, 4)[: (head_dim // 4)].float() / head_dim))
+        # +1 because cos(angle) will downscale the frequency
+        mag_xy = 2.**torch.linspace(self.freq_horizon[0]+1, self.freq_horizon[1]+1, head_dim // 4)
+        mag_z = 2.**torch.linspace(self.freq_vertical[0]+1, self.freq_vertical[1]+1, head_dim // 4)
+        
+        for _ in range(self.num_heads):
+            angles = torch.rand(1) * 2 * torch.pi
+            ft = torch.cat([mag_t * torch.cos(angles), mag_t * torch.cos(angles + torch.pi/2)], dim=-1)
+            freqs_t.append(ft)
+            fx = torch.cat([mag_xy * torch.cos(angles), mag_xy * torch.cos(angles + torch.pi/2)], dim=-1)
+            freqs_x.append(fx)
+            fy = torch.cat([mag_xy * torch.sin(angles), mag_xy * torch.sin(angles + torch.pi/2)], dim=-1)
+            freqs_y.append(fy)
+            fz = torch.cat([mag_z * torch.sin(angles), mag_z * torch.sin(angles + torch.pi/2)], dim=-1)
+            freqs_z.append(fz)
+        freqs_t = torch.stack(freqs_t, dim=0).flatten() # nH * head_dim//2
+        freqs_x = torch.stack(freqs_x, dim=0).flatten() # nH * head_dim//2
+        freqs_y = torch.stack(freqs_y, dim=0).flatten() # nH * head_dim//2
+        freqs_z = torch.stack(freqs_z, dim=0).flatten() # nH * head_dim//2
+        freqs = torch.stack([freqs_t, freqs_x, freqs_y, freqs_z], dim=0)
+        
+        self.freqs = nn.Parameter(freqs, requires_grad=True)
+        
+    def compute_cis_for_broadcast(self, loc: torch.Tensor):
+        B, nsta, ch = loc.shape
+        rope_t = torch.cat([self.rope_t_t[None, :, None, None].repeat(B, 1, nsta, 1),
+                            loc[:, None, :, :].repeat(1, self.window_size[0], 1, 1)], dim=-1)
+        device = loc.device
+        device = device if isinstance(device, str) and device != "mps" else "cpu"
+        # No float 16 for this range
+        with torch.autocast(device_type=device, enabled=False):
+            freqs_cis = []
+            freqs_t = rope_t[:, :, :, 0:1] * self.freqs[0:1, None, None, :]
+            freqs_x = rope_t[:, :, :, 1:2] * self.freqs[1:2, None, None, :]
+            freqs_y = rope_t[:, :, :, 2:3] * self.freqs[2:3, None, None, :]
+            freqs_z = rope_t[:, :, :, 3:4] * self.freqs[3:4, None, None, :]
+            freqs_cis.append(torch.polar(torch.ones_like(freqs_t), freqs_t+freqs_x+freqs_y+freqs_z))
+
+        return torch.cat(freqs_cis, dim=-1)
+
 
 class SwinTransformerBlock(nn.Module):
     """
