@@ -415,7 +415,6 @@ def main(args):
                 model_url = "https://github.com/AI4EPS/models/releases/download/PhaseNet-Plus-LCSN/model_99.pth"
         elif args.model == "phasenet_das":
             if args.location is None:
-                # model_url = "ai4eps/model-registry/PhaseNet-DAS:latest"
                 # model_url = "https://github.com/AI4EPS/models/releases/download/PhaseNet-DAS-v0/PhaseNet-DAS-v0.pth"
                 model_url = "https://github.com/AI4EPS/models/releases/download/PhaseNet-DAS-v1/PhaseNet-DAS-v1.pth"
             elif args.location == "forge":
