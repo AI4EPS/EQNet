@@ -196,6 +196,15 @@ class UNetHead(nn.Module):
         self.layers = nn.Conv2d(
             in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size, padding=padding
         )
+        # self.layers = nn.Sequential(
+        #     nn.Conv2d(
+        #         in_channels=in_channels, out_channels=in_channels, kernel_size=kernel_size, padding=padding, bias=False
+        #     ),
+        #     nn.BatchNorm2d(num_features=in_channels),
+        #     nn.ReLU(),
+        #     nn.Dropout(0.1),
+        #     nn.Conv2d(in_channels=in_channels, out_channels=out_channels, kernel_size=(1, 1), padding=(0, 0)),
+        # )
 
     def forward(self, features, targets=None, mask=None):
         x = features[self.feature_names]
@@ -209,18 +218,25 @@ class UNetHead(nn.Module):
             return x, 0.0
 
     def losses(self, inputs, targets, mask=None):
+        """
+        targets: (batch, channel, time, station) or (batch, 1, time, station)
+        """
         inputs = inputs.float()
 
-        if self.out_channels == 1:
-            if mask is None:
+        if mask is None:
+            if self.out_channels == 1:
                 loss = F.binary_cross_entropy_with_logits(inputs, targets)
             else:
-                mask_sum = mask.sum()
-                if mask_sum == 0.0:
-                    mask_sum = 1.0
-                loss = F.binary_cross_entropy_with_logits(inputs, targets, weight=mask, reduction="sum") / mask_sum
+                loss = torch.sum(-targets.float() * F.log_softmax(inputs, dim=1), dim=1).mean()
         else:
-            loss = torch.sum(-targets.float() * F.log_softmax(inputs, dim=1), dim=1).mean()
+            mask_sum = mask.sum()
+            if mask_sum == 0.0:
+                mask_sum = 1.0
+            if self.out_channels == 1:
+                loss = F.binary_cross_entropy_with_logits(inputs, targets, weight=mask, reduction="sum") / mask_sum
+            else:
+                loss = torch.sum(-targets.float() * F.log_softmax(inputs, dim=1) * mask) / mask_sum
+
         return loss
 
 
@@ -231,11 +247,13 @@ class EventHead(nn.Module):
         out_channels: int,
         kernel_size=(7, 1),
         padding=(3, 0),
+        scaling=1000.0,
         feature_names: str = "event",
     ) -> None:
         super().__init__()
         self.out_channels = out_channels
         self.feature_names = feature_names
+        self.scaling = scaling
         # self.layers = nn.Conv2d(
         #     in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size, padding=padding
         # )
@@ -248,7 +266,7 @@ class EventHead(nn.Module):
 
     def forward(self, features, targets=None, mask=None):
         x = features[self.feature_names]
-        x = self.layers(x)
+        x = self.layers(x) * self.scaling
 
         if self.training:
             return x, self.losses(x, targets, mask)
@@ -261,12 +279,14 @@ class EventHead(nn.Module):
         inputs = inputs.float()
 
         if mask is None:
-            loss = F.mse_loss(inputs, targets)
+            loss = F.mse_loss(inputs, targets) / self.scaling
         else:
             mask_sum = mask.sum()
             if mask_sum == 0.0:
                 mask_sum = 1.0
-            loss = F.l1_loss(inputs * mask, targets * mask, reduction="sum") / mask_sum  # trigger warning for mps
+            loss = (
+                F.l1_loss(inputs * mask, targets * mask, reduction="sum") / mask_sum / self.scaling
+            )  # trigger warning for mps
             # loss = torch.sum(torch.abs(inputs - targets) * mask, dim=(1, 2, 3)).mean() / mask_sum
 
         return loss
@@ -307,6 +327,7 @@ class PhaseNet(nn.Module):
                 self.event_timer = EventHead(32, 1, feature_names="event")
             if self.add_polarity:
                 self.polarity_picker = UNetHead(16, 3, feature_names="polarity")
+                # self.polarity_picker = UNetHead(16, 1, feature_names="polarity")
         else:
             self.phase_picker = DeepLabHead(128, 3, scale_factor=32)
             if self.add_event:

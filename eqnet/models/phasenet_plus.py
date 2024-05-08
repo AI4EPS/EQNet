@@ -7,8 +7,8 @@ def build_model(
     add_polarity=True,
     add_event=True,
     event_center_loss_weight=1.0,
-    event_time_loss_weight=0.001,
-    polarity_loss_weight=3.0,
+    event_time_loss_weight=1.0,
+    polarity_loss_weight=0.2,
     *args,
     **kwargs,
 ) -> PhaseNet:

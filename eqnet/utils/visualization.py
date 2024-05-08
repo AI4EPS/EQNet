@@ -141,9 +141,9 @@ def plot_das_train(meta, preds, epoch, figure_dir="figures", dt=0.01, dx=10, pre
 
         if "RANK" in os.environ:
             rank = int(os.environ["RANK"])
-            fig.savefig(f"{figure_dir}/{prefix}{epoch:02d}_{rank:02d}_{i:02d}.png", dpi=300, bbox_inches="tight")
+            fig.savefig(f"{figure_dir}/{epoch:02d}_{rank:02d}_{i:02d}_{prefix}.png", dpi=300, bbox_inches="tight")
         else:
-            fig.savefig(f"{figure_dir}/{prefix}{epoch:02d}_{i:02d}.png", dpi=300, bbox_inches="tight")
+            fig.savefig(f"{figure_dir}/{epoch:02d}_{i:02d}_{prefix}.png", dpi=300, bbox_inches="tight")
 
         plt.close(fig)
 
@@ -182,9 +182,9 @@ def plot_phasenet_train(meta, phase, epoch=0, figure_dir="figures", prefix=""):
 
         if "RANK" in os.environ:
             rank = int(os.environ["RANK"])
-            fig.savefig(f"{figure_dir}/{prefix}{epoch:02d}_{rank:02d}_{i:02d}.png", dpi=300)
+            fig.savefig(f"{figure_dir}/{epoch:02d}_{rank:02d}_{i:02d}_{prefix}.png", dpi=300)
         else:
-            fig.savefig(f"{figure_dir}/{prefix}{epoch:02d}_{i:02d}.png", dpi=300)
+            fig.savefig(f"{figure_dir}/{epoch:02d}_{i:02d}_{prefix}.png", dpi=300)
 
         if i >= 20:
             break
@@ -238,15 +238,20 @@ def plot_phasenet_plus_train(
         axes[k].grid("on")
 
         t = torch.arange(nt_polarity) * dt_polarity
+
+        # 1 channel for polarity
         # axes[k + 1].plot(t, polarity[i, 0, :, 0], "b")
         # axes[k + 1].plot(t, meta["polarity"][i, 0, :, 0], "--C0")
         # axes[k + 1].plot(t, meta["polarity_mask"][i, 0, :, 0], ":", color="gray")
+
+        # 3 channels for polarity
         axes[k + 1].plot(t, (1.0 + polarity[i, 1, :, 0]) / 2.0, "g", alpha=0.3, linewidth=0.5)
         axes[k + 1].plot(t, (1.0 - polarity[i, 2, :, 0]) / 2.0, "g", alpha=0.3, linewidth=0.5)
         axes[k + 1].plot(t, ((polarity[i, 1, :, 0] - polarity[i, 2, :, 0]) + 1.0) / 2.0, "b", alpha=1.0, linewidth=1.0)
         axes[k + 1].plot(t, (1.0 + meta["polarity"][i, 1, :, 0]) / 2.0, "--C0", alpha=0.5, linewidth=1.0)
         axes[k + 1].plot(t, (1.0 - meta["polarity"][i, 2, :, 0]) / 2.0, "--C0", alpha=0.5, linewidth=1.0)
         axes[k + 1].plot(t, meta["polarity_mask"][i, 0, :, 0], ":", color="gray")
+
         axes[k + 1].set_xlim(t[0], t[-1])
         axes[k + 1].set_ylim(-0.05, 1.05)
         axes[k + 1].set_xticklabels([])
@@ -266,9 +271,9 @@ def plot_phasenet_plus_train(
 
         if "RANK" in os.environ:
             rank = int(os.environ["RANK"])
-            fig.savefig(f"{figure_dir}/{prefix}{epoch:02d}_{rank:02d}_{i:02d}.png", dpi=300)
+            fig.savefig(f"{figure_dir}/{epoch:02d}_{rank:02d}_{i:02d}_{prefix}.png", dpi=300)
         else:
-            fig.savefig(f"{figure_dir}/{prefix}{epoch:02d}_{i:02d}.png", dpi=300)
+            fig.savefig(f"{figure_dir}/{epoch:02d}_{i:02d}_{prefix}.png", dpi=300)
 
         if i >= 20:
             break
@@ -426,7 +431,7 @@ def plot_phasenet_plus(
         axes[k].legend(loc="upper right")
 
         t = pd.date_range(pd.Timestamp(begin_time[i]), periods=nt_polarity, freq=pd.Timedelta(seconds=dt_polarity))
-        # axes[k + 1].plot(t, polarity[i, 0, :, 0], "b", label="polarity")
+        # axes[k + 1].plot(t, (polarity[i, 0, :, 0] - 0.5) * 2.0, "b", label="polarity")
         axes[k + 1].plot(t, polarity[i, 1, :, 0] - polarity[i, 2, :, 0], "b", label="Polarity")
         axes[k + 1].set_xlim(t[0], t[-1])
         axes[k + 1].set_ylim(-1.05, 1.05)

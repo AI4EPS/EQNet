@@ -58,9 +58,9 @@ def generate_phase_label(
     if len(label_width) == 1:
         label_width = label_width * len(phase_list)
     if mask_width is None:
-        mask_width = [int(x * 2.0) for x in label_width]
+        mask_width = [int(x * 1.5) for x in label_width]
     else:
-        # mask_width = [min(int(x * 2.0), mask_width) for x in label_width]
+        # mask_width = [min(int(x * 1.5), mask_width) for x in label_width]
         mask_width = [mask_width] * len(label_width)
 
     for i, (picks, w, m) in enumerate(zip(phase_list, label_width, mask_width)):
@@ -149,7 +149,7 @@ def stack_event(
             t0, t1 = meta2["duration"][i, j]
             duration_mask2[t0:t1, i] = 1
 
-    max_tries = 30
+    max_tries = 5
     # while random.random() < 0.5:
     for i in range(random.randint(1, 10)):
         tries = 0
@@ -271,8 +271,8 @@ def cut_data(meta, nt=1024 * 4, min_point=200):
 
 
 def flip_polarity(meta):
-    meta["waveform"] *= -1
-    # meta["polarity"] = 1 - meta["polarity"]
+    meta["waveform"] *= -1.0
+    # meta["polarity"] = 1.0 - meta["polarity"]
     # swap 1 and 2 axis: U and D
     meta["polarity"] = meta["polarity"][[0, 2, 1], :, :]  # [nch, nt, nsta]
     return meta
@@ -316,7 +316,7 @@ class SeismicTraceIterableDataset(IterableDataset):
         phases=["P", "S"],
         training=False,
         ## for training
-        phase_width=[50],
+        phase_width=[40],
         polarity_width=[20],
         event_width=[150],
         min_snr=3.0,
@@ -570,6 +570,7 @@ class SeismicTraceIterableDataset(IterableDataset):
         polarity, polarity_mask = generate_phase_label(
             [up, dn], nt=nt, label_width=self.polarity_width  # , mask_width=mask_width
         )
+        # polarity = ((polarity[1:2, :] - polarity[2:, :]) + 1.0) / 2.0
 
         ## P/S center time
         event_ids = set(attrs["event_id"])
@@ -699,7 +700,7 @@ class SeismicTraceIterableDataset(IterableDataset):
             # polarity_mask = meta["polarity_mask"][np.newaxis, :: self.polarity_feature_scale]
             # polarity = meta["polarity"][:, :: self.polarity_feature_scale, :]
             # polarity_mask = meta["polarity_mask"][:: self.polarity_feature_scale, :]
-            polarity = meta["polarity"]
+            polarity = meta["polarity"][:, :: self.polarity_feature_scale]
             polarity_mask = meta["polarity_mask"][np.newaxis, ::]
             event_time = meta["event_time"][np.newaxis, :: self.event_feature_scale]
             event_mask = meta["event_mask"][np.newaxis, :: self.event_feature_scale]
@@ -933,6 +934,7 @@ class SeismicTraceIterableDataset(IterableDataset):
                     highpass_filter=self.highpass_filter,
                     sampling_rate=self.sampling_rate,
                 )
+                fname = fname.split(",")[0]  ##E,N,Z
             elif (self.format == "h5") and (self.dataset == "seismic_trace"):
                 meta = self.read_hdf5(fname)
             elif (self.format == "h5") and (self.dataset == "das"):

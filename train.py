@@ -73,7 +73,7 @@ def evaluate(model, data_loader, scaler, args, epoch=0, total_samples=1):
             log["test/loss_polarity"] = metric_logger.loss_polarity.global_avg
         wandb.log(log)
 
-    plot_results(meta, model, output, args, epoch, "test_")
+    plot_results(meta, model, output, args, epoch, "test")
     del meta, output
 
     return metric_logger
@@ -158,7 +158,7 @@ def train_one_epoch(
             wandb.log(log)
 
     model.eval()
-    plot_results(meta, model, output, args, epoch, "train_")
+    plot_results(meta, model, output, args, epoch, "train")
     del meta, output, loss
 
 

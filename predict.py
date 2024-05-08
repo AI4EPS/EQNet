@@ -129,6 +129,7 @@ def pred_phasenet_plus(args, model, data_loader, pick_path, event_path, figure_p
             if "phase" in output:
                 phase_scores = torch.softmax(output["phase"], dim=1)  # [batch, nch, nt, nsta]
                 if "polarity" in output:
+                    # polarity_scores = torch.sigmoid(output["polarity"])
                     polarity_scores = torch.softmax(output["polarity"], dim=1)
                 topk_phase_scores, topk_phase_inds = detect_peaks(
                     phase_scores, vmin=args.min_prob, kernel=128, dt=dt.min().item()
@@ -402,14 +403,14 @@ def main(args):
 
     if args.resume:
         checkpoint = torch.load(args.resume, map_location="cpu")
-        model.load_state_dict(checkpoint["model"], strict=True)
-        print("Loaded checkpoint '{}' (epoch {})".format(args.resume, checkpoint["epoch"]))
+        # model.load_state_dict(checkpoint["model"], strict=True)
+        # print("Loaded checkpoint '{}' (epoch {})".format(args.resume, checkpoint["epoch"]))
     else:
         if args.model == "phasenet":
             raise ("No pretrained model for phasenet, please use phasenet_plus instead")
         elif args.model == "phasenet_plus":
             if args.location is None:
-                model_url = "https://github.com/AI4EPS/models/releases/download/PhaseNet-Plus-v1/PhaseNet-Plus-v1.pth"
+                model_url = "https://github.com/AI4EPS/models/releases/download/PhaseNet-Plus-v1/model_99.pth"
             elif args.location == "LCSN":
                 model_url = "https://github.com/AI4EPS/models/releases/download/PhaseNet-Plus-LCSN/model_99.pth"
         elif args.model == "phasenet_das":
@@ -425,6 +426,9 @@ def main(args):
                 raise ("Missing pretrained model for this location")
         else:
             raise
+        checkpoint = torch.hub.load_state_dict_from_url(
+            model_url, model_dir="./", progress=True, check_hash=True, map_location="cpu"
+        )
 
         ## load model from wandb
         # if utils.is_main_process():
@@ -439,11 +443,7 @@ def main(args):
         torch.distributed.barrier()
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
         model_without_ddp = model.module
-    ## load model from url
-    state_dict = torch.hub.load_state_dict_from_url(
-        model_url, model_dir="./", progress=True, check_hash=True, map_location="cpu"
-    )
-    model_without_ddp.load_state_dict(state_dict["model"], strict=True)
+    model_without_ddp.load_state_dict(checkpoint["model"], strict=True)
 
     if args.model == "phasenet":
         pred_phasenet(args, model, data_loader, pick_path, figure_path)
@@ -468,7 +468,7 @@ def get_args_parser(add_help=True):
 
     parser.add_argument("--device", default="cuda", type=str, help="device (Use cuda or cpu Default: cuda)")
     parser.add_argument(
-        "-j", "--workers", default=4, type=int, metavar="N", help="number of data loading workers (default: 16)"
+        "-j", "--workers", default=0, type=int, metavar="N", help="number of data loading workers (default: 16)"
     )
     parser.add_argument(
         "-b", "--batch_size", default=1, type=int, help="images per gpu, the total batch size is $NGPU x batch_size"
@@ -498,7 +498,7 @@ def get_args_parser(add_help=True):
     parser.add_argument("--add_polarity", action="store_true", help="If use polarity information")
     parser.add_argument("--add_event", action="store_true", help="If use event information")
     parser.add_argument("--sampling_rate", type=float, default=100.0, help="sampling rate; default 100.0 Hz")
-    parser.add_argument("--highpass_filter", type=float, default=0.0, help="highpass filter; default 0.0 is no filter")
+    parser.add_argument("--highpass_filter", type=float, default=None, help="highpass filter; default 0.0 is no filter")
     parser.add_argument("--response_path", default=None, type=str, help="response path")
     parser.add_argument("--response_xml", default=None, type=str, help="response xml file")
     parser.add_argument("--subdir_level", default=0, type=int, help="folder depth for data list")
