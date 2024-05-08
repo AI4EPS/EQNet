@@ -468,9 +468,9 @@ def plot_phasenet_plus(
 
         for ii, event in enumerate(event_detects[i]):
             ot = pd.to_datetime(event["event_time"])
-            axes[k + 2].plot([ot, ot], [-0.05, 1.05], "--C3", linewidth=2.0)
+            axes[k + 2].plot([ot, ot], [-0.05, 1.05], "--r", linewidth=2.0)
             at = pd.to_datetime(event["center_time"])
-            axes[k + 2].plot([at, at], [-0.05, 1.05], "--C0", linewidth=2.0)
+            axes[k + 2].plot([at, at], [-0.05, 1.05], "--b", linewidth=1.0)
             axes[k + 2].annotate(
                 "",
                 xy=(max(t[0], at), 0.3),
