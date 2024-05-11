@@ -342,16 +342,17 @@ class SeismicTraceIterableDataset(IterableDataset):
         self.rank = rank
         self.world_size = world_size
         if hdf5_file is not None:
-            tmp_hdf5_keys = f"/tmp/{hdf5_file.split('/')[-1]}.txt"
+            tmp_hdf5_keys = f"/tmp/{'_'.join(hdf5_file.split('/'))}.txt"
             if not os.path.exists(tmp_hdf5_keys) and (rank == 0):
                 with h5py.File(hdf5_file, "r", libver="latest", swmr=True) as fp:
                     self.data_list = []
                     for event in tqdm(list(fp.keys()), desc="Caching HDF5 keys"):
                         for station in list(fp[event].keys()):
-                            attrs = dict(fp[event][station].attrs)
-                            if ("component" in attrs) and ("snr" in attrs):
-                                if (attrs["component"] == "ENZ") and (max(attrs["snr"]) > 2.0):  ## filtering
-                                    self.data_list.append(event + "/" + station)
+                            if training:
+                                attrs = dict(fp[event][station].attrs)
+                                if ("component" in attrs) and ("snr" in attrs):
+                                    if (attrs["component"] == "ENZ") and (max(attrs["snr"]) > 2.0):  ## filtering
+                                        self.data_list.append(event + "/" + station)
                             else:
                                 self.data_list.append(event + "/" + station)
                     with open(tmp_hdf5_keys, "w") as f:
