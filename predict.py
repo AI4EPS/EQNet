@@ -407,7 +407,8 @@ def main(args):
         # print("Loaded checkpoint '{}' (epoch {})".format(args.resume, checkpoint["epoch"]))
     else:
         if args.model == "phasenet":
-            raise ("No pretrained model for phasenet, please use phasenet_plus instead")
+            if args.location is None:
+                model_url = "https://github.com/AI4EPS/models/releases/download/PhaseNet-v1/model_99.pth"
         elif args.model == "phasenet_plus":
             if args.location is None:
                 model_url = "https://github.com/AI4EPS/models/releases/download/PhaseNet-Plus-v1/model_99.pth"
@@ -426,7 +427,7 @@ def main(args):
         else:
             raise
         checkpoint = torch.hub.load_state_dict_from_url(
-            model_url, model_dir="./", progress=True, check_hash=True, map_location="cpu"
+            model_url, model_dir=f"./model_{args.model}", progress=True, check_hash=True, map_location="cpu"
         )
 
         ## load model from wandb
