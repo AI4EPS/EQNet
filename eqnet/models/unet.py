@@ -42,6 +42,48 @@ def moving_normalize(data, filter=1024, stride=128):
 
     return data
 
+def moving_normalize_channel(data, filter=1024, stride=128):
+    nb, nch, nt, nx = data.shape
+    
+    # if nt % stride == 0:
+    #     pad = max(filter - stride, 0)
+    # else:
+    #     pad = max(filter - (nt % stride), 0)
+    # pad1 = pad // 2
+    # pad2 = pad - pad1
+    padding = filter // 2
+
+    with torch.no_grad():
+        recorded = torch.any(data!=0, dim=2, keepdim=True)
+        recorded = torch.where(torch.all(recorded == 0, dim=1, keepdim=True).repeat(1, nch, 1, 1), 
+                               torch.ones_like(recorded), recorded)
+        
+        # data_ = F.pad(data, (0, 0, pad1, pad2), mode="reflect")
+        data_ = F.pad(data, (0, 0, padding, padding), mode="reflect")
+        mean = F.avg_pool2d(data_, kernel_size=(filter, 1), stride=(stride, 1))
+        mean = F.interpolate(mean, scale_factor=(stride, 1), mode="bilinear", align_corners=False)[:, :, :nt, :nx]
+        #print(f"mean:{mean.shape}")
+        mean = torch.sum(mean*recorded, dim=1, keepdim=True)/torch.sum(recorded, dim=1, keepdim=True)*recorded
+        #print(f"allclose:{torch.allclose(mean, mean1)}")
+        data -= mean
+        #assert not torch.any(torch.isnan(data)), f"NaN in data after mean subtraction: {data}"
+        
+        # data_ = F.pad(data, (0, 0, pad1, pad2), mode="reflect")
+        data_ = F.pad(data, (0, 0, padding, padding), mode="reflect")
+        # std = (F.lp_pool2d(data_, norm_type=2, kernel_size=(filter, 1), stride=(stride, 1)) / ((filter) ** 0.5))
+        std = F.avg_pool2d(torch.abs(data_), kernel_size=(filter, 1), stride=(stride, 1))
+        std = F.interpolate(std, scale_factor=(stride, 1), mode="bilinear", align_corners=False)[:, :, :nt, :nx]
+        std = torch.sum(std*recorded, dim=1, keepdim=True)/torch.sum(recorded, dim=1, keepdim=True)*recorded
+        #print(f"allclose:{torch.allclose(std, std1)}")
+        std[std <= 1e-8] = 1.0
+        #assert not torch.any(torch.isnan(std)), f"NaN in std after std calculation: {std}"
+        #print(f"std:{std.shape}")
+        data = data / std
+        #assert not torch.any(torch.isnan(data)), f"NaN in data after std division: {data}"
+
+        # data = log_transform(data)
+
+    return data
 
 def spectrogram(
     x,

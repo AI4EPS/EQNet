@@ -2,7 +2,7 @@ from typing import Optional, Dict
 import torch
 import torch.nn.functional as F
 from torch import nn, Tensor
-from .unet import moving_normalize
+from .unet import moving_normalize, moving_normalize_channel
 from .resnet1d import ResNet, BasicBlock, Bottleneck
 from .swin_transformer import SwinTransformer
 from .swin_transformer_1d import SwinTransformer1D
@@ -312,7 +312,7 @@ class EQNet(nn.Module):
                 block_name="RotarySwinBlock",
                 out_indices=out_indices,
                 use_station_location=use_station_location,
-                use_relative_position_bias=False,
+                use_relative_position_bias=True,
                 use_rope=True,
                 use_rope_mixed=False,
             )
@@ -330,7 +330,7 @@ class EQNet(nn.Module):
                 block_name="RotarySwinBlock",
                 out_indices=out_indices,
                 use_station_location=use_station_location,
-                use_relative_position_bias=False,
+                use_relative_position_bias=True,
                 use_rope=True,
                 use_rope_mixed=True,
             )
@@ -396,8 +396,9 @@ class EQNet(nn.Module):
     def forward(self, batched_inputs: Tensor) -> Dict[str, Tensor]:
         data = batched_inputs["data"].to(self.device)
         amplitude = batched_inputs["amplitude"].to(self.device)
-        assert data.shape[-1]==amplitude.shape[-1], f"data {data.shape}, amplitude {amplitude.shape}"
+        #assert data.shape[-1]==amplitude.shape[-1], f"data {data.shape}, amplitude {amplitude.shape}"
         data = moving_normalize(data, filter=self.moving_norm[0], stride=self.moving_norm[1])
+        #assert not torch.any(torch.isnan(data)), f"nan in data {data}"
 
         if self.training:
             phase_pick = batched_inputs["phase_pick"].to(self.device)
