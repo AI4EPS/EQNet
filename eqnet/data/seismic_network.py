@@ -149,11 +149,18 @@ def sample_event_for_stacking(meta, event_id, e2sta_dict, sta2e_dict, event_attr
         event_id = np.random.choice(sta2e_dict[sta_id])
         sta_ids_2 = e2sta_dict[event_id]
         
+        for _ in range(30):
+            if (event_id == event_id0 or len(sta_ids_2)==1) \
+                or (i<=max_tries//2 and abs(year0-event_attrs_dict[event_id]['year'])>1):
+                event_id = np.random.choice(sta2e_dict[sta_id])
+            else:
+                break
         if event_id == event_id0 or len(sta_ids_2)==1:
-            event_id = np.random.choice(sta2e_dict[sta_id])
-            if event_id == event_id0 or len(sta_ids_2)==1:
-                continue
+            continue
         
+        # prefer events in the close years
+        if i<=max_tries//2 and abs(year0-event_attrs_dict[event_id]['year'])>1:
+            continue
         # check if at least two station is shared
         if len(sta_ids0)>1 and len(set(sta_ids0).intersection(set(sta_ids_2)))<min_shared_sta:
             continue
@@ -164,9 +171,6 @@ def sample_event_for_stacking(meta, event_id, e2sta_dict, sta2e_dict, event_attr
         if not (snr_median0>snr_bar and event_attrs_dict[event_id]['snr_median']>snr_bar):
             if abs(snr_median0-event_attrs_dict[event_id]['snr_median'])>snr_bar:
                 continue
-        # prefer events in the close years
-        if i<=max_tries//2 and abs(year0-event_attrs_dict[event_id]['year'])>1:
-            continue
         
         results.append(event_id)
         if len(results)>=returns:
