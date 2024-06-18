@@ -4,8 +4,8 @@ from .phasenet import PhaseNet
 def build_model(
     backbone="unet",
     log_scale=True,
-    add_polarity=True,
-    add_event=True,
+    add_polarity=False,
+    add_event=False,
     spectrogram=True,
     event_center_loss_weight=1.0,
     event_time_loss_weight=1.0,
