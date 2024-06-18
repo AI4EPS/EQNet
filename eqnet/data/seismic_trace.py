@@ -537,6 +537,8 @@ class SeismicTraceIterableDataset(IterableDataset):
         for phase in self.phases:
             meta[phase] = attrs["phase_index"][attrs["phase_type"] == phase]
         picks = [meta[x] for x in self.phases]
+        if min([len(x) for x in picks]) == 0:
+            return None
 
         # waveform, picks = self.resample_time(waveform, picks, factor=1.0)
 

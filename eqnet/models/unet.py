@@ -43,61 +43,74 @@ def moving_normalize(data, filter=1024, stride=128):
     return data
 
 
-def spectrogram(
-    x,
-    n_fft=128,
-    hop_length=32,
-    window_fn=torch.hann_window,
-    log_transform=False,
-    magnitude=False,
-    phase=False,
-    grad=False,
-    discard_zero_freq=False,
-    select_freq=False,
-    **kwargs,
-):
-    """
-    x: tensor of shape [batch, time_steps]
-    n_fft: width of each FFT window (number of frequency bins is n_fft//2 + 1)
-    hop_length: interval between consecutive windows
-    window_fn: windowing function
-    log_transform: if true, apply the function f(x) = log(1 + x) pointwise to the output of the spectrogram
-    magnitude: if true, return the magnitude of the complex value in each time-frequency bin
-    grad: if true, allow gradients to propagate through the spectrogram transformation
-    discard_zero_freq: if true, remove the zero frequency row from the spectrogram
-    """
-    with torch.set_grad_enabled(grad):
-        window = window_fn(n_fft).to(x.device)
+class STFT(nn.Module):
+    def __init__(
+        self,
+        n_fft=128,
+        hop_length=4,
+        window_fn=torch.hann_window,
+        log_transform=True,
+        normalize=True,
+        magnitude=True,
+        phase=False,
+        grad=False,
+        discard_zero_freq=False,
+        select_freq=False,
+        **kwargs,
+    ):
+        super(STFT, self).__init__()
+        self.n_fft = n_fft
+        self.hop_length = hop_length
+        self.window_fn = window_fn
+        self.log_transform = log_transform
+        self.normalize = normalize
+        self.magnitude = magnitude
+        self.phase = phase
+        self.grad = grad
+        self.discard_zero_freq = discard_zero_freq
+        self.select_freq = select_freq
+        self.window = self.register_buffer("window", window_fn(n_fft))
+        self.window_fn = window_fn
+        if select_freq:
+            dt = kwargs["dt"]
+            fmax = 1.0 / 2.0 / dt
+            freq = torch.linspace(0, fmax, n_fft)
+            idx = torch.arange(n_fft)[(freq > kwargs["fmin"]) & (freq < kwargs["fmax"])]
+            self.freq_start = idx[0].item()
+            self.freq_length = idx.numel()
+
+    def forward(self, x):
+        # window = self.window_fn(self.n_fft).to(x.device)
         stft = torch.stft(
             x,
-            n_fft=n_fft,
-            window=window,
-            hop_length=hop_length,
+            n_fft=self.n_fft,
+            window=self.window,
+            hop_length=self.hop_length,
             center=True,
             return_complex=False,
         )
-        stft = stft[..., : x.shape[-1] // hop_length, :]
-        if discard_zero_freq:
+        stft = stft[..., : x.shape[-1] // self.hop_length, :]  # bt* ch, nf, nt, 2
+        if self.discard_zero_freq:
             stft = stft.narrow(dim=-3, start=1, length=stft.shape[-3] - 1)
-        if select_freq:
-            dt = kwargs["dt"]
-            fmax = 1 / 2 / dt
-            freq = torch.linspace(0, fmax, n_fft)
-            idx = torch.arange(n_fft)[(freq > kwargs["fmin"]) & (freq < kwargs["fmax"])]
-            stft = stft.narrow(dim=-3, start=idx[0].item(), length=idx.numel())
-        if magnitude:
-            stft_mag = torch.norm(stft, dim=-1)
-            if log_transform:
+        if self.select_freq:
+            stft = stft.narrow(dim=-3, start=self.freq_start, length=self.freq_length)
+        if self.magnitude:
+            stft_mag = torch.norm(stft, dim=-1, keepdim=True)  # bt* ch, nf, nt
+            if self.log_transform:
                 stft_mag = torch.log(1 + F.relu(stft_mag))
-            if phase:
+            if self.phase:
                 components = stft.split(1, dim=-1)
                 stft_phase = torch.atan2(components[1].squeeze(-1), components[0].squeeze(-1))
                 stft = torch.stack([stft_mag, stft_phase], dim=-1)
             else:
                 stft = stft_mag
         else:
-            if log_transform:
+            if self.log_transform:
                 stft = torch.log(1 + F.relu(stft)) - torch.log(1 + F.relu(-stft))
+        if self.normalize:
+            vmax = torch.max(torch.abs(stft), dim=-3, keepdim=True)[0]
+            vmax[vmax == 0.0] = 1.0
+            stft = stft / vmax
         return stft
 
 
@@ -116,6 +129,7 @@ class UNet(nn.Module):
         add_event=False,
         add_stft=False,
         log_scale=False,
+        spectrogram=False,
     ):
         super(UNet, self).__init__()
 
@@ -125,22 +139,58 @@ class UNet(nn.Module):
         self.add_stft = add_stft
         self.moving_norm = moving_norm
         self.log_scale = log_scale
+        self.spectrogram = spectrogram
+        if self.spectrogram:
+            self.n_fft = 64
+            self.stft = STFT(
+                n_fft=self.n_fft,
+                hop_length=stride[0],
+                window_fn=torch.hann_window,
+                log_transform=self.log_scale,
+                magnitude=True,
+                phase=False,
+                discard_zero_freq=True,
+            )
+            self.fc_freq = nn.Sequential(nn.Linear(self.n_fft // 2, 1), nn.ReLU())
+            kernel_size_tf = (kernel_size[0], kernel_size[0])
+            padding_tf = (padding[0], padding[0])
+
+            self.encoder12_tf = self.encoder_block(
+                in_channels,
+                features * 2,
+                kernel_size=kernel_size_tf,
+                stride=(1, 1),
+                padding=padding_tf,
+                name="enc2_tf",
+            )
+            self.encoder23_tf = self.encoder_block(
+                features * 2,
+                features * 4,
+                kernel_size=kernel_size_tf,
+                stride=stride,
+                padding=padding_tf,
+                name="enc3_tf",
+            )
+            self.encoder34_tf = self.encoder_block(
+                features * 4,
+                features * 8,
+                kernel_size=kernel_size_tf,
+                stride=stride,
+                padding=padding_tf,
+                name="enc4_tf",
+            )
+            self.encoder45_tf = self.encoder_block(
+                features * 8,
+                features * 16,
+                kernel_size=kernel_size_tf,
+                stride=stride,
+                padding=padding_tf,
+                name="enc5_tf",
+            )
 
         self.input_conv = self.encoder_block(
             in_channels, features, kernel_size=kernel_size, stride=init_stride, padding=padding, name="enc1"
         )
-
-        #         if use_stft:
-        #             self.fc1 = nn.Sequential(nn.Linear(kwargs["n_freq"], 1), activation)
-        #         self.encoder2 = self._block(
-        #             features,
-        #             features * 2,
-        #             kernel_size=encoder_kernel_size,
-        #             stride=encoder_stride,
-        #             padding=encoder_padding,
-        #             activation=activation,
-        #             name="enc2",
-        #         )
 
         self.encoder12 = self.encoder_block(
             features, features * 2, kernel_size=kernel_size, stride=stride, padding=padding, name="enc2"
@@ -155,13 +205,14 @@ class UNet(nn.Module):
             features * 8, features * 16, kernel_size=kernel_size, stride=stride, padding=padding, name="enc5"
         )
 
+        extra_features = 1 if self.spectrogram else 0
         self.upconv54 = nn.Sequential(
             OrderedDict(
                 [
                     (
                         "bottle_conv",
                         nn.ConvTranspose2d(
-                            in_channels=features * 16,
+                            in_channels=features * 16 * (1 + extra_features),
                             out_channels=features * 8,
                             kernel_size=kernel_size,
                             stride=stride,
@@ -177,20 +228,35 @@ class UNet(nn.Module):
         )
 
         self.decoder43 = self.decoder_block(
-            (features * 8) * 2, features * 4, kernel_size=kernel_size, stride=stride, padding=padding, name="dec4"
+            (features * 8) * (2 + extra_features),
+            features * 4,
+            kernel_size=kernel_size,
+            stride=stride,
+            padding=padding,
+            name="dec4",
         )
         self.decoder32 = self.decoder_block(
-            (features * 4) * 2, features * 2, kernel_size=kernel_size, stride=stride, padding=padding, name="dec3"
+            (features * 4) * (2 + extra_features),
+            features * 2,
+            kernel_size=kernel_size,
+            stride=stride,
+            padding=padding,
+            name="dec3",
         )
         self.decoder21 = self.decoder_block(
-            (features * 2) * 2, features * 1, kernel_size=kernel_size, stride=stride, padding=padding, name="dec2"
+            (features * 2) * (2 + extra_features),
+            features * 1,
+            kernel_size=kernel_size,
+            stride=stride,
+            padding=padding,
+            name="dec2",
         )
 
         self.output_conv = nn.Sequential(
             OrderedDict(
                 [
                     (
-                        "output_conv",
+                        "output_conv1",
                         nn.Conv2d(
                             in_channels=features * 2,
                             out_channels=features,
@@ -199,8 +265,20 @@ class UNet(nn.Module):
                             bias=False,
                         ),
                     ),
-                    ("output_norm", nn.BatchNorm2d(num_features=features)),
-                    ("output_relu", nn.ReLU(inplace=True)),
+                    ("output_norm1", nn.BatchNorm2d(num_features=features)),
+                    ("output_relu1", nn.ReLU(inplace=True)),
+                    (
+                        "output_conv2",
+                        nn.Conv2d(
+                            in_channels=features,
+                            out_channels=features,
+                            kernel_size=kernel_size,
+                            padding=padding,
+                            bias=False,
+                        ),
+                    ),
+                    ("output_norm2", nn.BatchNorm2d(num_features=features)),
+                    ("output_relu2", nn.ReLU(inplace=True)),
                 ]
             )
         )
@@ -255,18 +333,27 @@ class UNet(nn.Module):
 
     def forward(self, x):
         bt, ch, nt, nx = x.shape  # batch, channel, time, station
+        if self.spectrogram:
+            assert nx == 1
+            sgram = torch.squeeze(x, -1)  # bt, ch, nt, 1
+            sgram = self.stft(sgram.view(-1, nt))  # bt*ch*nx, nf, nt, 2
+            sgram = sgram.view(bt, ch, *sgram.shape[-3:])  # bt, ch, nf, nt, 2
+            # components = sgram.split(1, dim=-1)
+            # sgram = torch.cat([components[1].squeeze(-1), components[0].squeeze(-1)], dim=1)  # bt, ch*2, nf, nt
+            sgram = torch.squeeze(sgram, -1)  # bt, ch, nt, nf
+            sgram = sgram.transpose(-1, -2)  # bt, ch*2/ch, nt, nf
+            enc2_tf = self.encoder12_tf(sgram)
+            enc3_tf = self.encoder23_tf(enc2_tf)
+            enc4_tf = self.encoder34_tf(enc3_tf)
+            enc5_tf = self.encoder45_tf(enc4_tf)
+            enc2_tf = self.fc_freq(enc2_tf)
+            enc3_tf = self.fc_freq(enc3_tf)
+            enc4_tf = self.fc_freq(enc4_tf)
+            enc5_tf = self.fc_freq(enc5_tf)
+
         x = moving_normalize(x, filter=self.moving_norm[0], stride=self.moving_norm[1])
         if self.log_scale:
             x = log_transform(x)
-
-        #         if self.use_stft:
-        #             sgram = torch.squeeze(x, 3)  # bt, ch, nt, 1
-        #             sgram = self.spectrogram(sgram.view(-1, nt))  # bt*ch, nf, nt, 2
-        #             sgram = sgram.view(bt, ch, *sgram.shape[-3:])  # bt, ch, nf, nt, 2
-        #             components = sgram.split(1, dim=-1)
-        #             sgram = torch.cat([components[1].squeeze(-1), components[0].squeeze(-1)], dim=1)
-        #             sgram = sgram.transpose(-1, -2)
-        #             x = sgram
 
         if self.add_polarity:
             enc_polarity = self.encoder_polarity(x[:, -1:, :, :])  ## last channel is vertical component
@@ -276,6 +363,12 @@ class UNet(nn.Module):
         enc3 = self.encoder23(enc2)
         enc4 = self.encoder34(enc3)
         enc5 = self.encoder45(enc4)
+
+        if self.spectrogram:
+            enc2 = torch.cat((enc2, enc2_tf), dim=1)
+            enc3 = torch.cat((enc3, enc3_tf), dim=1)
+            enc4 = torch.cat((enc4, enc4_tf), dim=1)
+            enc5 = torch.cat((enc5, enc5_tf), dim=1)
 
         dec4 = self.upconv54(enc5)
 
@@ -312,6 +405,8 @@ class UNet(nn.Module):
         # out_phase = out_phase[:, :, :nt, :nx]
 
         result = {"phase": out_phase, "polarity": out_polarity, "event": out_event}
+        if self.spectrogram and self.training:
+            result["spectrogram"] = sgram
 
         return result
 
@@ -368,18 +463,33 @@ class UNet(nn.Module):
                     (name + "_relu1", nn.ReLU(inplace=True)),
                     (
                         name + "_conv2",
-                        nn.ConvTranspose2d(
+                        nn.Conv2d(
                             in_channels=in_channels // 2,
+                            # out_channels=in_channels // 2,
                             out_channels=out_channels,
                             kernel_size=kernel_size,
-                            stride=stride,
                             padding=padding,
-                            output_padding=padding,
                             bias=False,
                         ),
                     ),
+                    # (name + "_norm2", nn.BatchNorm2d(num_features=in_channels // 2)),
                     (name + "_norm2", nn.BatchNorm2d(num_features=out_channels)),
                     (name + "_relu2", nn.ReLU(inplace=True)),
+                    # (
+                    #     name + "_conv3",
+                    #     nn.ConvTranspose2d(
+                    #         in_channels=in_channels // 2,
+                    #         out_channels=out_channels,
+                    #         kernel_size=kernel_size,
+                    #         stride=stride,
+                    #         padding=padding,
+                    #         output_padding=padding,
+                    #         bias=False,
+                    #     ),
+                    # ),
+                    # (name + "_norm3", nn.BatchNorm2d(num_features=out_channels)),
+                    # (name + "_relu3", nn.ReLU(inplace=True)),
+                    (name + "_upsample", nn.Upsample(scale_factor=stride, mode="bilinear", align_corners=False)),
                 ]
             )
         )

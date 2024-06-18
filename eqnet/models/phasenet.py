@@ -196,6 +196,7 @@ class UNetHead(nn.Module):
         self.layers = nn.Conv2d(
             in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size, padding=padding
         )
+        # self.layers = nn.Conv2d(in_channels=in_channels, out_channels=out_channels, kernel_size=(1, 1), padding=(0, 0))
         # self.layers = nn.Sequential(
         #     nn.Conv2d(
         #         in_channels=in_channels, out_channels=in_channels, kernel_size=kernel_size, padding=padding, bias=False
@@ -297,6 +298,7 @@ class PhaseNet(nn.Module):
         self,
         backbone="unet",
         log_scale=True,
+        spectrogram=False,
         add_polarity=False,
         add_event=False,
         event_center_loss_weight=1.0,
@@ -305,6 +307,7 @@ class PhaseNet(nn.Module):
     ) -> None:
         super().__init__()
         self.backbone_name = backbone
+        self.spectrogram = spectrogram
         self.add_event = add_event
         self.add_polarity = add_polarity
         self.event_center_loss_weight = event_center_loss_weight
@@ -316,7 +319,12 @@ class PhaseNet(nn.Module):
         elif backbone == "resnet50":
             self.backbone = ResNet(Bottleneck, [3, 4, 6, 3])  # ResNet50
         elif backbone == "unet":
-            self.backbone = UNet(log_scale=log_scale, add_polarity=add_polarity, add_event=add_event)
+            self.backbone = UNet(
+                log_scale=log_scale,
+                spectrogram=spectrogram,
+                add_polarity=add_polarity,
+                add_event=add_event,
+            )
         else:
             raise ValueError("backbone only supports resnet18, resnet50, or unet")
 
@@ -376,6 +384,8 @@ class PhaseNet(nn.Module):
             output["polarity"] = output_polarity
             output["loss_polarity"] = loss_polarity * self.polarity_loss_weight
             output["loss"] += loss_polarity * self.polarity_loss_weight
+        if self.spectrogram and self.training:
+            output["spectrogram"] = features["spectrogram"]
 
         return output
 

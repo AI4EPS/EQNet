@@ -2,6 +2,10 @@
 *.pyc
 *.pth
 *.h5
+*.csv
+*.txt
+*.mseed
+
 
 output*/
 Trash/
@@ -48,3 +52,4 @@ Ridgecrest_DAS
 */picks_phasenet_das_raw/
 **/paper_figures/
 wandb
+tests/phasenet_plus/figures_*

@@ -92,7 +92,7 @@ def train_one_epoch(
 ):
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter("lr", utils.SmoothedValue(window_size=1, fmt="{value}"))
-    if args.model == "phasenet_plus":
+    if args.model in ["phasenet_plus", "phasenet_tf"]:
         metric_logger.add_meter("loss_phase", utils.SmoothedValue(window_size=1, fmt="{value}"))
         metric_logger.add_meter("loss_event_center", utils.SmoothedValue(window_size=1, fmt="{value}"))
         metric_logger.add_meter("loss_event_time", utils.SmoothedValue(window_size=1, fmt="{value}"))
@@ -138,7 +138,7 @@ def train_one_epoch(
             break
 
         metric_logger.update(loss=loss.item(), lr=optimizer.param_groups[0]["lr"])
-        if args.model == "phasenet_plus":
+        if args.model in ["phasenet_plus", "phasenet_tf"]:
             metric_logger.update(loss_phase=output["loss_phase"].item())
             metric_logger.update(loss_event_center=output["loss_event_center"].item())
             metric_logger.update(loss_event_time=output["loss_event_time"].item())
@@ -157,7 +157,6 @@ def train_one_epoch(
                 log["train/loss_polarity"] = output["loss_polarity"].item()
             wandb.log(log)
 
-    model.eval()
     plot_results(meta, model, output, args, epoch, "train")
     del meta, output, loss
 
@@ -169,6 +168,13 @@ def plot_results(meta, model, output, args, epoch, prefix=""):
             meta["data"] = moving_normalize(meta["data"])
             print("Plotting...")
             eqnet.utils.plot_phasenet_train(meta, phase, epoch=epoch, figure_dir=args.figure_dir, prefix=prefix)
+            del phase
+
+        if args.model == "phasenet_tf":
+            phase = torch.softmax(output["phase"], dim=1).cpu().float()
+            meta["spectrogram"] = output["spectrogram"].cpu().float()
+            print("Plotting...")
+            eqnet.utils.plot_phasenet_tf_train(meta, phase, epoch=epoch, figure_dir=args.figure_dir, prefix=prefix)
             del phase
 
         elif args.model == "phasenet_plus":
@@ -247,7 +253,7 @@ def main(args):
     else:
         torch.backends.cudnn.benchmark = True
 
-    if args.model in ["phasenet", "phasenet_plus"]:
+    if args.model in ["phasenet", "phasenet_plus", "phasenet_tf"]:
         dataset = SeismicTraceIterableDataset(
             data_path=args.data_path,
             data_list=args.data_list,
@@ -359,7 +365,7 @@ def main(args):
             dataset_test = dataset
             test_sampler = None
     else:
-        raise ("Unknown model")
+        raise f"Unknown model {args.model}"
 
     if args.huggingface_dataset:
         data_loader = torch.utils.data.DataLoader(

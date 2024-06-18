@@ -190,6 +190,45 @@ def plot_phasenet_train(meta, phase, epoch=0, figure_dir="figures", prefix=""):
             break
 
 
+def plot_phasenet_tf_train(meta, phase, epoch=0, figure_dir="figures", prefix=""):
+    for i in range(meta["data"].shape[0]):
+        plt.close("all")
+        chn_name = ["E", "N", "Z"]
+        fig, axes = plt.subplots(7, 1, figsize=(10, 10))
+
+        shift = 0
+        for j in range(3):
+            axes[shift + j].plot(meta["data"][i, j, :, 0], linewidth=0.5, color="k", label=f"{chn_name[j]}")
+            axes[shift + j].set_xticklabels([])
+            axes[shift + j].grid("on")
+            axes[shift + j].autoscale(enable=True, axis="x", tight=True)
+
+        shift = 3
+        for j in range(3):
+            axes[shift + j].pcolormesh(meta["spectrogram"][i, j, :, :].T, cmap="jet")
+            axes[shift + j].set_xticklabels([])
+
+        shift = 6
+        axes[shift].plot(phase[i, 1, :, 0], "b")
+        axes[shift].plot(phase[i, 2, :, 0], "r")
+        axes[shift].plot(meta["phase_pick"][i, 1, :, 0], "--C0")
+        axes[shift].plot(meta["phase_pick"][i, 2, :, 0], "--C3")
+        axes[shift].plot(meta["phase_mask"][i, 0, :, 0], ":", color="gray")
+        axes[shift].set_ylim(-0.05, 1.05)
+        axes[shift].autoscale(enable=True, axis="x", tight=True)
+        axes[shift].set_xticklabels([])
+        axes[shift].grid("on")
+
+        if "RANK" in os.environ:
+            rank = int(os.environ["RANK"])
+            fig.savefig(f"{figure_dir}/{epoch:02d}_{rank:02d}_{i:02d}_{prefix}.png", dpi=300)
+        else:
+            fig.savefig(f"{figure_dir}/{epoch:02d}_{i:02d}_{prefix}.png", dpi=300)
+
+        if i >= 20:
+            break
+
+
 def plot_phasenet_plus_train(
     meta, phase, polarity=None, event_center=None, event_time=None, epoch=0, figure_dir="figures", prefix=""
 ):
