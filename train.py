@@ -35,10 +35,11 @@ logger = logging.getLogger("EQNet")
 def evaluate(model, data_loader, scaler, args, epoch=0, total_samples=1):
     model.eval()
     metric_logger = utils.MetricLogger(delimiter="  ")
-    if args.model == "phasenet_plus":
+    if args.model in ["phasenet_plus", "phasenet_tf"]:
         metric_logger.add_meter("loss_phase", utils.SmoothedValue(window_size=1, fmt="{value}"))
         metric_logger.add_meter("loss_event_center", utils.SmoothedValue(window_size=1, fmt="{value}"))
         metric_logger.add_meter("loss_event_time", utils.SmoothedValue(window_size=1, fmt="{value}"))
+    if args.model in ["phasenet_plus"]:
         metric_logger.add_meter("loss_polarity", utils.SmoothedValue(window_size=1, fmt="{value}"))
     header = f"Test: "
 
@@ -49,10 +50,11 @@ def evaluate(model, data_loader, scaler, args, epoch=0, total_samples=1):
             batch_size = meta["data"].shape[0]
 
             metric_logger.meters["loss"].update(output["loss"].item(), n=batch_size)
-            if args.model == "phasenet_plus":
+            if args.model in ["phasenet_plus", "phasenet_tf"]:
                 metric_logger.meters["loss_phase"].update(output["loss_phase"].item(), n=batch_size)
                 metric_logger.meters["loss_event_center"].update(output["loss_event_center"].item(), n=batch_size)
                 metric_logger.meters["loss_event_time"].update(output["loss_event_time"].item(), n=batch_size)
+            if args.model in ["phasenet_plus"]:
                 metric_logger.meters["loss_polarity"].update(output["loss_polarity"].item(), n=batch_size)
 
             processed_samples += batch_size
@@ -66,10 +68,11 @@ def evaluate(model, data_loader, scaler, args, epoch=0, total_samples=1):
             "test/test_loss": metric_logger.loss.global_avg,
             "test/epoch": epoch,
         }
-        if args.model == "phasenet_plus":
+        if args.model in ["phasenet_plus", "phasenet_tf"]:
             log["test/loss_phase"] = metric_logger.loss_phase.global_avg
             log["test/loss_event_center"] = metric_logger.loss_event_center.global_avg
             log["test/loss_event_time"] = metric_logger.loss_event_time.global_avg
+        if args.model in ["phasenet_plus"]:
             log["test/loss_polarity"] = metric_logger.loss_polarity.global_avg
         wandb.log(log)
 
@@ -96,6 +99,7 @@ def train_one_epoch(
         metric_logger.add_meter("loss_phase", utils.SmoothedValue(window_size=1, fmt="{value}"))
         metric_logger.add_meter("loss_event_center", utils.SmoothedValue(window_size=1, fmt="{value}"))
         metric_logger.add_meter("loss_event_time", utils.SmoothedValue(window_size=1, fmt="{value}"))
+    if args.model in ["phasenet_plus"]:
         metric_logger.add_meter("loss_polarity", utils.SmoothedValue(window_size=1, fmt="{value}"))
     header = f"Epoch: [{epoch}]"
 
@@ -142,6 +146,7 @@ def train_one_epoch(
             metric_logger.update(loss_phase=output["loss_phase"].item())
             metric_logger.update(loss_event_center=output["loss_event_center"].item())
             metric_logger.update(loss_event_time=output["loss_event_time"].item())
+        if args.model in ["phasenet_plus"]:
             metric_logger.update(loss_polarity=output["loss_polarity"].item())
         if args.wandb and utils.is_main_process():
             log = {
@@ -150,10 +155,11 @@ def train_one_epoch(
                 "train/epoch": epoch,
                 "train/batch": i,
             }
-            if args.model == "phasenet_plus":
+            if args.model in ["phasenet_plus", "phasenet_tf"]:
                 log["train/loss_phase"] = output["loss_phase"].item()
                 log["train/loss_event_center"] = output["loss_event_center"].item()
                 log["train/loss_event_time"] = output["loss_event_time"].item()
+            if args.model in ["phasenet_plus"]:
                 log["train/loss_polarity"] = output["loss_polarity"].item()
             wandb.log(log)
 
@@ -410,6 +416,16 @@ def main(args):
     logger.info("Model:\n{}".format(model))
 
     print("Model:\n{}".format(model))
+
+    total_params = 0
+    print("Trainable parameters in the model:")
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            num_params = param.numel()
+            total_params += num_params
+            print(f"{name}: {param.shape}, {num_params}")
+
+    print(f"Total number of trainable parameters: {total_params}")
 
     model.to(device)
     if args.compile:

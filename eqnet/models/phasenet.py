@@ -258,6 +258,12 @@ class EventHead(nn.Module):
         # self.layers = nn.Conv2d(
         #     in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size, padding=padding
         # )
+        # self.layers = nn.Sequential(
+        #     nn.Conv2d(in_channels=in_channels, out_channels=in_channels, kernel_size=(7, 1), padding=(3, 0)),
+        #     nn.LeakyReLU(),
+        #     nn.Conv2d(in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size, padding=padding),
+        #     nn.LeakyReLU(),
+        # )
         self.layers = nn.Sequential(
             nn.Conv2d(in_channels=in_channels, out_channels=in_channels, kernel_size=kernel_size, padding=padding),
             nn.LeakyReLU(),
@@ -297,6 +303,7 @@ class PhaseNet(nn.Module):
     def __init__(
         self,
         backbone="unet",
+        init_features=16,
         log_scale=True,
         spectrogram=False,
         add_polarity=False,
@@ -320,6 +327,7 @@ class PhaseNet(nn.Module):
             self.backbone = ResNet(Bottleneck, [3, 4, 6, 3])  # ResNet50
         elif backbone == "unet":
             self.backbone = UNet(
+                init_features=init_features,
                 log_scale=log_scale,
                 spectrogram=spectrogram,
                 add_polarity=add_polarity,
@@ -329,12 +337,22 @@ class PhaseNet(nn.Module):
             raise ValueError("backbone only supports resnet18, resnet50, or unet")
 
         if backbone == "unet":
-            self.phase_picker = UNetHead(16, 3, feature_names="phase")
+            kernel_size = (7, 1)
+            padding = (3, 0)
+            self.phase_picker = UNetHead(
+                init_features, 3, kernel_size=kernel_size, padding=padding, feature_names="phase"
+            )
             if self.add_event:
-                self.event_detector = UNetHead(32, 1, feature_names="event")
-                self.event_timer = EventHead(32, 1, feature_names="event")
+                self.event_detector = UNetHead(
+                    init_features, 1, kernel_size=kernel_size, padding=padding, feature_names="event"
+                )
+                self.event_timer = EventHead(
+                    init_features, 1, kernel_size=kernel_size, padding=padding, feature_names="event"
+                )
             if self.add_polarity:
-                self.polarity_picker = UNetHead(16, 3, feature_names="polarity")
+                self.polarity_picker = UNetHead(
+                    init_features, 3, kernel_size=kernel_size, padding=padding, feature_names="polarity"
+                )
                 # self.polarity_picker = UNetHead(16, 1, feature_names="polarity")
         else:
             self.phase_picker = DeepLabHead(128, 3, scale_factor=32)
@@ -384,7 +402,7 @@ class PhaseNet(nn.Module):
             output["polarity"] = output_polarity
             output["loss_polarity"] = loss_polarity * self.polarity_loss_weight
             output["loss"] += loss_polarity * self.polarity_loss_weight
-        if self.spectrogram and self.training:
+        if self.spectrogram:
             output["spectrogram"] = features["spectrogram"]
 
         return output
@@ -392,8 +410,13 @@ class PhaseNet(nn.Module):
 
 def build_model(
     backbone="unet",
-    log_scale=True,
+    init_features=16,
+    log_scale=False,
     *args,
     **kwargs,
 ) -> PhaseNet:
-    return PhaseNet(backbone=backbone, log_scale=log_scale)
+    return PhaseNet(
+        backbone=backbone,
+        init_features=init_features,
+        log_scale=log_scale,
+    )

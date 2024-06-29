@@ -26,6 +26,15 @@ from tqdm import tqdm
 default_cfgs = {}
 
 
+def mapping_phase_type(phase):
+    if phase in ["P", "Pn", "Pg", "Pb"]:
+        return "P"
+    elif phase in ["S", "Sn", "Sg", "Sb"]:
+        return "S"
+    else:
+        return phase
+
+
 def normalize(data):
     """
     data: [3, nt, nsta] or [3, nt]
@@ -48,7 +57,7 @@ def padding(data, min_nt=1024, min_nx=1):
 
 def generate_phase_label(
     phase_list,  # [[P1, P2, ...], [S1, S2, ...]]
-    label_width=[100],
+    label_width=[60],
     nt=8192,
     mask_width=None,
 ):
@@ -67,7 +76,8 @@ def generate_phase_label(
         for phase_time in picks:
             t = np.arange(nt) - phase_time
             gaussian = np.exp(-(t**2) / (2 * (w / 6) ** 2))
-            gaussian[gaussian < 0.05] = 0.0
+            # gaussian[gaussian < 0.05] = 0.0
+            gaussian[gaussian < 0.1] = 0.0
             target[i + 1, :] += gaussian
             mask[int(phase_time) - m : int(phase_time) + m] = 1.0
 
@@ -79,7 +89,7 @@ def generate_phase_label(
 def generate_event_label(
     reference_center,
     event_time,
-    label_width=[100],
+    label_width=[150],
     nt=8192,
     mask_width=None,
 ):
@@ -316,7 +326,7 @@ class SeismicTraceIterableDataset(IterableDataset):
         phases=["P", "S"],
         training=False,
         ## for training
-        phase_width=[40],
+        phase_width=[60],
         polarity_width=[20],
         event_width=[150],
         min_snr=3.0,
@@ -351,8 +361,12 @@ class SeismicTraceIterableDataset(IterableDataset):
                             if training:
                                 attrs = dict(fp[event][station].attrs)
                                 if ("component" in attrs) and ("snr" in attrs):
-                                    if (attrs["component"] == "ENZ") and (max(attrs["snr"]) > 2.0):  ## filtering
-                                        self.data_list.append(event + "/" + station)
+                                    # if (
+                                    #     (attrs["component"] == "ENZ")
+                                    #     and (max(attrs["snr"]) > 2.0)
+                                    #     and (len(attrs["phase_type"]) == 2)
+                                    # ):  ## filtering
+                                    self.data_list.append(event + "/" + station)
                             else:
                                 self.data_list.append(event + "/" + station)
                     with open(tmp_hdf5_keys, "w") as f:
@@ -534,8 +548,13 @@ class SeismicTraceIterableDataset(IterableDataset):
         ## phase picks
         attrs = hdf5_fp[trace_id].attrs
         meta = {}
+
         for phase in self.phases:
-            meta[phase] = attrs["phase_index"][attrs["phase_type"] == phase]
+            phase_type = np.array([mapping_phase_type(x) for x in attrs["phase_type"]])
+            meta[phase] = attrs["phase_index"][phase_type == phase]
+            # meta[phase] = attrs["phase_index"][attrs["phase_type"] == phase]
+            # if not np.all(np.isin(phase_type, ["P", "S"])):
+            #     print(f"Unknown phase type: {phase_type}")
         picks = [meta[x] for x in self.phases]
         if min([len(x) for x in picks]) == 0:
             return None

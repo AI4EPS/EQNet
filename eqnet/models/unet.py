@@ -34,6 +34,7 @@ def moving_normalize(data, filter=1024, stride=128):
         data_ = F.pad(data, (0, 0, padding, padding), mode="reflect")
         # std = (F.lp_pool2d(data_, norm_type=2, kernel_size=(filter, 1), stride=(stride, 1)) / ((filter) ** 0.5))
         std = F.avg_pool2d(torch.abs(data_), kernel_size=(filter, 1), stride=(stride, 1))
+        std = torch.mean(std, dim=(1,), keepdim=True)
         std = F.interpolate(std, scale_factor=(stride, 1), mode="bilinear", align_corners=False)[:, :, :nt, :nx]
         std[std == 0.0] = 1.0
         data = data / std
@@ -152,8 +153,8 @@ class UNet(nn.Module):
                 discard_zero_freq=True,
             )
             self.fc_freq = nn.Sequential(nn.Linear(self.n_fft // 2, 1), nn.ReLU())
-            kernel_size_tf = (kernel_size[0], kernel_size[0])
-            padding_tf = (padding[0], padding[0])
+            kernel_size_tf = (kernel_size[0], 3)  # 3 for frequency
+            padding_tf = (padding[0], 1)
 
             self.encoder12_tf = self.encoder_block(
                 in_channels,
@@ -187,11 +188,9 @@ class UNet(nn.Module):
                 padding=padding_tf,
                 name="enc5_tf",
             )
-
         self.input_conv = self.encoder_block(
             in_channels, features, kernel_size=kernel_size, stride=init_stride, padding=padding, name="enc1"
         )
-
         self.encoder12 = self.encoder_block(
             features, features * 2, kernel_size=kernel_size, stride=stride, padding=padding, name="enc2"
         )
@@ -251,7 +250,6 @@ class UNet(nn.Module):
             padding=padding,
             name="dec2",
         )
-
         self.output_conv = nn.Sequential(
             OrderedDict(
                 [
@@ -291,7 +289,7 @@ class UNet(nn.Module):
                 OrderedDict(
                     [
                         (
-                            "output_polarity_conv",
+                            "output_polarity_conv1",
                             nn.Conv2d(
                                 in_channels=features * 2,
                                 out_channels=features,
@@ -300,8 +298,20 @@ class UNet(nn.Module):
                                 bias=False,
                             ),
                         ),
-                        ("output_polarity_norm", nn.BatchNorm2d(num_features=features)),
-                        ("output_polarity_relu", nn.ReLU(inplace=True)),
+                        ("output_polarity_norm1", nn.BatchNorm2d(num_features=features)),
+                        ("output_polarity_relu1", nn.ReLU(inplace=True)),
+                        # (
+                        #     "output_polarity_conv2",
+                        #     nn.Conv2d(
+                        #         in_channels=features,
+                        #         out_channels=features,
+                        #         kernel_size=kernel_size,
+                        #         padding=padding,
+                        #         bias=False,
+                        #     ),
+                        # ),
+                        # ("output_polarity_norm2", nn.BatchNorm2d(num_features=features)),
+                        # ("output_polarity_relu2", nn.ReLU(inplace=True)),
                     ]
                 )
             )
@@ -311,17 +321,29 @@ class UNet(nn.Module):
                 OrderedDict(
                     [
                         (
-                            "output_event_conv",
+                            "output_event_conv1",
                             nn.Conv2d(
                                 in_channels=features * 4,
-                                out_channels=features * 2,
+                                out_channels=features,
                                 kernel_size=kernel_size,
                                 padding=padding,
                                 bias=False,
                             ),
                         ),
-                        ("output_event_norm", nn.BatchNorm2d(num_features=features * 2)),
-                        ("output_event_relu", nn.ReLU(inplace=True)),
+                        ("output_event_norm1", nn.BatchNorm2d(num_features=features)),
+                        ("output_event_relu1", nn.ReLU(inplace=True)),
+                        # (
+                        #     "output_event_conv2",
+                        #     nn.Conv2d(
+                        #         in_channels=features * 2,
+                        #         out_channels=features,
+                        #         kernel_size=kernel_size,
+                        #         padding=padding,
+                        #         bias=False,
+                        #     ),
+                        # ),
+                        # ("output_event_norm2", nn.BatchNorm2d(num_features=features)),
+                        # ("output_event_relu2", nn.ReLU(inplace=True)),
                     ]
                 )
             )
@@ -356,7 +378,9 @@ class UNet(nn.Module):
             x = log_transform(x)
 
         if self.add_polarity:
-            enc_polarity = self.encoder_polarity(x[:, -1:, :, :])  ## last channel is vertical component
+            z = x[:, -1:, :, :]  ## last channel is vertical component
+            z = log_transform(z)
+            enc_polarity = self.encoder_polarity(z)
 
         enc1 = self.input_conv(x)
         enc2 = self.encoder12(enc1)
@@ -405,7 +429,7 @@ class UNet(nn.Module):
         # out_phase = out_phase[:, :, :nt, :nx]
 
         result = {"phase": out_phase, "polarity": out_polarity, "event": out_event}
-        if self.spectrogram and self.training:
+        if self.spectrogram:
             result["spectrogram"] = sgram
 
         return result
@@ -465,18 +489,17 @@ class UNet(nn.Module):
                         name + "_conv2",
                         nn.Conv2d(
                             in_channels=in_channels // 2,
-                            # out_channels=in_channels // 2,
                             out_channels=out_channels,
                             kernel_size=kernel_size,
                             padding=padding,
                             bias=False,
                         ),
                     ),
-                    # (name + "_norm2", nn.BatchNorm2d(num_features=in_channels // 2)),
                     (name + "_norm2", nn.BatchNorm2d(num_features=out_channels)),
                     (name + "_relu2", nn.ReLU(inplace=True)),
+                    (name + "_upsample", nn.Upsample(scale_factor=stride, mode="bilinear", align_corners=False)),
                     # (
-                    #     name + "_conv3",
+                    #     name + "_conv2",
                     #     nn.ConvTranspose2d(
                     #         in_channels=in_channels // 2,
                     #         out_channels=out_channels,
@@ -487,9 +510,8 @@ class UNet(nn.Module):
                     #         bias=False,
                     #     ),
                     # ),
-                    # (name + "_norm3", nn.BatchNorm2d(num_features=out_channels)),
-                    # (name + "_relu3", nn.ReLU(inplace=True)),
-                    (name + "_upsample", nn.Upsample(scale_factor=stride, mode="bilinear", align_corners=False)),
+                    # (name + "_norm2", nn.BatchNorm2d(num_features=out_channels)),
+                    # (name + "_relu2", nn.ReLU(inplace=True)),
                 ]
             )
         )
