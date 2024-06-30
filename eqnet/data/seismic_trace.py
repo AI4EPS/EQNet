@@ -677,68 +677,69 @@ class SeismicTraceIterableDataset(IterableDataset):
     def sample_train(self, data_list):
         hdf5_fp = h5py.File(self.hdf5_file, "r", libver="latest", swmr=True)
         while True:
-            trace_id = np.random.choice(data_list)
-            try:
-                meta = self.read_training_h5(trace_id, hdf5_fp)
-            except Exception as e:
-                print(f"Error reading {trace_id}:\n{e}")
-                continue
-
-            if meta is None:
-                continue
-
-            # if self.stack_event and (random.random() < 0.6):
-            if self.stack_event:
+            random.shuffle(data_list)
+            for trace_id in data_list:
                 try:
-                    trace_id2 = np.random.choice(self.data_list)
-                    meta2 = self.read_training_h5(trace_id2, hdf5_fp)
-                    if meta2 is not None:
-                        meta = stack_event(meta, meta2)
+                    meta = self.read_training_h5(trace_id, hdf5_fp)
                 except Exception as e:
-                    print(f"Error reading {trace_id2}:\n{e}")
+                    print(f"Error reading {trace_id}:\n{e}")
+                    continue
 
-            meta = cut_data(meta, min_point=self.phase_width[0] * 2)
-            if self.flip_polarity and (random.random() < 0.5):
-                meta = flip_polarity(meta)
+                if meta is None:
+                    continue
 
-            if np.std(meta["waveform"], axis=(1, 2))[-1] == 0:
-                ## polarity is picked by the last channel
-                # print(f"Error reading {trace_id}: zeros in Z channel {np.std(meta['waveform'], axis=(1,2))}")
-                meta["polarity_mask"] = np.zeros_like(meta["polarity_mask"])
+                # if self.stack_event and (random.random() < 0.6):
+                if self.stack_event:
+                    try:
+                        trace_id2 = np.random.choice(self.data_list)
+                        meta2 = self.read_training_h5(trace_id2, hdf5_fp)
+                        if meta2 is not None:
+                            meta = stack_event(meta, meta2)
+                    except Exception as e:
+                        print(f"Error reading {trace_id2}:\n{e}")
 
-            if self.drop_channel and (random.random() < 0.1):
-                meta = drop_channel(meta)
+                meta = cut_data(meta, min_point=self.phase_width[0] * 2)
+                if self.flip_polarity and (random.random() < 0.5):
+                    meta = flip_polarity(meta)
 
-            if (np.std(meta["waveform"], axis=(1, 2)) == 0).all():
-                # print(f"Error reading {trace_id}: all zeros {np.std(meta['waveform'], axis=(1,2))}")
-                continue
+                if np.std(meta["waveform"], axis=(1, 2))[-1] == 0:
+                    ## polarity is picked by the last channel
+                    # print(f"Error reading {trace_id}: zeros in Z channel {np.std(meta['waveform'], axis=(1,2))}")
+                    meta["polarity_mask"] = np.zeros_like(meta["polarity_mask"])
 
-            waveform = meta["waveform"]
-            # waveform = normalize(waveform)
-            phase_pick = meta["phase_pick"]
-            phase_mask = meta["phase_mask"][np.newaxis, ::]
-            event_center = meta["event_center"][np.newaxis, :: self.event_feature_scale]
-            # polarity = meta["polarity"][np.newaxis, :: self.polarity_feature_scale]
-            # polarity_mask = meta["polarity_mask"][np.newaxis, :: self.polarity_feature_scale]
-            # polarity = meta["polarity"][:, :: self.polarity_feature_scale, :]
-            # polarity_mask = meta["polarity_mask"][:: self.polarity_feature_scale, :]
-            polarity = meta["polarity"][:, :: self.polarity_feature_scale]
-            polarity_mask = meta["polarity_mask"][np.newaxis, ::]
-            event_time = meta["event_time"][np.newaxis, :: self.event_feature_scale]
-            event_mask = meta["event_mask"][np.newaxis, :: self.event_feature_scale]
-            station_location = meta["station_location"]
+                if self.drop_channel and (random.random() < 0.1):
+                    meta = drop_channel(meta)
 
-            yield {
-                "data": torch.from_numpy(waveform).float(),
-                "phase_pick": torch.from_numpy(phase_pick).float(),
-                "phase_mask": torch.from_numpy(phase_mask).float(),
-                "event_center": torch.from_numpy(event_center).float(),
-                "event_time": torch.from_numpy(event_time).float(),
-                "event_mask": torch.from_numpy(event_mask).float(),
-                "station_location": torch.from_numpy(station_location).float(),
-                "polarity": torch.from_numpy(polarity).float(),
-                "polarity_mask": torch.from_numpy(polarity_mask).float(),
-            }
+                if (np.std(meta["waveform"], axis=(1, 2)) == 0).all():
+                    # print(f"Error reading {trace_id}: all zeros {np.std(meta['waveform'], axis=(1,2))}")
+                    continue
+
+                waveform = meta["waveform"]
+                # waveform = normalize(waveform)
+                phase_pick = meta["phase_pick"]
+                phase_mask = meta["phase_mask"][np.newaxis, ::]
+                event_center = meta["event_center"][np.newaxis, :: self.event_feature_scale]
+                # polarity = meta["polarity"][np.newaxis, :: self.polarity_feature_scale]
+                # polarity_mask = meta["polarity_mask"][np.newaxis, :: self.polarity_feature_scale]
+                # polarity = meta["polarity"][:, :: self.polarity_feature_scale, :]
+                # polarity_mask = meta["polarity_mask"][:: self.polarity_feature_scale, :]
+                polarity = meta["polarity"][:, :: self.polarity_feature_scale]
+                polarity_mask = meta["polarity_mask"][np.newaxis, ::]
+                event_time = meta["event_time"][np.newaxis, :: self.event_feature_scale]
+                event_mask = meta["event_mask"][np.newaxis, :: self.event_feature_scale]
+                station_location = meta["station_location"]
+
+                yield {
+                    "data": torch.from_numpy(waveform).float(),
+                    "phase_pick": torch.from_numpy(phase_pick).float(),
+                    "phase_mask": torch.from_numpy(phase_mask).float(),
+                    "event_center": torch.from_numpy(event_center).float(),
+                    "event_time": torch.from_numpy(event_time).float(),
+                    "event_mask": torch.from_numpy(event_mask).float(),
+                    "station_location": torch.from_numpy(station_location).float(),
+                    "polarity": torch.from_numpy(polarity).float(),
+                    "polarity_mask": torch.from_numpy(polarity_mask).float(),
+                }
 
         hdf5_fp.close()
 

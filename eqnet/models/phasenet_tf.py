@@ -4,6 +4,7 @@ from .phasenet import PhaseNet
 def build_model(
     backbone="unet",
     init_features=16,
+    upsample="interpolate",
     log_scale=True,
     add_polarity=False,
     add_event=True,
@@ -17,6 +18,7 @@ def build_model(
     return PhaseNet(
         backbone=backbone,
         init_features=init_features,
+        upsample=upsample,
         log_scale=log_scale,
         add_event=add_event,
         add_polarity=add_polarity,

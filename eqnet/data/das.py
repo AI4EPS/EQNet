@@ -880,7 +880,7 @@ class DASIterableDataset(IterableDataset):
 
             data = data - np.mean(data, axis=-1, keepdims=True)  # (nx, nt)
             data = data - np.median(data, axis=-2, keepdims=True)
-            if self.highpass_filter > 0.0:
+            if (self.highpass_filter is not None):
                 b, a = scipy.signal.butter(2, self.highpass_filter, "hp", fs=100)
                 data = scipy.signal.filtfilt(b, a, data, axis=-1)  # (nt, nx)
 

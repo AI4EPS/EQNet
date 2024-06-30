@@ -126,6 +126,7 @@ class UNet(nn.Module):
         stride=(4, 1),
         padding=(3, 0),
         moving_norm=(1024, 128),
+        upsample="conv_transpose",
         add_polarity=False,
         add_event=False,
         add_stft=False,
@@ -205,26 +206,47 @@ class UNet(nn.Module):
         )
 
         extra_features = 1 if self.spectrogram else 0
-        self.upconv54 = nn.Sequential(
-            OrderedDict(
-                [
-                    (
-                        "bottle_conv",
-                        nn.ConvTranspose2d(
-                            in_channels=features * 16 * (1 + extra_features),
-                            out_channels=features * 8,
-                            kernel_size=kernel_size,
-                            stride=stride,
-                            padding=padding,
-                            output_padding=padding,
-                            bias=False,
+        if upsample == "interpolate":
+            self.upconv54 = nn.Sequential(
+                OrderedDict(
+                    [
+                        (
+                            "bottle_conv",
+                            nn.Conv2d(
+                                in_channels=features * 16 * (1 + extra_features),
+                                out_channels=features * 8,
+                                kernel_size=kernel_size,
+                                padding=padding,
+                                bias=False,
+                            ),
                         ),
-                    ),
-                    ("bottle_norm", nn.BatchNorm2d(num_features=features * 8)),
-                    ("bottle_relu", nn.ReLU(inplace=True)),
-                ]
+                        ("bottle_norm", nn.BatchNorm2d(num_features=features * 8)),
+                        ("bottle_relu", nn.ReLU(inplace=True)),
+                        ("upsample", nn.Upsample(scale_factor=stride, mode="bilinear", align_corners=False)),
+                    ]
+                )
             )
-        )
+        elif upsample == "conv_transpose":
+            self.upconv54 = nn.Sequential(
+                OrderedDict(
+                    [
+                        (
+                            "bottle_conv",
+                            nn.ConvTranspose2d(
+                                in_channels=features * 16 * (1 + extra_features),
+                                out_channels=features * 8,
+                                kernel_size=kernel_size,
+                                stride=stride,
+                                padding=padding,
+                                output_padding=padding,
+                                bias=False,
+                            ),
+                        ),
+                        ("bottle_norm", nn.BatchNorm2d(num_features=features * 8)),
+                        ("bottle_relu", nn.ReLU(inplace=True)),
+                    ]
+                )
+            )
 
         self.decoder43 = self.decoder_block(
             (features * 8) * (2 + extra_features),
@@ -232,6 +254,7 @@ class UNet(nn.Module):
             kernel_size=kernel_size,
             stride=stride,
             padding=padding,
+            upsample=upsample,
             name="dec4",
         )
         self.decoder32 = self.decoder_block(
@@ -240,6 +263,7 @@ class UNet(nn.Module):
             kernel_size=kernel_size,
             stride=stride,
             padding=padding,
+            upsample=upsample,
             name="dec3",
         )
         self.decoder21 = self.decoder_block(
@@ -248,104 +272,22 @@ class UNet(nn.Module):
             kernel_size=kernel_size,
             stride=stride,
             padding=padding,
+            upsample=upsample,
             name="dec2",
         )
-        self.output_conv = nn.Sequential(
-            OrderedDict(
-                [
-                    (
-                        "output_conv1",
-                        nn.Conv2d(
-                            in_channels=features * 2,
-                            out_channels=features,
-                            kernel_size=kernel_size,
-                            padding=padding,
-                            bias=False,
-                        ),
-                    ),
-                    ("output_norm1", nn.BatchNorm2d(num_features=features)),
-                    ("output_relu1", nn.ReLU(inplace=True)),
-                    (
-                        "output_conv2",
-                        nn.Conv2d(
-                            in_channels=features,
-                            out_channels=features,
-                            kernel_size=kernel_size,
-                            padding=padding,
-                            bias=False,
-                        ),
-                    ),
-                    ("output_norm2", nn.BatchNorm2d(num_features=features)),
-                    ("output_relu2", nn.ReLU(inplace=True)),
-                ]
-            )
-        )
+        self.output_conv = self.encoder_block(features * 2, features, kernel_size=kernel_size, stride=(1, 1), padding=padding, name="output")
 
         if self.add_polarity:
             self.encoder_polarity = self.encoder_block(
                 1, features, kernel_size=kernel_size, stride=(1, 1), padding=padding, name="enc1_polarity"
             )
-            self.output_polarity = nn.Sequential(
-                OrderedDict(
-                    [
-                        (
-                            "output_polarity_conv1",
-                            nn.Conv2d(
-                                in_channels=features * 2,
-                                out_channels=features,
-                                kernel_size=kernel_size,
-                                padding=padding,
-                                bias=False,
-                            ),
-                        ),
-                        ("output_polarity_norm1", nn.BatchNorm2d(num_features=features)),
-                        ("output_polarity_relu1", nn.ReLU(inplace=True)),
-                        # (
-                        #     "output_polarity_conv2",
-                        #     nn.Conv2d(
-                        #         in_channels=features,
-                        #         out_channels=features,
-                        #         kernel_size=kernel_size,
-                        #         padding=padding,
-                        #         bias=False,
-                        #     ),
-                        # ),
-                        # ("output_polarity_norm2", nn.BatchNorm2d(num_features=features)),
-                        # ("output_polarity_relu2", nn.ReLU(inplace=True)),
-                    ]
-                )
+            self.output_polarity = self.encoder_block(
+                features * 2, features, kernel_size=kernel_size, stride=(1, 1), padding=padding, name="output_polarity"
             )
 
         if self.add_event:
-            self.output_event = nn.Sequential(
-                OrderedDict(
-                    [
-                        (
-                            "output_event_conv1",
-                            nn.Conv2d(
-                                in_channels=features * 4,
-                                out_channels=features,
-                                kernel_size=kernel_size,
-                                padding=padding,
-                                bias=False,
-                            ),
-                        ),
-                        ("output_event_norm1", nn.BatchNorm2d(num_features=features)),
-                        ("output_event_relu1", nn.ReLU(inplace=True)),
-                        # (
-                        #     "output_event_conv2",
-                        #     nn.Conv2d(
-                        #         in_channels=features * 2,
-                        #         out_channels=features,
-                        #         kernel_size=kernel_size,
-                        #         padding=padding,
-                        #         bias=False,
-                        #     ),
-                        # ),
-                        # ("output_event_norm2", nn.BatchNorm2d(num_features=features)),
-                        # ("output_event_relu2", nn.ReLU(inplace=True)),
-                    ]
-                )
+            self.output_event = self.encoder_block(
+                features * 4, features, kernel_size=kernel_size, stride=(1, 1), padding=padding, name="output_event"
             )
 
         if (init_stride[0] > 1) or (init_stride[1] > 1):
@@ -379,7 +321,8 @@ class UNet(nn.Module):
 
         if self.add_polarity:
             z = x[:, -1:, :, :]  ## last channel is vertical component
-            z = log_transform(z)
+            # clip z to [-1, 1] after normalization
+            z = torch.clamp(z, -1.0, 1.0)
             enc_polarity = self.encoder_polarity(z)
 
         enc1 = self.input_conv(x)
@@ -469,49 +412,53 @@ class UNet(nn.Module):
         )
 
     @staticmethod
-    def decoder_block(in_channels, out_channels, kernel_size=(7, 7), stride=(4, 4), padding=(3, 3), name=""):
-        return nn.Sequential(
-            OrderedDict(
-                [
-                    (
-                        name + "_conv1",
-                        nn.Conv2d(
-                            in_channels=in_channels,
-                            out_channels=in_channels // 2,
-                            kernel_size=kernel_size,
-                            padding=padding,
-                            bias=False,
-                        ),
+    def decoder_block(in_channels, out_channels, kernel_size=(7, 7), stride=(4, 4), padding=(3, 3), upsample="conv_transpose", name=""):
+        layers = [
+            (
+                name + "_conv1",
+                nn.Conv2d(
+                    in_channels=in_channels,
+                    out_channels=in_channels // 2,
+                    kernel_size=kernel_size,
+                    padding=padding,
+                    bias=False,
+                ),
+            ),
+            (name + "_norm1", nn.BatchNorm2d(num_features=in_channels // 2)),
+            (name + "_relu1", nn.ReLU(inplace=True)),
+        ]
+        if upsample == "interpolate":
+            layers.extend([
+                (
+                    name + "_conv2",
+                    nn.Conv2d(
+                        in_channels=in_channels // 2,
+                        out_channels=out_channels,
+                        kernel_size=kernel_size,
+                        padding=padding,
+                        bias=False,
                     ),
-                    (name + "_norm1", nn.BatchNorm2d(num_features=in_channels // 2)),
-                    (name + "_relu1", nn.ReLU(inplace=True)),
-                    (
-                        name + "_conv2",
-                        nn.Conv2d(
-                            in_channels=in_channels // 2,
-                            out_channels=out_channels,
-                            kernel_size=kernel_size,
-                            padding=padding,
-                            bias=False,
-                        ),
+                ),
+                (name + "_norm2", nn.BatchNorm2d(num_features=out_channels)),
+                (name + "_relu2", nn.ReLU(inplace=True)),
+                (name + "_upsample", nn.Upsample(scale_factor=stride, mode="bilinear", align_corners=False)),
+            ])
+        elif upsample == "conv_transpose":
+            layers.extend([
+                (
+                    name + "_conv2",
+                    nn.ConvTranspose2d(
+                        in_channels=in_channels // 2,
+                        out_channels=out_channels,
+                        kernel_size=kernel_size,
+                        stride=stride,
+                        padding=padding,
+                        output_padding=padding,
+                        bias=False,
                     ),
-                    (name + "_norm2", nn.BatchNorm2d(num_features=out_channels)),
-                    (name + "_relu2", nn.ReLU(inplace=True)),
-                    (name + "_upsample", nn.Upsample(scale_factor=stride, mode="bilinear", align_corners=False)),
-                    # (
-                    #     name + "_conv2",
-                    #     nn.ConvTranspose2d(
-                    #         in_channels=in_channels // 2,
-                    #         out_channels=out_channels,
-                    #         kernel_size=kernel_size,
-                    #         stride=stride,
-                    #         padding=padding,
-                    #         output_padding=padding,
-                    #         bias=False,
-                    #     ),
-                    # ),
-                    # (name + "_norm2", nn.BatchNorm2d(num_features=out_channels)),
-                    # (name + "_relu2", nn.ReLU(inplace=True)),
-                ]
-            )
-        )
+                ),
+                (name + "_norm2", nn.BatchNorm2d(num_features=out_channels)),
+                (name + "_relu2", nn.ReLU(inplace=True)),
+            ])
+        
+        return nn.Sequential(OrderedDict(layers))

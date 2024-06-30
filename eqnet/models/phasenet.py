@@ -57,11 +57,13 @@ class FCNHead(nn.Module):
         x = F.interpolate(x, scale_factor=32, mode="linear", align_corners=False)
 
         x = x.view(bt, st, x.shape[1], x.shape[2])
-        x = x.permute(0, 2, 3, 1)
+        x = x.permute(0, 2, 3, 1)  # batch, channel, time, station
 
-        if self.training:
-            return None, self.losses(x, targets)
-        return x, {}
+        loss = None
+        if targets is not None:
+            loss = self.losses(x, targets)
+
+        return x, loss
 
     def losses(self, inputs, targets):
         inputs = inputs.float()
@@ -211,12 +213,10 @@ class UNetHead(nn.Module):
         x = features[self.feature_names]
         x = self.layers(x)
 
-        if self.training:
-            return x, self.losses(x, targets, mask)
-        else:
-            if targets is not None:  ## for validation, but breaks for torch.compile
-                return x, self.losses(x, targets, mask)
-            return x, 0.0
+        loss = None
+        if targets is not None:
+            loss = self.losses(x, targets, mask)
+        return x, loss
 
     def losses(self, inputs, targets, mask=None):
         """
@@ -228,15 +228,21 @@ class UNetHead(nn.Module):
             if self.out_channels == 1:
                 loss = F.binary_cross_entropy_with_logits(inputs, targets)
             else:
-                loss = torch.sum(-targets.float() * F.log_softmax(inputs, dim=1), dim=1).mean()
+                loss = F.cross_entropy(inputs, targets)
         else:
+            mask = mask.type_as(inputs)
             mask_sum = mask.sum()
             if mask_sum == 0.0:
                 mask_sum = 1.0
             if self.out_channels == 1:
-                loss = F.binary_cross_entropy_with_logits(inputs, targets, weight=mask, reduction="sum") / mask_sum
+                loss = (
+                    torch.sum(F.binary_cross_entropy_with_logits(inputs, targets, reduction="none") * mask) / mask_sum
+                )
             else:
-                loss = torch.sum(-targets.float() * F.log_softmax(inputs, dim=1) * mask) / mask_sum
+                # loss = torch.sum(-targets.float() * F.log_softmax(inputs, dim=1) * mask) / mask_sum
+                loss = (
+                    torch.sum(F.cross_entropy(inputs, targets, reduction="none") * mask.squeeze(1)) / mask_sum
+                )  # cross_entropy sum over dim=1/channel
 
         return loss
 
@@ -275,12 +281,10 @@ class EventHead(nn.Module):
         x = features[self.feature_names]
         x = self.layers(x) * self.scaling
 
-        if self.training:
-            return x, self.losses(x, targets, mask)
-        else:
-            if targets is not None:  ## for validation, but breaks for torch.compile
-                return x, self.losses(x, targets, mask)
-            return x, 0.0
+        loss = None
+        if targets is not None:
+            loss = self.losses(x, targets, mask)
+        return x, loss
 
     def losses(self, inputs, targets, mask=None):
         inputs = inputs.float()
@@ -288,12 +292,11 @@ class EventHead(nn.Module):
         if mask is None:
             loss = F.mse_loss(inputs, targets) / self.scaling
         else:
+            mask = mask.type_as(inputs)
             mask_sum = mask.sum()
             if mask_sum == 0.0:
                 mask_sum = 1.0
-            loss = (
-                F.l1_loss(inputs * mask, targets * mask, reduction="sum") / mask_sum / self.scaling
-            )  # trigger warning for mps
+            loss = torch.sum(F.l1_loss(inputs, targets, reduction="none") * mask) / mask_sum / self.scaling
             # loss = torch.sum(torch.abs(inputs - targets) * mask, dim=(1, 2, 3)).mean() / mask_sum
 
         return loss
@@ -304,6 +307,7 @@ class PhaseNet(nn.Module):
         self,
         backbone="unet",
         init_features=16,
+        upsample="conv_transpose",  # "interpolate", "conv_transpose"
         log_scale=True,
         spectrogram=False,
         add_polarity=False,
@@ -328,6 +332,7 @@ class PhaseNet(nn.Module):
         elif backbone == "unet":
             self.backbone = UNet(
                 init_features=init_features,
+                upsample=upsample,
                 log_scale=log_scale,
                 spectrogram=spectrogram,
                 add_polarity=add_polarity,
@@ -386,22 +391,26 @@ class PhaseNet(nn.Module):
         output = {"loss": 0.0}
         output_phase, loss_phase = self.phase_picker(features, phase_pick)
         output["phase"] = output_phase
-        output["loss_phase"] = loss_phase
-        output["loss"] += loss_phase
+        if loss_phase is not None:
+            output["loss_phase"] = loss_phase
+            output["loss"] += loss_phase
         if self.add_event:
             output_event_center, loss_event_center = self.event_detector(features, event_center)
             output["event_center"] = output_event_center
-            output["loss_event_center"] = loss_event_center * self.event_center_loss_weight
-            output["loss"] += loss_event_center * self.event_center_loss_weight
+            if loss_event_center is not None:
+                output["loss_event_center"] = loss_event_center * self.event_center_loss_weight
+                output["loss"] += loss_event_center * self.event_center_loss_weight
             output_event_time, loss_event_time = self.event_timer(features, event_time, mask=event_mask)
             output["event_time"] = output_event_time
-            output["loss_event_time"] = loss_event_time * self.event_time_loss_weight
-            output["loss"] += loss_event_time * self.event_time_loss_weight
+            if loss_event_time is not None:
+                output["loss_event_time"] = loss_event_time * self.event_time_loss_weight
+                output["loss"] += loss_event_time * self.event_time_loss_weight
         if self.add_polarity:
             output_polarity, loss_polarity = self.polarity_picker(features, polarity, mask=polarity_mask)
             output["polarity"] = output_polarity
-            output["loss_polarity"] = loss_polarity * self.polarity_loss_weight
-            output["loss"] += loss_polarity * self.polarity_loss_weight
+            if loss_polarity is not None:
+                output["loss_polarity"] = loss_polarity * self.polarity_loss_weight
+                output["loss"] += loss_polarity * self.polarity_loss_weight
         if self.spectrogram:
             output["spectrogram"] = features["spectrogram"]
 

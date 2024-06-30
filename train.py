@@ -6,6 +6,7 @@ import time
 from contextlib import nullcontext
 from glob import glob
 
+import eqnet
 import matplotlib
 import numpy as np
 import torch
@@ -13,9 +14,6 @@ import torch.multiprocessing as mp
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.data
-
-import datasets
-import eqnet
 import utils
 import wandb
 from eqnet.data import (
@@ -27,7 +25,11 @@ from eqnet.data import (
 from eqnet.models.unet import moving_normalize
 from eqnet.utils.station_sampler import StationSampler, create_groups, cut_reorder_keys
 
+import datasets
+import math
+
 matplotlib.use("agg")
+wandb.require("core")
 logger = logging.getLogger("EQNet")
 # mp.set_start_method("spawn", force=True)
 
@@ -35,8 +37,9 @@ logger = logging.getLogger("EQNet")
 def evaluate(model, data_loader, scaler, args, epoch=0, total_samples=1):
     model.eval()
     metric_logger = utils.MetricLogger(delimiter="  ")
-    if args.model in ["phasenet_plus", "phasenet_tf"]:
+    if args.model in ["phasenet", "phasenet_plus", "phasenet_tf"]:
         metric_logger.add_meter("loss_phase", utils.SmoothedValue(window_size=1, fmt="{value}"))
+    if args.model in ["phasenet_plus", "phasenet_tf"]:
         metric_logger.add_meter("loss_event_center", utils.SmoothedValue(window_size=1, fmt="{value}"))
         metric_logger.add_meter("loss_event_time", utils.SmoothedValue(window_size=1, fmt="{value}"))
     if args.model in ["phasenet_plus"]:
@@ -50,8 +53,9 @@ def evaluate(model, data_loader, scaler, args, epoch=0, total_samples=1):
             batch_size = meta["data"].shape[0]
 
             metric_logger.meters["loss"].update(output["loss"].item(), n=batch_size)
-            if args.model in ["phasenet_plus", "phasenet_tf"]:
+            if args.model in ["phasenet", "phasenet_plus", "phasenet_tf"]:
                 metric_logger.meters["loss_phase"].update(output["loss_phase"].item(), n=batch_size)
+            if args.model in ["phasenet_plus", "phasenet_tf"]:
                 metric_logger.meters["loss_event_center"].update(output["loss_event_center"].item(), n=batch_size)
                 metric_logger.meters["loss_event_time"].update(output["loss_event_time"].item(), n=batch_size)
             if args.model in ["phasenet_plus"]:
@@ -68,8 +72,9 @@ def evaluate(model, data_loader, scaler, args, epoch=0, total_samples=1):
             "test/test_loss": metric_logger.loss.global_avg,
             "test/epoch": epoch,
         }
-        if args.model in ["phasenet_plus", "phasenet_tf"]:
+        if args.model in ["phasenet", "phasenet_plus", "phasenet_tf"]:
             log["test/loss_phase"] = metric_logger.loss_phase.global_avg
+        if args.model in ["phasenet_plus", "phasenet_tf"]:
             log["test/loss_event_center"] = metric_logger.loss_event_center.global_avg
             log["test/loss_event_time"] = metric_logger.loss_event_time.global_avg
         if args.model in ["phasenet_plus"]:
@@ -81,6 +86,19 @@ def evaluate(model, data_loader, scaler, args, epoch=0, total_samples=1):
 
     return metric_logger
 
+def get_lr(it, max_lr, min_lr, warmup_steps, max_steps):
+    # 1) linear warmup for warmup_iters steps
+    if it < warmup_steps:
+        # return max_lr * (it+1) / warmup_steps + min_lr
+        return (max_lr - min_lr) * it / warmup_steps + min_lr
+    # 2) if it > lr_decay_iters, return min learning rate
+    if it > max_steps:
+        return min_lr
+    # 3) in between, use cosine decay down to min learning rate
+    decay_ratio = (it - warmup_steps) / (max_steps - warmup_steps)
+    assert 0 <= decay_ratio <= 1
+    coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff starts at 1 and goes to 0
+    return min_lr + coeff * (max_lr - min_lr)
 
 def train_one_epoch(
     model,
@@ -95,8 +113,9 @@ def train_one_epoch(
 ):
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter("lr", utils.SmoothedValue(window_size=1, fmt="{value}"))
-    if args.model in ["phasenet_plus", "phasenet_tf"]:
+    if args.model in ["phasenet", "phasenet_plus", "phasenet_tf"]:
         metric_logger.add_meter("loss_phase", utils.SmoothedValue(window_size=1, fmt="{value}"))
+    if args.model in ["phasenet_plus", "phasenet_tf"]:
         metric_logger.add_meter("loss_event_center", utils.SmoothedValue(window_size=1, fmt="{value}"))
         metric_logger.add_meter("loss_event_time", utils.SmoothedValue(window_size=1, fmt="{value}"))
     if args.model in ["phasenet_plus"]:
@@ -111,12 +130,12 @@ def train_one_epoch(
     model.train()
     processed_samples = 0
     for i, meta in enumerate(metric_logger.log_every(data_loader, args.print_freq, header)):
-        with ctx:
-            output = model(meta)
-
-        loss = output["loss"]
 
         optimizer.zero_grad()
+        with ctx:
+            output = model(meta)
+        loss = output["loss"]
+
         if scaler is not None:
             scaler.scale(loss).backward()
             if args.clip_grad_norm is not None:
@@ -142,8 +161,9 @@ def train_one_epoch(
             break
 
         metric_logger.update(loss=loss.item(), lr=optimizer.param_groups[0]["lr"])
-        if args.model in ["phasenet_plus", "phasenet_tf"]:
+        if args.model in ["phasenet", "phasenet_plus", "phasenet_tf"]:
             metric_logger.update(loss_phase=output["loss_phase"].item())
+        if args.model in ["phasenet_plus", "phasenet_tf"]:
             metric_logger.update(loss_event_center=output["loss_event_center"].item())
             metric_logger.update(loss_event_time=output["loss_event_time"].item())
         if args.model in ["phasenet_plus"]:
@@ -155,8 +175,9 @@ def train_one_epoch(
                 "train/epoch": epoch,
                 "train/batch": i,
             }
-            if args.model in ["phasenet_plus", "phasenet_tf"]:
+            if args.model in ["phasenet", "phasenet_plus", "phasenet_tf"]:
                 log["train/loss_phase"] = output["loss_phase"].item()
+            if args.model in ["phasenet_plus", "phasenet_tf"]:
                 log["train/loss_event_center"] = output["loss_event_center"].item()
                 log["train/loss_event_time"] = output["loss_event_time"].item()
             if args.model in ["phasenet_plus"]:
@@ -245,6 +266,8 @@ def main(args):
     torch.manual_seed(1337 + rank)
     random.seed(1337 + rank)
     np.random.seed(1337 + rank)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(1337 + rank)
 
     device = torch.device(args.device)
     dtype = "bfloat16" if (torch.cuda.is_available() and torch.cuda.is_bf16_supported()) else "float16"
@@ -398,7 +421,6 @@ def main(args):
             # shuffle=True,
             drop_last=True,
         )
-
         data_loader_test = torch.utils.data.DataLoader(
             dataset_test,
             batch_size=args.batch_size,
@@ -424,7 +446,6 @@ def main(args):
             num_params = param.numel()
             total_params += num_params
             print(f"{name}: {param.shape}, {num_params}")
-
     print(f"Total number of trainable parameters: {total_params}")
 
     model.to(device)
@@ -469,64 +490,14 @@ def main(args):
         custom_keys_weight_decay=custom_keys_weight_decay if len(custom_keys_weight_decay) > 0 else None,
     )
 
-    opt_name = args.opt.lower()
-    if opt_name.startswith("sgd"):
-        optimizer = torch.optim.SGD(
-            parameters,
-            lr=args.lr,
-            momentum=args.momentum,
-            weight_decay=args.weight_decay,
-            nesterov="nesterov" in opt_name,
-        )
-    elif opt_name == "rmsprop":
-        optimizer = torch.optim.RMSprop(
-            parameters, lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay, eps=0.0316, alpha=0.9
-        )
-    elif opt_name == "adamw":
-        optimizer = torch.optim.AdamW(parameters, lr=args.lr, weight_decay=args.weight_decay)
-    else:
-        raise RuntimeError(f"Invalid optimizer {args.opt}. Only SGD, RMSprop and AdamW are supported.")
-
+    # optimizer = torch.optim.AdamW(parameters, lr=args.lr, weight_decay=args.weight_decay)
+    optimizer = torch.optim.AdamW(parameters, lr=1.0, weight_decay=args.weight_decay) # lr multiplied by lr in lr_scheduler
     iters_per_epoch = len(data_loader)
-    args.lr_scheduler = args.lr_scheduler.lower()
-    if args.lr_scheduler == "steplr":
-        main_lr_scheduler = torch.optim.lr_scheduler.StepLR(
-            optimizer, step_size=args.lr_step_size * iters_per_epoch, gamma=args.lr_gamma
-        )
-    elif args.lr_scheduler == "cosineannealinglr":
-        main_lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, T_max=(args.epochs - args.lr_warmup_epochs) * iters_per_epoch, eta_min=args.lr_min
-        )
-    elif args.lr_scheduler == "polynomiallr":
-        main_lr_scheduler = torch.optim.lr_scheduler.PolynomialLR(
-            optimizer, total_iters=iters_per_epoch * (args.epochs - args.lr_warmup_epochs), power=0.9
-        )
-    else:
-        raise RuntimeError(
-            f"Invalid lr scheduler '{args.lr_scheduler}'. Only StepLR, CosineAnnealingLR and PolynomialLR "
-            "are supported."
-        )
-
-    if args.lr_warmup_epochs > 0:
-        if args.lr_warmup_method == "linear":
-            warmup_lr_scheduler = torch.optim.lr_scheduler.LinearLR(
-                optimizer, start_factor=args.lr_warmup_decay, total_iters=args.lr_warmup_epochs * iters_per_epoch
-            )
-        elif args.lr_warmup_method == "constant":
-            warmup_lr_scheduler = torch.optim.lr_scheduler.ConstantLR(
-                optimizer, factor=args.lr_warmup_decay, total_iters=args.lr_warmup_epochs * iters_per_epoch
-            )
-        else:
-            raise RuntimeError(
-                f"Invalid warmup lr method '{args.lr_warmup_method}'. Only linear and constant are supported."
-            )
-        lr_scheduler = torch.optim.lr_scheduler.SequentialLR(
-            optimizer,
-            schedulers=[warmup_lr_scheduler, main_lr_scheduler],
-            milestones=[args.lr_warmup_epochs * iters_per_epoch],
-        )
-    else:
-        lr_scheduler = main_lr_scheduler
+    warmup_steps = args.lr_warmup_epochs * iters_per_epoch
+    max_lr = args.lr
+    min_lr = args.lr * args.lr_min_ratio
+    max_steps = args.epochs * iters_per_epoch
+    lr_scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda it: get_lr(it, max_lr, min_lr, warmup_steps, max_steps))
 
     model_without_ddp = model
     if args.distributed:
@@ -683,8 +654,7 @@ def get_args_parser(add_help=True):
 
     ## training hyper params
     parser.add_argument("--opt", default="adamw", type=str, help="optimizer")
-    parser.add_argument("--lr", default=0.001, type=float, help="initial learning rate")
-    parser.add_argument("--momentum", default=0.9, type=float, metavar="M", help="momentum")
+    parser.add_argument("--lr", default=3e-4, type=float, help="initial learning rate")
     parser.add_argument(
         "--wd",
         "--weight-decay",
@@ -725,22 +695,9 @@ def get_args_parser(add_help=True):
         help="the number of epochs to warmup (default: 1)",
     )
     parser.add_argument(
-        "--lr-warmup-method",
-        default="linear",
-        type=str,
-        help="the warmup method (default: linear)",
-    )
-    parser.add_argument("--lr-warmup-decay", default=0.01, type=float, help="the decay for lr")
-    parser.add_argument(
         "--lr-scheduler", default="cosineannealinglr", type=str, help="name of lr scheduler (default: multisteplr)"
     )
-    parser.add_argument(
-        "--lr-step-size", default=8, type=int, help="decrease lr every step-size epochs (multisteplr scheduler only)"
-    )
-    parser.add_argument(
-        "--lr-gamma", default=0.1, type=float, help="decrease lr by a factor of lr-gamma (multisteplr scheduler only)"
-    )
-    parser.add_argument("--lr-min", default=0.0, type=float, help="minimum lr of lr schedule (default: 0.0)")
+    parser.add_argument("--lr-min-ratio", default=0.1, type=float, help="minimum lr of lr schedule (default: 0.1 of lr)")
     parser.add_argument("--print-freq", default=10, type=int, help="print frequency")
     parser.add_argument("--output-dir", default="./output", type=str, help="path to save outputs")
     parser.add_argument("--resume", default="", type=str, help="path of checkpoint")
