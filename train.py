@@ -1,12 +1,12 @@
 import datetime
 import logging
+import math
 import os
 import random
 import time
 from contextlib import nullcontext
 from glob import glob
 
-import eqnet
 import matplotlib
 import numpy as np
 import torch
@@ -14,6 +14,9 @@ import torch.multiprocessing as mp
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.data
+
+import datasets
+import eqnet
 import utils
 import wandb
 from eqnet.data import (
@@ -24,9 +27,6 @@ from eqnet.data import (
 )
 from eqnet.models.unet import moving_normalize
 from eqnet.utils.station_sampler import StationSampler, create_groups, cut_reorder_keys
-
-import datasets
-import math
 
 matplotlib.use("agg")
 wandb.require("core")
@@ -86,6 +86,7 @@ def evaluate(model, data_loader, scaler, args, epoch=0, total_samples=1):
 
     return metric_logger
 
+
 def get_lr(it, max_lr, min_lr, warmup_steps, max_steps):
     # 1) linear warmup for warmup_iters steps
     if it < warmup_steps:
@@ -97,8 +98,9 @@ def get_lr(it, max_lr, min_lr, warmup_steps, max_steps):
     # 3) in between, use cosine decay down to min learning rate
     decay_ratio = (it - warmup_steps) / (max_steps - warmup_steps)
     assert 0 <= decay_ratio <= 1
-    coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff starts at 1 and goes to 0
+    coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))  # coeff starts at 1 and goes to 0
     return min_lr + coeff * (max_lr - min_lr)
+
 
 def train_one_epoch(
     model,
@@ -157,8 +159,6 @@ def train_one_epoch(
 
         batch_size = meta["data"].shape[0]
         processed_samples += batch_size
-        if processed_samples >= total_samples:
-            break
 
         metric_logger.update(loss=loss.item(), lr=optimizer.param_groups[0]["lr"])
         if args.model in ["phasenet", "phasenet_plus", "phasenet_tf"]:
@@ -182,7 +182,10 @@ def train_one_epoch(
                 log["train/loss_event_time"] = output["loss_event_time"].item()
             if args.model in ["phasenet_plus"]:
                 log["train/loss_polarity"] = output["loss_polarity"].item()
-            wandb.log(log)
+            wandb.log(log, step=epoch * (total_samples // batch_size) + i)
+
+        if processed_samples >= total_samples:
+            break
 
     plot_results(meta, model, output, args, epoch, "train")
     del meta, output, loss
@@ -287,7 +290,8 @@ def main(args):
             data_path=args.data_path,
             data_list=args.data_list,
             hdf5_file=args.hdf5_file,
-            format="h5",
+            hf_dataset=args.hf_dataset,
+            format=args.format,  # ["h5", "hf"]
             training=True,
             stack_event=args.stack_event,
             flip_polarity=args.flip_polarity,
@@ -301,7 +305,8 @@ def main(args):
                 data_path=args.test_data_path,
                 data_list=args.test_data_list,
                 hdf5_file=args.test_hdf5_file,
-                format="h5",
+                hf_dataset=args.hf_dataset,
+                format=args.format,  # ["h5", "hf"]
                 training=True,
                 stack_event=False,
                 flip_polarity=False,
@@ -491,13 +496,17 @@ def main(args):
     )
 
     # optimizer = torch.optim.AdamW(parameters, lr=args.lr, weight_decay=args.weight_decay)
-    optimizer = torch.optim.AdamW(parameters, lr=1.0, weight_decay=args.weight_decay) # lr multiplied by lr in lr_scheduler
+    optimizer = torch.optim.AdamW(
+        parameters, lr=1.0, weight_decay=args.weight_decay
+    )  # lr multiplied by lr in lr_scheduler
     iters_per_epoch = len(data_loader)
     warmup_steps = args.lr_warmup_epochs * iters_per_epoch
     max_lr = args.lr
     min_lr = args.lr * args.lr_min_ratio
     max_steps = args.epochs * iters_per_epoch
-    lr_scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda it: get_lr(it, max_lr, min_lr, warmup_steps, max_steps))
+    lr_scheduler = torch.optim.lr_scheduler.LambdaLR(
+        optimizer, lr_lambda=lambda it: get_lr(it, max_lr, min_lr, warmup_steps, max_steps)
+    )
 
     model_without_ddp = model
     if args.distributed:
@@ -514,9 +523,8 @@ def main(args):
         model_ema = utils.ExponentialMovingAverage(model_without_ddp, device=device, decay=1.0 - alpha)
 
     if args.resume:
-        checkpoint = None
-        if os.path.isfile(args.resume):
-            print(f"Loading model and optimizer from checkpoint '{args.resume}'")
+        if args.checkpoint is not None:
+            print(f"Loading model and optimizer from checkpoint '{args.checkpoint}'")
             checkpoint = torch.load(args.resume, map_location="cpu")
         elif os.path.isfile(args.output_dir + "/checkpoint.pth"):
             print(f"Loading model and optimizer from checkpoint '{args.output_dir}/checkpoint.pth'")
@@ -525,14 +533,13 @@ def main(args):
             print(f"No checkpoint found")
         if checkpoint is not None:
             model_without_ddp.load_state_dict(checkpoint["model"])
+            optimizer.load_state_dict(checkpoint["optimizer"])
+            lr_scheduler.load_state_dict(checkpoint["lr_scheduler"])
+            args.start_epoch = checkpoint["epoch"] + 1
             if model_ema:
                 model_ema.load_state_dict(checkpoint["model_ema"])
-            if args.resume_opt:
-                optimizer.load_state_dict(checkpoint["optimizer"])
-                lr_scheduler.load_state_dict(checkpoint["lr_scheduler"])
-                args.start_epoch = checkpoint["epoch"] + 1
-                if scaler:
-                    scaler.load_state_dict(checkpoint["scaler"])
+            if scaler:
+                scaler.load_state_dict(checkpoint["scaler"])
 
     start_time = time.time()
     best_loss = float("inf")
@@ -609,6 +616,8 @@ def get_args_parser(add_help=True):
     parser.add_argument("--label-list", nargs="+", default=None, type=str, help="label path")
     parser.add_argument("--noise-list", nargs="+", default=None, type=str, help="noise list")
     parser.add_argument("--hdf5-file", default=None, type=str, help="hdf5 file for training")
+    parser.add_argument("--hf-dataset", default=None, type=str, help="huggingface dataset")
+    parser.add_argument("--format", default="h5", type=str, help="data format (h5, hf)")
     parser.add_argument("--test-data-path", default="./", type=str, help="test dataset path")
     parser.add_argument("--test-data-list", default="+", type=None, help="test dataset list")
     parser.add_argument("--test-label-path", default="+", type=None, help="test label path")
@@ -697,11 +706,13 @@ def get_args_parser(add_help=True):
     parser.add_argument(
         "--lr-scheduler", default="cosineannealinglr", type=str, help="name of lr scheduler (default: multisteplr)"
     )
-    parser.add_argument("--lr-min-ratio", default=0.1, type=float, help="minimum lr of lr schedule (default: 0.1 of lr)")
+    parser.add_argument(
+        "--lr-min-ratio", default=0.1, type=float, help="minimum lr of lr schedule (default: 0.1 of lr)"
+    )
     parser.add_argument("--print-freq", default=10, type=int, help="print frequency")
     parser.add_argument("--output-dir", default="./output", type=str, help="path to save outputs")
-    parser.add_argument("--resume", default="", type=str, help="path of checkpoint")
-    parser.add_argument("--resume_opt", action="store_true", help="if resume optimizer states")
+    parser.add_argument("--resume", action="store_true", help="resume automatically")
+    parser.add_argument("--checkpoint", default=None, type=str, help="path of checkpoint")
     parser.add_argument("--resume_wandb", action="store_true", help="resume from wandb")
     parser.add_argument("--start-epoch", default=0, type=int, metavar="N", help="start epoch")
     parser.add_argument(

@@ -18,6 +18,8 @@ from scipy import signal
 from torch.utils.data import Dataset, IterableDataset
 from tqdm import tqdm
 
+import datasets
+
 # import warnings
 # warnings.filterwarnings("error")
 # import numpy
@@ -320,9 +322,9 @@ class SeismicTraceIterableDataset(IterableDataset):
         data_path=None,
         data_list=None,
         hdf5_file=None,
+        hf_dataset=None,
         prefix="",
         format="h5",
-        dataset="seismic_trace",
         phases=["P", "S"],
         training=False,
         ## for training
@@ -377,6 +379,19 @@ class SeismicTraceIterableDataset(IterableDataset):
                     time.sleep(1)
                 print(f"Reading {tmp_hdf5_keys}")
                 self.data_list = pd.read_csv(tmp_hdf5_keys, header=None, names=["trace_id"])["trace_id"].values.tolist()
+        elif hf_dataset is not None:
+            split = "train" if training else "test"
+            self.hf_dataset = datasets.load_dataset(
+                hf_dataset,
+                # "/nfs/quakeflow_dataset/NC/quakeflow_nc/quakeflow_nc.py",
+                name="station",
+                split=split,
+                trust_remote_code=True,
+                # download_config=datasets.DownloadConfig(num_proc=32),
+                # storage_options={"bucket": "gs://quakeflow_dataset/NC/quakeflow_nc/waveform_h5"},
+                num_proc=32,
+            )
+            self.data_list = list(range(len(self.hf_dataset)))
         elif data_list is not None:
             with open(data_list, "r") as f:
                 self.data_list = f.read().splitlines()
@@ -398,7 +413,6 @@ class SeismicTraceIterableDataset(IterableDataset):
         self.sampling_rate = sampling_rate
         self.highpass_filter = highpass_filter
         self.format = format
-        self.dataset = dataset
 
         ## training
         self.training = training
@@ -674,13 +688,89 @@ class SeismicTraceIterableDataset(IterableDataset):
             "duration": duration,
         }
 
+    def read_training_hf(self, trace_id):
+
+        attrs = self.hf_dataset[trace_id]
+        for key in attrs:
+            if isinstance(attrs[key], list):
+                attrs[key] = np.array(attrs[key])
+
+        waveform = attrs["waveform"]
+        waveform = normalize(waveform)
+        nch, nt = waveform.shape
+
+        meta = {}
+
+        for phase in self.phases:
+            phase_type = np.array([mapping_phase_type(x) for x in attrs["phase_type"]])
+            meta[phase] = attrs["phase_index"][phase_type == phase]
+        picks = [meta[x] for x in self.phases]
+        if min([len(x) for x in picks]) == 0:
+            return None
+
+        # waveform, picks = self.resample_time(waveform, picks, factor=1.0)
+
+        ## calc snr
+        snr, amp_signal, amp_noise = self.calc_snr(waveform, meta["P"])
+        if snr < self.min_snr:
+            return None
+
+        ## phase arrival labels
+        phase_pick, phase_mask = generate_phase_label(picks, nt=nt, label_width=self.phase_width)
+
+        ## phase polarity
+        if "phase_polarity" in attrs:
+            up = attrs["phase_index"][attrs["phase_polarity"] == "U"]
+            dn = attrs["phase_index"][attrs["phase_polarity"] == "D"]
+        else:
+            up, dn = [], []
+        polarity, polarity_mask = generate_phase_label([up, dn], nt=nt, label_width=self.polarity_width)
+
+        ## P/S center time
+        tmp_min = np.min(attrs["phase_index"])
+        tmp_max = np.max(attrs["phase_index"])
+        duration = [tmp_min, max(tmp_min + 3, tmp_max + 2 * (tmp_max - tmp_min))]
+        duration = np.array([[duration]])  # for one station and multiple events
+        c0 = [np.mean(attrs["phase_index"])]
+        t0 = [attrs["event_time_index"]]
+        event_center, event_time, event_mask = generate_event_label(c0, t0, nt=nt, label_width=self.event_width)
+
+        ## station location
+        station_location = attrs["station_location"][np.newaxis, :]
+
+        ## event location
+        event_location = attrs["event_location"][np.newaxis, :]
+
+        return {
+            "waveform": waveform[:, :, np.newaxis],
+            "phase_pick": phase_pick[:, :, np.newaxis],
+            "phase_mask": phase_mask[:, np.newaxis],
+            "event_center": event_center[:, np.newaxis],
+            "event_location": event_location[:, :, np.newaxis],
+            "event_time": event_time[:, np.newaxis],
+            "event_mask": event_mask[:, np.newaxis],
+            "station_location": station_location[:, np.newaxis],
+            "polarity": polarity[:, :, np.newaxis],
+            "polarity_mask": polarity_mask[:, np.newaxis],
+            ## used for stack events
+            "snr": snr,
+            "amp_signal": amp_signal,
+            "amp_noise": amp_noise,
+            "first_arrival": np.min(meta["P"]),
+            "duration": duration,
+        }
+
     def sample_train(self, data_list):
-        hdf5_fp = h5py.File(self.hdf5_file, "r", libver="latest", swmr=True)
+        if self.format == "h5":
+            hdf5_fp = h5py.File(self.hdf5_file, "r", libver="latest", swmr=True)
         while True:
             random.shuffle(data_list)
             for trace_id in data_list:
                 try:
-                    meta = self.read_training_h5(trace_id, hdf5_fp)
+                    if self.format == "h5":
+                        meta = self.read_training_h5(trace_id, hdf5_fp)
+                    elif self.format == "hf":
+                        meta = self.read_training_hf(trace_id)
                 except Exception as e:
                     print(f"Error reading {trace_id}:\n{e}")
                     continue
@@ -691,8 +781,11 @@ class SeismicTraceIterableDataset(IterableDataset):
                 # if self.stack_event and (random.random() < 0.6):
                 if self.stack_event:
                     try:
-                        trace_id2 = np.random.choice(self.data_list)
-                        meta2 = self.read_training_h5(trace_id2, hdf5_fp)
+                        trace_id2 = random.choice(self.data_list)
+                        if self.format == "h5":
+                            meta2 = self.read_training_h5(trace_id2, hdf5_fp)
+                        elif self.format == "hf":
+                            meta2 = self.read_training_hf(trace_id2)
                         if meta2 is not None:
                             meta = stack_event(meta, meta2)
                     except Exception as e:
