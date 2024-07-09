@@ -373,6 +373,7 @@ def main(args):
         model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
 
     if args.resume:
+        print(f"Loading checkpoint: {args.resume}")
         checkpoint = torch.load(args.resume, map_location="cpu")
         # model.load_state_dict(checkpoint["model"], strict=True)
         # print("Loaded checkpoint '{}' (epoch {})".format(args.resume, checkpoint["epoch"]))
@@ -398,6 +399,7 @@ def main(args):
                 raise ("Missing pretrained model for this location")
         else:
             raise
+        print(f"Loading pretrained {args.model} model")
         checkpoint = torch.hub.load_state_dict_from_url(
             model_url, model_dir=f"./model_{args.model}", progress=True, check_hash=True, map_location="cpu"
         )
