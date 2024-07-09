@@ -70,7 +70,7 @@ class STFT(nn.Module):
         self.grad = grad
         self.discard_zero_freq = discard_zero_freq
         self.select_freq = select_freq
-        self.window = self.register_buffer("window", window_fn(n_fft))
+        self.register_buffer("window", window_fn(n_fft))
         self.window_fn = window_fn
         if select_freq:
             dt = kwargs["dt"]
@@ -275,7 +275,9 @@ class UNet(nn.Module):
             upsample=upsample,
             name="dec2",
         )
-        self.output_conv = self.encoder_block(features * 2, features, kernel_size=kernel_size, stride=(1, 1), padding=padding, name="output")
+        self.output_conv = self.encoder_block(
+            features * 2, features, kernel_size=kernel_size, stride=(1, 1), padding=padding, name="output"
+        )
 
         if self.add_polarity:
             self.encoder_polarity = self.encoder_block(
@@ -412,7 +414,9 @@ class UNet(nn.Module):
         )
 
     @staticmethod
-    def decoder_block(in_channels, out_channels, kernel_size=(7, 7), stride=(4, 4), padding=(3, 3), upsample="conv_transpose", name=""):
+    def decoder_block(
+        in_channels, out_channels, kernel_size=(7, 7), stride=(4, 4), padding=(3, 3), upsample="conv_transpose", name=""
+    ):
         layers = [
             (
                 name + "_conv1",
@@ -428,37 +432,41 @@ class UNet(nn.Module):
             (name + "_relu1", nn.ReLU(inplace=True)),
         ]
         if upsample == "interpolate":
-            layers.extend([
-                (
-                    name + "_conv2",
-                    nn.Conv2d(
-                        in_channels=in_channels // 2,
-                        out_channels=out_channels,
-                        kernel_size=kernel_size,
-                        padding=padding,
-                        bias=False,
+            layers.extend(
+                [
+                    (
+                        name + "_conv2",
+                        nn.Conv2d(
+                            in_channels=in_channels // 2,
+                            out_channels=out_channels,
+                            kernel_size=kernel_size,
+                            padding=padding,
+                            bias=False,
+                        ),
                     ),
-                ),
-                (name + "_norm2", nn.BatchNorm2d(num_features=out_channels)),
-                (name + "_relu2", nn.ReLU(inplace=True)),
-                (name + "_upsample", nn.Upsample(scale_factor=stride, mode="bilinear", align_corners=False)),
-            ])
+                    (name + "_norm2", nn.BatchNorm2d(num_features=out_channels)),
+                    (name + "_relu2", nn.ReLU(inplace=True)),
+                    (name + "_upsample", nn.Upsample(scale_factor=stride, mode="bilinear", align_corners=False)),
+                ]
+            )
         elif upsample == "conv_transpose":
-            layers.extend([
-                (
-                    name + "_conv2",
-                    nn.ConvTranspose2d(
-                        in_channels=in_channels // 2,
-                        out_channels=out_channels,
-                        kernel_size=kernel_size,
-                        stride=stride,
-                        padding=padding,
-                        output_padding=padding,
-                        bias=False,
+            layers.extend(
+                [
+                    (
+                        name + "_conv2",
+                        nn.ConvTranspose2d(
+                            in_channels=in_channels // 2,
+                            out_channels=out_channels,
+                            kernel_size=kernel_size,
+                            stride=stride,
+                            padding=padding,
+                            output_padding=padding,
+                            bias=False,
+                        ),
                     ),
-                ),
-                (name + "_norm2", nn.BatchNorm2d(num_features=out_channels)),
-                (name + "_relu2", nn.ReLU(inplace=True)),
-            ])
-        
+                    (name + "_norm2", nn.BatchNorm2d(num_features=out_channels)),
+                    (name + "_relu2", nn.ReLU(inplace=True)),
+                ]
+            )
+
         return nn.Sequential(OrderedDict(layers))

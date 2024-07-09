@@ -400,6 +400,83 @@ def plot_phasenet(
             plt.close(fig)
 
 
+def plot_phasenet_tf(
+    meta,
+    phase,
+    polarity=None,
+    event_center=None,
+    event_time=None,
+    phase_picks=None,
+    event_detects=None,
+    dt=0.01,
+    nt=6000 * 10,
+    file_name=None,
+    figure_dir="figures",
+):
+
+    nb, nc, nt, ns = meta["data"].shape
+    if isinstance(dt, torch.Tensor):
+        dt = dt.item()
+    nt_spec = meta["spectrogram"].shape[2]
+    dt_spec = dt * nt / nt_spec
+    nt_event = event_center.shape[2]
+    dt_event = dt * nt / nt_event
+    # nt_polarity = polarity.shape[2]
+    # dt_polarity = dt * nt / nt_polarity
+
+    if "begin_time" in meta:
+        begin_time = meta["begin_time"]
+    else:
+        begin_time = [0] * nb
+
+    for i in range(meta["data"].shape[0]):
+        plt.close("all")
+        chn_name = ["E", "N", "Z"]
+
+        fig, axes = plt.subplots(8, 1, figsize=(12, 10))
+
+        shift = 0
+        t = pd.date_range(pd.Timestamp(begin_time[i]), periods=nt, freq=pd.Timedelta(seconds=dt))
+        for j in range(3):
+            axes[shift + j].plot(t, meta["data"][i, j, :, 0], linewidth=0.5, color="k", label=f"{chn_name[j]}")
+            axes[shift + j].set_xticklabels([])
+            axes[shift + j].grid("on")
+            axes[shift + j].autoscale(enable=True, axis="x", tight=True)
+
+        shift = 3
+        t_spec = pd.date_range(pd.Timestamp(begin_time[i]), periods=nt_spec, freq=pd.Timedelta(seconds=dt_spec))
+        for j in range(3):
+            axes[shift + j].pcolormesh(meta["spectrogram"][i, j, :, :].T, cmap="jet")
+            axes[shift + j].set_xticklabels([])
+            axes[shift + j].autoscale(enable=True, axis="x", tight=True)
+
+        shift = 6
+        axes[shift].plot(t, phase[i, 1, :, 0], "b", lw=1.0)
+        axes[shift].plot(t, phase[i, 2, :, 0], "r", lw=1.0)
+        axes[shift].set_ylim(-0.05, 1.05)
+        axes[shift].autoscale(enable=True, axis="x", tight=True)
+        axes[shift].set_xticklabels([])
+        axes[shift].grid("on")
+
+        shift = 7
+        t_event = pd.date_range(pd.Timestamp(begin_time[i]), periods=nt_event, freq=pd.Timedelta(seconds=dt_event))
+        axes[shift].plot(t_event, event_center[i, 0, :, 0], "b", label="Event")
+        axes[shift].set_xlim(t[0], t[-1])
+        axes[shift].set_ylim(-0.05, 1.05)
+        axes[shift].grid("on")
+        axes[shift].legend(loc="upper right")
+        axes[shift].set_xlabel("Time (s)")
+
+        fig.tight_layout()
+
+        fig.savefig(
+            os.path.join(figure_dir, file_name[i].replace("/", "_") + ".png"),
+            bbox_inches="tight",
+            dpi=300,
+        )
+        plt.close(fig)
+
+
 def plot_phasenet_plus(
     meta,
     phase,

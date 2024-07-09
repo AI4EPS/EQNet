@@ -39,12 +39,15 @@ def mapping_phase_type(phase):
 
 def normalize(data):
     """
+    just to make the data scale to normal range
     data: [3, nt, nsta] or [3, nt]
     """
     data = data - data.mean(axis=1, keepdims=True)
-    std = data.std(axis=1, keepdims=True)
-    std[std == 0.0] = 1.0
-    data = data / std
+    # std = data.std(axis=1, keepdims=True)
+    std = data.std()
+    # std[std == 0.0] = 1.0
+    if std > 0:
+        data = data / std
     return data
 
 
@@ -325,6 +328,7 @@ class SeismicTraceIterableDataset(IterableDataset):
         hf_dataset=None,
         prefix="",
         format="h5",
+        dataset="seismic_trace",
         phases=["P", "S"],
         training=False,
         ## for training
@@ -413,6 +417,7 @@ class SeismicTraceIterableDataset(IterableDataset):
         self.sampling_rate = sampling_rate
         self.highpass_filter = highpass_filter
         self.format = format
+        self.dataset = dataset
 
         ## training
         self.training = training
@@ -977,6 +982,7 @@ class SeismicTraceIterableDataset(IterableDataset):
             if waveform.shape[1] == 3:
                 waveform = waveform.T  # [3, Nt]
             waveform = waveform[:, :, np.newaxis]
+            waveform = normalize(waveform)
             meta["waveform"] = torch.from_numpy(waveform.astype(np.float32))
             meta["station_id"] = [sta_id]
             meta["begin_time"] = hdf5_fp[event_id].attrs["begin_time"]

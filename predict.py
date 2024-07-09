@@ -26,6 +26,7 @@ from eqnet.utils import (
     plot_das,
     plot_phasenet,
     plot_phasenet_plus,
+    plot_phasenet_tf,
 )
 
 # mp.set_start_method("spawn", force=True)
@@ -33,7 +34,7 @@ matplotlib.use("agg")
 logger = logging.getLogger()
 
 
-def postprocess(meta, output, polarity_scale=1, event_scale=16):
+def postprocess(meta, output, polarity_scale=1, event_scale=16, spectrogram_scale=4):
     nt, nx = meta["nt"], meta["nx"]
     data = meta["data"][:, :, :nt, :nx]
     # data = moving_normalize(data)
@@ -46,72 +47,14 @@ def postprocess(meta, output, polarity_scale=1, event_scale=16):
         output["event_center"] = output["event_center"][:, :, : (nt - 1) // event_scale + 1, :nx]
     if "event_time" in output:
         output["event_time"] = output["event_time"][:, :, : (nt - 1) // event_scale + 1, :nx]
+    if "spectrogram" in output:
+        output["spectrogram"] = output["spectrogram"][
+            :, :, : (nt - 1) // spectrogram_scale + 1, :
+        ]  ## FIXME: does not support multiple channels
     return meta, output
 
 
-def pred_phasenet(args, model, data_loader, pick_path, figure_path):
-    model.eval()
-    ctx = nullcontext() if args.device == "cpu" else torch.amp.autocast(device_type=args.device, dtype=args.ptdtype)
-    with torch.inference_mode():
-        for meta in tqdm(data_loader, desc="Predicting", total=len(data_loader)):
-            with ctx:
-                output = model(meta)
-                meta, output = postprocess(meta, output)
-            if "phase" in output:
-                phase_scores = torch.softmax(output["phase"], dim=1)  # [batch, nch, nt, nsta]
-                topk_phase_scores, topk_phase_inds = detect_peaks(phase_scores, vmin=args.min_prob, kernel=128)
-                phase_picks_ = extract_picks(
-                    topk_phase_inds,
-                    topk_phase_scores,
-                    file_name=meta["file_name"],
-                    station_id=meta["station_id"],
-                    begin_time=meta["begin_time"] if "begin_time" in meta else None,
-                    begin_time_index=meta["begin_time_index"] if "begin_time_index" in meta else None,
-                    dt=meta["dt_s"] if "dt_s" in meta else 0.01,
-                    vmin=args.min_prob,
-                    phases=args.phases,
-                    waveform=meta["data"],
-                    window_amp=[10, 5],  # s
-                )
-
-            for i in range(len(meta["file_name"])):
-                tmp = meta["file_name"][i].split("/")
-                parent_dir = "/".join(tmp[-args.subdir_level - 1 : -1])
-                filename = tmp[-1].replace("*", "").replace("?", "").replace(".mseed", "")
-
-                if not os.path.exists(os.path.join(pick_path, parent_dir)):
-                    os.makedirs(os.path.join(pick_path, parent_dir), exist_ok=True)
-                if len(phase_picks_[i]) == 0:
-                    ## keep an empty file for the file with no picks to make it easier to track processed files
-                    with open(os.path.join(pick_path, parent_dir, filename + ".csv"), "a"):
-                        pass
-                    continue
-                picks_df = pd.DataFrame(phase_picks_[i])
-                picks_df.sort_values(by=["phase_time"], inplace=True)
-                picks_df.to_csv(os.path.join(pick_path, parent_dir, filename + ".csv"), index=False)
-
-            if args.plot_figure:
-                # meta["waveform_raw"] = meta["waveform"].clone()
-                # meta["data"] = moving_normalize(meta["data"])
-                plot_phasenet(
-                    meta,
-                    phase_scores.cpu(),
-                    file_name=meta["file_name"],
-                    dt=meta["dt_s"] if "dt_s" in meta else torch.tensor(0.01),
-                    figure_dir=figure_path,
-                )
-
-    ## merge picks
-    if args.distributed:
-        torch.distributed.barrier()
-        if utils.is_main_process():
-            merge_picks(pick_path)
-    else:
-        merge_picks(pick_path)
-    return 0
-
-
-def pred_phasenet_plus(args, model, data_loader, pick_path, event_path, figure_path):
+def pred_phasenet(args, model, data_loader, pick_path, event_path, figure_path):
     model.eval()
     ctx = (
         nullcontext()
@@ -131,6 +74,8 @@ def pred_phasenet_plus(args, model, data_loader, pick_path, event_path, figure_p
                 if "polarity" in output:
                     # polarity_scores = torch.sigmoid(output["polarity"])
                     polarity_scores = torch.softmax(output["polarity"], dim=1)
+                else:
+                    polarity_scores = None
                 topk_phase_scores, topk_phase_inds = detect_peaks(
                     phase_scores, vmin=args.min_prob, kernel=128, dt=dt.min().item()
                 )
@@ -195,18 +140,45 @@ def pred_phasenet_plus(args, model, data_loader, pick_path, event_path, figure_p
                     events_df.to_csv(os.path.join(event_path, parent_dir, filename + ".csv"), index=False)
 
             if args.plot_figure:
-                plot_phasenet_plus(
-                    meta,
-                    phase_scores.cpu().float(),
-                    polarity_scores.cpu().float() if polarity_scores is not None else None,
-                    event_center.cpu().float() if "event_center" in output else None,
-                    event_time.cpu().float() if "event_time" in output else None,
-                    phase_picks=phase_picks,
-                    event_detects=event_detects,
-                    file_name=meta["file_name"],
-                    dt=dt,
-                    figure_dir=figure_path,
-                )
+                if args.model == "phasenet":
+                    plot_phasenet(
+                        meta,
+                        phase_scores.cpu().float(),
+                        polarity_scores.cpu().float() if polarity_scores is not None else None,
+                        phase_picks=phase_picks,
+                        file_name=meta["file_name"],
+                        dt=dt,
+                        figure_dir=figure_path,
+                    )
+                elif args.model == "phasenet_tf":
+                    meta["spectrogram"] = output["spectrogram"].cpu().float()
+                    plot_phasenet_tf(
+                        meta,
+                        phase_scores.cpu().float(),
+                        polarity_scores.cpu().float() if polarity_scores is not None else None,
+                        event_center.cpu().float() if "event_center" in output else None,
+                        event_time.cpu().float() if "event_time" in output else None,
+                        phase_picks=phase_picks,
+                        event_detects=event_detects,
+                        file_name=meta["file_name"],
+                        dt=dt,
+                        figure_dir=figure_path,
+                    )
+                elif args.model == "phasenet_plus":
+                    plot_phasenet_plus(
+                        meta,
+                        phase_scores.cpu().float(),
+                        polarity_scores.cpu().float() if polarity_scores is not None else None,
+                        event_center.cpu().float() if "event_center" in output else None,
+                        event_time.cpu().float() if "event_time" in output else None,
+                        phase_picks=phase_picks,
+                        event_detects=event_detects,
+                        file_name=meta["file_name"],
+                        dt=dt,
+                        figure_dir=figure_path,
+                    )
+                else:
+                    raise (f"Unknown model: {model}")
 
     ## merge picks
     if args.distributed:
@@ -336,14 +308,13 @@ def main(args):
     else:
         torch.backends.cudnn.benchmark = True
 
-    if args.model in ["phasenet", "phasenet_plus"]:
+    if args.model in ["phasenet", "phasenet_tf", "phasenet_plus"]:
         dataset = SeismicTraceIterableDataset(
             data_path=args.data_path,
             data_list=args.data_list,
             hdf5_file=args.hdf5_file,
             prefix=args.prefix,
             format=args.format,
-            dataset=args.dataset,
             training=False,
             sampling_rate=args.sampling_rate,
             highpass_filter=args.highpass_filter,
@@ -412,8 +383,9 @@ def main(args):
         elif args.model == "phasenet_plus":
             if args.location is None:
                 model_url = "https://github.com/AI4EPS/models/releases/download/PhaseNet-Plus-v1/model_99.pth"
-            elif args.location == "LCSN":
-                model_url = "https://github.com/AI4EPS/models/releases/download/PhaseNet-Plus-LCSN/model_99.pth"
+        elif args.model == "phasenet_tf":
+            if args.location == "LCSN":
+                model_url = "https://github.com/AI4EPS/models/releases/download/PhaseNet-TF-LCSN/model_99.pth"
         elif args.model == "phasenet_das":
             if args.location is None:
                 # model_url = "https://github.com/AI4EPS/models/releases/download/PhaseNet-DAS-v0/PhaseNet-DAS-v0.pth"
@@ -445,14 +417,7 @@ def main(args):
         model_without_ddp = model.module
     model_without_ddp.load_state_dict(checkpoint["model"], strict=True)
 
-    if args.model == "phasenet":
-        pred_phasenet(args, model, data_loader, pick_path, figure_path)
-
-    if args.model == "phasenet_plus":
-        pred_phasenet_plus(args, model, data_loader, pick_path, event_path, figure_path)
-
-    if args.model == "phasenet_das":
-        pred_phasenet_das(args, model, data_loader, pick_path, figure_path)
+    pred_phasenet(args, model, data_loader, pick_path, event_path, figure_path)
 
 
 def get_args_parser(add_help=True):
