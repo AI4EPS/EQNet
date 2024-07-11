@@ -56,24 +56,45 @@ _LICENSE = ""
 # TODO: Add link to the official dataset URLs here
 # The HuggingFace Datasets library doesn't host the datasets but only points to the original files.
 # This can be an arbitrary nested dict/list of URLs (see below in `_split_generators` method)
-_REPO = "https://huggingface.co/datasets/AI4EPS/quakeflow_nc/resolve/main/data"
+_REPO = "https://huggingface.co/datasets/AI4EPS/quakeflow_nc/resolve/main/waveform_h5"
 _FILES = [
-    "NC1970-1989.h5",
-    "NC1990-1994.h5",
-    "NC1995-1999.h5",
-    "NC2000-2004.h5",
-    "NC2005-2009.h5",
-    "NC2010.h5",
-    "NC2011.h5",
-    "NC2012.h5",
-    "NC2013.h5",
-    "NC2014.h5",
-    "NC2015.h5",
-    "NC2016.h5",
-    "NC2017.h5",
-    "NC2018.h5",
-    "NC2019.h5",
-    "NC2020.h5",
+    "1987.h5",
+    "1988.h5",
+    "1989.h5",
+    "1990.h5",
+    "1991.h5",
+    "1992.h5",
+    "1993.h5",
+    "1994.h5",
+    "1995.h5",
+    "1996.h5",
+    "1997.h5",
+    "1998.h5",
+    "1999.h5",
+    "2000.h5",
+    "2001.h5",
+    "2002.h5",
+    "2003.h5",
+    "2004.h5",
+    "2005.h5",
+    "2006.h5",
+    "2007.h5",
+    "2008.h5",
+    "2009.h5",
+    "2010.h5",
+    "2011.h5",
+    "2012.h5",
+    "2013.h5",
+    "2014.h5",
+    "2015.h5",
+    "2016.h5",
+    "2017.h5",
+    "2018.h5",
+    "2019.h5",
+    "2020.h5",
+    "2021.h5",
+    "2022.h5",
+    "2023.h5",
 ]
 
 _PATH = "/nfs/quakeflow_dataset/NC/waveform_h5"
@@ -329,6 +350,12 @@ class QuakeFlow_NC(datasets.GeneratorBasedBuilder):
                     for event_id in event_ids:
                         event = fp[event_id]
                         station_ids = list(event.keys())
+                        
+                        # exclude ridgecrest earthquake sequence
+                        event_time0 = datetime.fromisoformat(event.attrs["event_time"])
+                        if event_time0 >= datetime(2019,7,4,0,0,0) and event_time0 <= datetime(2019,7,10,0,0,0):
+                            if event.attrs["latitude"] >= 35.2 and event.attrs["latitude"] <= 36.2 and event.attrs["longitude"] >= -118.0 and event.attrs["longitude"] <= -117.0:
+                                continue
                         
                         if (
                             (self.config.name == "station")
