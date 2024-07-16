@@ -191,6 +191,7 @@ def plot_phasenet_train(meta, phase, epoch=0, figure_dir="figures", prefix=""):
 
 
 def plot_phasenet_tf_train(meta, phase, epoch=0, figure_dir="figures", prefix=""):
+
     for i in range(meta["data"].shape[0]):
         plt.close("all")
         chn_name = ["E", "N", "Z"]
@@ -204,8 +205,12 @@ def plot_phasenet_tf_train(meta, phase, epoch=0, figure_dir="figures", prefix=""
             axes[shift + j].autoscale(enable=True, axis="x", tight=True)
 
         shift = 3
+        if meta["spectrogram"].shape[1] == 6:
+            meta["spectrogram"] = meta["spectrogram"][:, ::2, :, :]
         for j in range(3):
-            axes[shift + j].pcolormesh(meta["spectrogram"][i, j, :, :].T, cmap="jet")
+            # vmax = meta["spectrogram"][i, j, :, :].abs().max().item()
+            vmax = 6
+            axes[shift + j].pcolormesh(meta["spectrogram"][i, j, :, :].T, cmap="seismic", vmin=-vmax, vmax=vmax)
             axes[shift + j].set_xticklabels([])
 
         shift = 6

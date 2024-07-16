@@ -51,7 +51,7 @@ class STFT(nn.Module):
         hop_length=4,
         window_fn=torch.hann_window,
         log_transform=True,
-        normalize=True,
+        normalize=False,
         magnitude=True,
         phase=False,
         grad=False,
@@ -82,15 +82,21 @@ class STFT(nn.Module):
 
     def forward(self, x):
         # window = self.window_fn(self.n_fft).to(x.device)
+        """
+        x: bt, ch, nt
+        """
+        bt, ch, nt = x.shape
+        x = x.view(-1, nt)  # bt*ch, nt
         stft = torch.stft(
             x,
             n_fft=self.n_fft,
             window=self.window,
             hop_length=self.hop_length,
             center=True,
-            return_complex=False,
+            return_complex=True,
         )
-        stft = stft[..., : x.shape[-1] // self.hop_length, :]  # bt* ch, nf, nt, 2
+        stft = torch.view_as_real(stft)
+        stft = stft[..., : x.shape[-1] // self.hop_length, :]  # bt*ch, nf, nt, 2
         if self.discard_zero_freq:
             stft = stft.narrow(dim=-3, start=1, length=stft.shape[-3] - 1)
         if self.select_freq:
@@ -106,6 +112,10 @@ class STFT(nn.Module):
             else:
                 stft = stft_mag
         else:
+            # bt*ch, nf, nt, 2 => bt * ch, 2, nf, nt
+            nf, nt, ni = stft.shape[-3:]
+            stft = stft.view(bt, ch, nf, nt, ni)  # bt, ch, nf, nt, 2
+            stft = stft.permute(0, 1, 4, 3, 2).contiguous().view(bt, ch * ni, nt, nf)  # bt, ch*2, nt, nf
             if self.log_transform:
                 stft = torch.log(1 + F.relu(stft)) - torch.log(1 + F.relu(-stft))
         if self.normalize:
@@ -149,7 +159,7 @@ class UNet(nn.Module):
                 hop_length=stride[0],
                 window_fn=torch.hann_window,
                 log_transform=self.log_scale,
-                magnitude=True,
+                magnitude=False,
                 phase=False,
                 discard_zero_freq=True,
             )
@@ -158,7 +168,7 @@ class UNet(nn.Module):
             padding_tf = (padding[0], 1)
 
             self.encoder12_tf = self.encoder_block(
-                in_channels,
+                in_channels * 2,
                 features * 2,
                 kernel_size=kernel_size_tf,
                 stride=(1, 1),
@@ -301,13 +311,9 @@ class UNet(nn.Module):
         bt, ch, nt, nx = x.shape  # batch, channel, time, station
         if self.spectrogram:
             assert nx == 1
-            sgram = torch.squeeze(x, -1)  # bt, ch, nt, 1
-            sgram = self.stft(sgram.view(-1, nt))  # bt*ch*nx, nf, nt, 2
-            sgram = sgram.view(bt, ch, *sgram.shape[-3:])  # bt, ch, nf, nt, 2
-            # components = sgram.split(1, dim=-1)
-            # sgram = torch.cat([components[1].squeeze(-1), components[0].squeeze(-1)], dim=1)  # bt, ch*2, nf, nt
-            sgram = torch.squeeze(sgram, -1)  # bt, ch, nt, nf
-            sgram = sgram.transpose(-1, -2)  # bt, ch*2/ch, nt, nf
+            sgram = torch.squeeze(x, -1)  # bt, ch, nt, nx=1 => bt, ch, nt
+            sgram = self.stft(sgram)  # bt, ch, nt => bt, ch*2, nt, nf
+            sgram = moving_normalize(sgram, filter=self.moving_norm[0] // 2, stride=self.moving_norm[1] // 2)
             enc2_tf = self.encoder12_tf(sgram)
             enc3_tf = self.encoder23_tf(enc2_tf)
             enc4_tf = self.encoder34_tf(enc3_tf)
