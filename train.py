@@ -294,6 +294,7 @@ def main(args):
             format=args.format,  # ["h5", "hf"]
             training=True,
             stack_event=args.stack_event,
+            stack_noise=args.stack_noise,
             flip_polarity=args.flip_polarity,
             drop_channel=args.drop_channel,
             rank=rank,
@@ -309,6 +310,7 @@ def main(args):
                 format=args.format,  # ["h5", "hf"]
                 training=True,
                 stack_event=False,
+                stack_noise=False,
                 flip_polarity=False,
                 drop_channel=False,
                 rank=rank,

@@ -244,7 +244,41 @@ def stack_event(
         "polarity": polarity1,
         "polarity_mask": polarity_mask1,
         "station_location": meta1["station_location"],
+        "amp_signal": amp_signal1,
+        "amp_noise": amp_noise1,
     }
+
+
+def cut_noise(
+    meta,
+    nt=1024 * 4,
+):
+    noise = None  # 3, nt, 1
+    waveform = meta["waveform"].copy()
+    phase_mask = meta["phase_mask"].copy()
+    for _ in range(10):
+        shift = random.randint(nt - 3000, nt // 2)  # first 30 seconds are noise
+        waveform_ = np.roll(waveform, shift, axis=1)
+        phase_mask_ = np.roll(phase_mask, shift, axis=0)
+        if phase_mask_[:nt, :].sum() == 0:
+            noise = waveform_[:, :nt, :]
+            break
+    return noise
+
+
+def stack_noise(
+    meta,
+    noise=None,
+):
+
+    if noise is not None:
+        amp_signal = meta["amp_signal"]
+        amp_noise = meta["amp_noise"]
+        ratio = 3 ** (random.uniform(0, 1.0)) * max(1, amp_signal / amp_noise)
+        meta["waveform"] = meta["waveform"] + noise / np.std(noise) * ratio
+        meta["amp_noise"] = amp_noise * ratio
+
+    return meta
 
 
 def cut_data(meta, nt=1024 * 4, min_point=200):
@@ -282,6 +316,8 @@ def cut_data(meta, nt=1024 * 4, min_point=200):
         "polarity": polarity,
         "polarity_mask": polarity_mask,
         "station_location": meta["station_location"],
+        "amp_signal": meta["amp_signal"],
+        "amp_noise": meta["amp_noise"],
     }
 
 
@@ -337,6 +373,7 @@ class SeismicTraceIterableDataset(IterableDataset):
         event_width=[150],
         min_snr=3.0,
         stack_event=False,
+        stack_noise=False,
         flip_polarity=False,
         drop_channel=False,
         resample_time=False,
@@ -425,6 +462,7 @@ class SeismicTraceIterableDataset(IterableDataset):
         self.polarity_width = polarity_width
         self.event_width = event_width
         self.stack_event = stack_event
+        self.stack_noise = stack_noise
         self.flip_polarity = flip_polarity
         self.drop_channel = drop_channel
         self.min_snr = min_snr
@@ -797,6 +835,17 @@ class SeismicTraceIterableDataset(IterableDataset):
                         print(f"Error reading {trace_id2}:\n{e}")
 
                 meta = cut_data(meta, min_point=self.phase_width[0] * 2)
+
+                if self.stack_noise:
+                    trace_id2 = random.choice(self.data_list)
+                    if self.format == "h5":
+                        meta2 = self.read_training_h5(trace_id2, hdf5_fp)
+                    elif self.format == "hf":
+                        meta2 = self.read_training_hf(trace_id2)
+                    if meta2 is not None:
+                        noise = cut_noise(meta2, nt=meta["waveform"].shape[1])  # 3, nt, 1
+                        meta = stack_noise(meta, noise)
+
                 if self.flip_polarity and (random.random() < 0.5):
                     meta = flip_polarity(meta)
 
