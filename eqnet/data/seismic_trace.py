@@ -255,13 +255,15 @@ def cut_noise(
 ):
     noise = None  # 3, nt, 1
     waveform = meta["waveform"].copy()
-    phase_mask = meta["phase_mask"].copy()
+    phase_mask = meta["phase_mask"].copy()  # nt, 1
+    idx = np.min(np.argmax(phase_mask, axis=0))
     for _ in range(10):
-        shift = random.randint(nt - 3000, nt // 2)  # first 30 seconds are noise
+        # shift = random.randint(-idx, 0)
+        shift = 0
         waveform_ = np.roll(waveform, shift, axis=1)
         phase_mask_ = np.roll(phase_mask, shift, axis=0)
-        if phase_mask_[:nt, :].sum() == 0:
-            noise = waveform_[:, :nt, :]
+        if phase_mask_[-nt:, :].sum() == 0:
+            noise = waveform_[:, -nt:, :]
             break
     return noise
 
@@ -274,7 +276,7 @@ def stack_noise(
     if noise is not None:
         amp_signal = meta["amp_signal"]
         amp_noise = meta["amp_noise"]
-        ratio = 3 ** (random.uniform(0, 1.0)) * max(1, amp_signal / amp_noise)
+        ratio = random.uniform(0.0, 2.0) * amp_signal / amp_noise
         meta["waveform"] = meta["waveform"] + noise / np.std(noise) * ratio
         meta["amp_noise"] = amp_noise * ratio
 
@@ -540,8 +542,10 @@ class SeismicTraceIterableDataset(IterableDataset):
                 if (j - gap_window > 0) and (j + gap_window < waveform.shape[1]):
                     # noise = np.std(waveform[i, j - noise_window : j - gap_window])
                     # signal = np.std(waveform[i, j + gap_window : j + signal_window])
-                    noise = np.max(np.abs(waveform[i, max(0, j - noise_window) : j - gap_window]))
-                    signal = np.max(np.abs(waveform[i, j + gap_window : j + signal_window]))
+                    # noise = np.max(np.abs(waveform[i, max(0, j - noise_window) : j - gap_window]))
+                    # signal = np.max(np.abs(waveform[i, j + gap_window : j + signal_window]))
+                    noise = np.std(waveform[i, max(0, j - noise_window) : j - gap_window])
+                    signal = np.std(waveform[i, j + gap_window : j + signal_window])
                     if (noise > 0) and (signal > 0):
                         signals.append(signal)
                         noises.append(noise)
@@ -555,7 +559,8 @@ class SeismicTraceIterableDataset(IterableDataset):
             return 0.0, 0.0, 0.0
         else:
             # return snr[-1], signals[-1], noises[-1]
-            return np.max(snr), np.max(signals), np.max(noises)
+            # return np.max(snr), np.max(signals), np.max(noises)
+            return np.max(snr), np.std(signals), np.std(noises)
         # else:
         # idx = np.argmax(snr).item()
         # return snr[idx], signals[idx], noises[idx]
@@ -620,8 +625,8 @@ class SeismicTraceIterableDataset(IterableDataset):
 
         ## calc snr
         snr, amp_signal, amp_noise = self.calc_snr(waveform, meta["P"])
-        if snr < self.min_snr:
-            return None
+        # if snr < self.min_snr:
+        #     return None
 
         ## phase arrival labels
         phase_pick, phase_mask = generate_phase_label(picks, nt=nt, label_width=self.phase_width)
@@ -809,30 +814,32 @@ class SeismicTraceIterableDataset(IterableDataset):
         while True:
             random.shuffle(data_list)
             for trace_id in data_list:
-                try:
-                    if self.format == "h5":
-                        meta = self.read_training_h5(trace_id, hdf5_fp)
-                    elif self.format == "hf":
-                        meta = self.read_training_hf(trace_id)
-                except Exception as e:
-                    print(f"Error reading {trace_id}:\n{e}")
-                    continue
+                # try:
+                if self.format == "h5":
+                    meta = self.read_training_h5(trace_id, hdf5_fp)
+                elif self.format == "hf":
+                    meta = self.read_training_hf(trace_id)
+                # except Exception as e:
+                #     print(f"Error reading {trace_id}:\n{e}")
+                #     continue
 
                 if meta is None:
                     continue
 
                 # if self.stack_event and (random.random() < 0.6):
                 if self.stack_event:
-                    try:
-                        trace_id2 = random.choice(self.data_list)
-                        if self.format == "h5":
-                            meta2 = self.read_training_h5(trace_id2, hdf5_fp)
-                        elif self.format == "hf":
-                            meta2 = self.read_training_hf(trace_id2)
+                    # try:
+                    trace_id2 = random.choice(self.data_list)
+                    if self.format == "h5":
+                        meta2 = self.read_training_h5(trace_id2, hdf5_fp)
+                    elif self.format == "hf":
+                        meta2 = self.read_training_hf(trace_id2)
+                    # except Exception as e:
+                    #     print(f"Error reading {trace_id2}:\n{e}")
+
+                    if meta2 is not None:
                         if meta2 is not None:
                             meta = stack_event(meta, meta2)
-                    except Exception as e:
-                        print(f"Error reading {trace_id2}:\n{e}")
 
                 meta = cut_data(meta, min_point=self.phase_width[0] * 2)
 
