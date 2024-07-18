@@ -258,8 +258,8 @@ def cut_noise(
     phase_mask = meta["phase_mask"].copy()  # nt, 1
     idx = np.min(np.argmax(phase_mask, axis=0))
     for _ in range(10):
-        # shift = random.randint(-idx, 0)
-        shift = 0
+        shift = random.randint(-idx + 10, 0)
+        # shift = 0
         waveform_ = np.roll(waveform, shift, axis=1)
         phase_mask_ = np.roll(phase_mask, shift, axis=0)
         if phase_mask_[-nt:, :].sum() == 0:
@@ -277,7 +277,10 @@ def stack_noise(
         amp_signal = meta["amp_signal"]
         amp_noise = meta["amp_noise"]
         ratio = random.uniform(0.0, 2.0) * amp_signal / amp_noise
-        meta["waveform"] = meta["waveform"] + noise / np.std(noise) * ratio
+        std_noise = np.std(noise)
+        if std_noise > 0:
+            noise = noise / std_noise * ratio
+        meta["waveform"] = meta["waveform"] + noise
         meta["amp_noise"] = amp_noise * ratio
 
     return meta
