@@ -22,6 +22,14 @@ from scipy.signal import butter, filtfilt
 from ..utils.station_sampler import reorder_keys
 from .utils import random_shift
 
+@np.vectorize
+def mapping_phase_type(phase):
+    if phase in ["P", "Pn", "Pg", "Pb"]:
+        return "P"
+    elif phase in ["S", "Sn", "Sg", "Sb"]:
+        return "S"
+    else:
+        return phase
 
 def generate_label(phase_list, label_width=[150, 150], nt=8192):
     target = np.zeros([len(phase_list) + 1, nt], dtype=np.float32)
@@ -134,14 +142,31 @@ def sample_by_magnitude(magnitude, critical_magnitude=3, sample_rate=0.7, min_ma
     else:
         bar = (1-sample_rate) / (10 ** ((magnitude - min_magnitude)/(critical_magnitude - min_magnitude)))
         return random.random() > bar
+    
+def sample_by_distance(distances, num_stations, num_manual_stations, critical_distance=50, min_distance=5, sample_rate=0.7):
+    if num_manual_stations == 0:
+        raise ValueError("num_manual_stations should be greater than 0")
+    if num_manual_stations >= num_stations:
+        prob = 1 - ((1-sample_rate) / (10 ** ((distances[:num_manual_stations] - min_distance)/(critical_distance - min_distance))))
+        prob = prob / prob.sum()
+        idxs = np.random.choice(np.arange(num_manual_stations), num_stations, replace=False, p=prob)
+        
+        return idxs
+    else:
+        prob_auto = 1 - ((1-sample_rate) / (10 ** ((distances[num_manual_stations:] - min_distance)/(critical_distance - min_distance))))
+        prob_auto = prob_auto / prob_auto.sum()
+        idxs_auto = np.random.choice(np.arange(num_manual_stations, len(distances)), num_stations-num_manual_stations, replace=False, p=prob_auto)
+        
+        return np.concatenate([np.arange(num_manual_stations), idxs_auto])
 
-def sample_event_for_stacking(meta, event_id, e2sta_dict, sta2e_dict, event_attrs_dict, min_shared_sta=2, magnitude_range=1.0, snr_bar=3.0, returns=3, max_tries=30):
+def sample_event_for_stacking(event_id, e2sta_dict, sta2e_dict, event_attrs_dict, min_shared_sta=2, magnitude_range=1.0, snr_bar=3.0, returns=3, max_tries=30):
     event_id0 = event_id #meta['event_id']
     event_attrs0 = event_attrs_dict[event_id0]
     sta_ids0 = e2sta_dict[event_id0]
     mag0 = event_attrs0['magnitude']
     snr_median0 = event_attrs0['snr_median']
     year0 = event_attrs0['year']
+    min_shared_sta = min(len(sta_ids0), 2) if len(sta_ids0)<min_shared_sta else min_shared_sta
     
     results = []
     for i in range(max_tries):
@@ -161,8 +186,8 @@ def sample_event_for_stacking(meta, event_id, e2sta_dict, sta2e_dict, event_attr
         # prefer events in the close years
         if i<=max_tries//2 and abs(year0-event_attrs_dict[event_id]['year'])>1:
             continue
-        # check if at least two station is shared
-        if len(sta_ids0)>1 and len(set(sta_ids0).intersection(set(sta_ids_2)))<min_shared_sta:
+        # check if at least given number stations are shared
+        if len(set(sta_ids0).intersection(set(sta_ids_2)))<min_shared_sta:
             continue
         # check if the magnitude is in the range
         if abs(event_attrs_dict[event_id]['magnitude']-mag0)>magnitude_range:
@@ -237,6 +262,9 @@ def stack_event(
     event_mask2[other_sta_idx] = 0
     event_location2 = event_location2[shared_sta_idx]
     event_location2[other_sta_idx] = 0
+    station_ids2 = [station_ids2[i] for i in shared_sta_idx]
+    duration2 = meta2["duration"].copy()
+    duration2 = [duration2[i] for i in shared_sta_idx]
     #polarity2 = polarity2[shared_sta_idx]
     #polarity2[other_sta_idx] = 0
     #polarity_mask2 = polarity_mask2[shared_sta_idx]
@@ -253,8 +281,8 @@ def stack_event(
             t0, t1 = duration
             duration_mask1[i, t0:t1] = 1
     #ns, ne, nd = meta2["duration"].shape  # stations, events, (t0, t1)
-    for i, duration_sta in enumerate(meta2["duration"]):
-        if len(duration_sta)==0:
+    for i, duration_sta in enumerate(duration2):
+        if len(duration_sta)==0 or i in other_sta_idx:
             continue
         for j, duration in enumerate(duration_sta):
             t0, t1 = duration
@@ -524,17 +552,18 @@ class SeismicNetworkIterableDataset(IterableDataset):
         is_sick = False
         auto_count = 0
         for sta_id in station_ids:
-            if len(np.unique(event[sta_id].attrs["phase_type"])) < 2:
+            if len(np.unique(mapping_phase_type(event[sta_id].attrs["phase_type"]))) < 2:
                 auto_count += 1
                 continue # only one phase type indicates automatic picks
             valid_manual_events = 0
             attrs = event[sta_id].attrs
+            sta_phase_type = mapping_phase_type(attrs["phase_type"])
             for e_id in [event_id]:#sorted(np.unique(event[sta_id].attrs["event_id"])):
-                if len(np.unique(attrs["phase_type"][attrs["event_id"]==e_id])) < 2:
+                if len(np.unique(sta_phase_type[attrs["event_id"]==e_id])) < 2:
                     continue
                 
-                p_picks = attrs["phase_index"][np.logical_and(attrs["phase_type"] == "P", attrs["event_id"] == e_id)]
-                s_picks = attrs["phase_index"][np.logical_and(attrs["phase_type"] == "S", attrs["event_id"] == e_id)]
+                p_picks = attrs["phase_index"][np.logical_and(sta_phase_type == "P", attrs["event_id"] == e_id)]
+                s_picks = attrs["phase_index"][np.logical_and(sta_phase_type == "S", attrs["event_id"] == e_id)]
                 if p_picks.min()>self.nt or s_picks.min()>self.nt:
                     continue # phases too late
                 # try:
@@ -559,13 +588,13 @@ class SeismicNetworkIterableDataset(IterableDataset):
         if is_sick:
             return None
         
-        reference_latitude = 0
-        reference_longitude = 0
-        for sta_id in station_ids:
-            reference_latitude += event[sta_id].attrs["latitude"]
-            reference_longitude += event[sta_id].attrs["longitude"]
-        reference_latitude/=len(station_ids)
-        reference_longitude/=len(station_ids)
+        #reference_latitude = 0
+        #reference_longitude = 0
+        #for sta_id in station_ids:
+        #    reference_latitude += event[sta_id].attrs["latitude"]
+        #    reference_longitude += event[sta_id].attrs["longitude"]
+        #reference_latitude/=len(station_ids)
+        #reference_longitude/=len(station_ids)
         
         b, a = butter(4, 1/(self.sampling_rate/2), btype="highpass", analog=False)
         
@@ -587,6 +616,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
             waveforms[i, :, :] = event[sta_id][:, :]
             amplitude[i, :, :] = event[sta_id][:, :]
             attrs = event[sta_id].attrs
+            sta_phase_type = mapping_phase_type(attrs["phase_type"])
             if attrs["unit"][-6:] == "m/s**2":
                 # integrate acceleration to velocity
                 amplitude[i] = np.cumsum(amplitude[i]*attrs["dt_s"], axis=-1)
@@ -612,7 +642,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
 
             station_location[i, 2] =  round(-attrs["elevation_m"]/1e3, 2)
             
-            if len(np.unique(attrs["phase_type"])) < 2:
+            if len(np.unique(sta_phase_type)) < 2:
                 auto_stas.append(i)
                 phase_pick[i, 1:, :] = 0
                 phase_pick[i, 0, :] = 1
@@ -630,11 +660,11 @@ class SeismicNetworkIterableDataset(IterableDataset):
             event_time0 = datetime.fromisoformat(event_attrs["event_time"])
             for e_id in sorted(np.unique(attrs["event_id"])):
                 e_attrs = hdf5_fp[e_id].attrs
-                if len(np.unique(attrs["phase_type"][attrs["event_id"]==e_id])) < 2:
+                if len(np.unique(sta_phase_type[attrs["event_id"]==e_id])) < 2:
                     continue
                 
-                p_picks = attrs["phase_index"][np.logical_and(attrs["phase_type"] == "P", attrs["event_id"] == e_id)]
-                s_picks = attrs["phase_index"][np.logical_and(attrs["phase_type"] == "S", attrs["event_id"] == e_id)]
+                p_picks = attrs["phase_index"][np.logical_and(sta_phase_type == "P", attrs["event_id"] == e_id)]
+                s_picks = attrs["phase_index"][np.logical_and(sta_phase_type == "S", attrs["event_id"] == e_id)]
                 if p_picks.min()>self.nt or s_picks.min()>self.nt:
                     continue # phases too late
                 if len(p_pick_stas)!=0 and np.abs(p_picks-np.array(p_pick_stas)).min() < 30:
@@ -759,15 +789,15 @@ class SeismicNetworkIterableDataset(IterableDataset):
         manual_cluster_index = np.array(manual_stas+auto_stas)
         # if abs(it) <= 160:
         #     print(f"\n{event_id} data cut off shift smaller than {160/self.sampling_rate} s: {it/self.sampling_rate} s")
-        waveforms = waveforms[manual_cluster_index][:num_stations]
-        amplitude = amplitude[manual_cluster_index][:num_stations]
-        phase_pick = phase_pick[manual_cluster_index][:num_stations]
-        event_center = event_center[manual_cluster_index][:num_stations]
-        event_location = event_location[manual_cluster_index][:num_stations]
-        event_location_mask = event_location_mask[manual_cluster_index][:num_stations]
-        station_location = station_location[manual_cluster_index][:num_stations]
-        sta_ids = [station_ids[i] for i in manual_cluster_index][:num_stations]
-        duration = [duration[i] for i in manual_cluster_index][:num_stations]
+        waveforms = waveforms[manual_cluster_index]
+        amplitude = amplitude[manual_cluster_index]
+        phase_pick = phase_pick[manual_cluster_index]
+        event_center = event_center[manual_cluster_index]
+        event_location = event_location[manual_cluster_index]
+        event_location_mask = event_location_mask[manual_cluster_index]
+        station_location = station_location[manual_cluster_index]
+        sta_ids = [station_ids[i] for i in manual_cluster_index]
+        duration = [duration[i] for i in manual_cluster_index]
 
         assert np.any(phase_pick[:, 1:, :]>0), f"{event_id} no manual phase picks"
         assert np.any(event_center>0), f"{event_id} no manual event picks"
@@ -780,11 +810,12 @@ class SeismicNetworkIterableDataset(IterableDataset):
             "station_location": station_location,
             "amplitude": amplitude,
             "num_stations": waveforms.shape[0],
-            "num_manual_stations": min(len_manual, num_stations),
+            "num_manual_stations": len_manual,
             "event_id": event_id,
             "station_ids": sta_ids,
             "duration": duration,
             "first_arrival": first_arrival,
+            "distance": np.array([event[sta_id].attrs["distance_km"] for sta_id in sta_ids])
             # "reference_point": torch.from_numpy(reference_point).float(),
         }
         
@@ -792,10 +823,19 @@ class SeismicNetworkIterableDataset(IterableDataset):
 
 
     def sample_train(self, data_list):
+        random_idx = np.random.permutation(len(data_list))
+        random_idx = iter(random_idx)
         while True:
-            event_id = np.random.choice(data_list)
+            #event_id = np.random.choice(data_list)
+            try:
+                event_id = data_list[next(random_idx)]
+            except StopIteration:
+                random_idx = np.random.permutation(len(data_list))
+                random_idx = iter(random_idx)
+                event_id = data_list[next(random_idx)]
+            
             if self.sample_by_magnitude:
-                if not sample_by_magnitude(self.hdf5_fp[event_id].attrs["magnitude"], critical_magnitude=3, sample_rate=0.7, min_magnitude=0.5):
+                if not sample_by_magnitude(self.hdf5_fp[event_id].attrs["magnitude"], critical_magnitude=2, sample_rate=0.6, min_magnitude=0.3):
                     continue
             # if True:
             try:
@@ -807,10 +847,46 @@ class SeismicNetworkIterableDataset(IterableDataset):
             if meta is None:
                 continue
             
+            if self.sample_by_distance:
+                idx = sample_by_distance(meta['distance'], num_stations=self.num_stations, num_manual_stations=meta['num_manual_stations'],
+                                         critical_distance=50, min_distance=5, sample_rate=0.5)
+                assert len(idx) == self.num_stations, f"{event_id} sample_by_distance failed"
+                
+                meta = {
+                    "waveforms": meta['waveforms'][idx],
+                    "phase_pick": meta['phase_pick'][idx],
+                    "event_center": meta['event_center'][idx],
+                    "event_location": meta['event_location'][idx],
+                    "event_location_mask": meta['event_location_mask'][idx],
+                    "station_location": meta['station_location'][idx],
+                    "amplitude": meta['amplitude'][idx],
+                    "num_stations": meta['waveforms'].shape[0],
+                    "num_manual_stations": min(meta['num_manual_stations'], self.num_stations),
+                    "event_id": meta['event_id'],
+                    "station_ids": [meta['station_ids'][i] for i in idx],
+                    "duration": [meta['duration'][i] for i in idx],
+                    "first_arrival": meta['first_arrival'],
+                }
+            else:
+                meta = {
+                    "waveforms": meta['waveforms'][:self.num_stations],
+                    "phase_pick": meta['phase_pick'][:self.num_stations],
+                    "event_center": meta['event_center'][:self.num_stations],
+                    "event_location": meta['event_location'][:self.num_stations],
+                    "event_location_mask": meta['event_location_mask'][:self.num_stations],
+                    "station_location": meta['station_location'][:self.num_stations],
+                    "amplitude": meta['amplitude'][:self.num_stations],
+                    "num_stations": meta['waveforms'].shape[0],
+                    "num_manual_stations": min(meta['num_manual_stations'], self.num_stations),
+                    "event_id": meta['event_id'],
+                    "station_ids": meta['station_ids'][:self.num_stations],
+                    "duration": meta['duration'][:self.num_stations],
+                    "first_arrival": meta['first_arrival'],
+                }
+            
             if self.stack_event and random.random() < 0.7:
                 try:
                     selected_event_ids = sample_event_for_stacking(
-                        meta = meta,
                         event_id = event_id,
                         e2sta_dict = self.e2sta_dict,
                         sta2e_dict = self.sta2e_dict,
@@ -837,6 +913,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
                 
                 for k in meta_cutted.keys():
                     meta_cutted[k] = meta_cutted[k][index]
+                meta["station_location"] = meta["station_location"][index] 
             
             meta = reorder_keys({
                 "data": torch.from_numpy(meta_cutted["waveforms"]).float(),
