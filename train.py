@@ -19,9 +19,9 @@ import wandb
 
 import datasets
 from datasets.fingerprint import Hasher
+from datasets import load_dataset_builder
 import eqnet
 import utils
-import wandb
 from eqnet.data import (
     AutoEncoderIterableDataset,
     DASIterableDataset,
@@ -139,8 +139,8 @@ def train_one_epoch(
     model.train()
     processed_samples = 0
     for i, meta in enumerate(metric_logger.log_every(data_loader, args.print_freq, header)):
-        if args.model == "eqnet":
-            meta = random_shift(meta, shift_range=(-160, 0), feature_scale=16)
+        #if args.model == "eqnet":
+        #    meta = random_shift(meta, shift_range=(-160, 0), feature_scale=16)
         with ctx:
             output = model(meta)
 
@@ -399,6 +399,10 @@ def main(args):
             # Get the directory of the train.py
             code_dir = os.path.dirname(os.path.abspath(__file__))
             script_dir = os.path.join(code_dir, "eqnet/data/quakeflow_nc.py")
+            # dataset_builder = load_dataset_builder(script_dir, name=args.dataset_config, cache_dir="/data/cache/huggingface")
+            # dataset_builder.download_and_prepare(file_format="arrow", num_proc=min(args.workers, 16))
+            # dataset = dataset_builder.as_dataset(split="train")
+            # dataset_test = dataset_builder.as_dataset(split="test")
             dataset = datasets.load_dataset(script_dir, split="train", name=args.dataset_config, cache_dir="/data/cache/huggingface", num_proc=min(args.workers, 16))
             dataset_test = datasets.load_dataset(script_dir, split="test", name=args.dataset_config, cache_dir="/data/cache/huggingface", num_proc=1)
             dataset = dataset.with_format("torch")
@@ -457,11 +461,26 @@ def main(args):
                 num_stations=args.num_stations_list[0] if args.num_stations_list is not None else None,
                 format="h5",
                 training=True,
+                stack_event=args.stack_event,
+                drop_channel=args.drop_channel,
+                sample_by_magnitude=args.sample_by_magnitude,
+                sample_by_distance=args.sample_by_distance,
                 rank=rank,
                 world_size=world_size,
             )    
             train_sampler = None
-            dataset_test = dataset
+            dataset_test = SeismicNetworkIterableDataset(
+                data_path=args.data_path,
+                data_list=args.data_list,
+                hdf5_file='/nfs/quakeflow_dataset/NC/waveform_h5/2020.h5',
+                num_stations=args.num_stations_list[0] if args.num_stations_list is not None else None,
+                format="h5",
+                training=True,
+                stack_event=False,
+                drop_channel=False,
+                rank=rank,
+                world_size=world_size,
+            )  
             test_sampler = None
     else:
         raise NotImplementedError(f"Invalid model {args.model}. Only phasenet, phasenet_das, autoencoder and eqnet are supported.")
@@ -494,7 +513,7 @@ def main(args):
 
         data_loader_test = torch.utils.data.DataLoader(
             dataset_test,
-            batch_size=args.batch_size,
+            batch_size=1,
             sampler=test_sampler,
             num_workers=args.workers,
             collate_fn=None,
@@ -911,6 +930,8 @@ def get_args_parser(add_help=True):
     parser.add_argument("--stack-event", action="store_true", help="Stack event")
     parser.add_argument("--flip-polarity", action="store_true", help="Flip polarity")
     parser.add_argument("--drop-channel", action="store_true", help="Drop channel")
+    parser.add_argument("--sample-by-magnitude", action="store_true", help="Sample by magnitude")
+    parser.add_argument("--sample-by-distance", action="store_true", help="Sample by distance")
     parser.add_argument("--resample-space", action="store_true", help="Resample space resolution")
     parser.add_argument("--resample-time", action="store_true", help="Resample time  resolution")
     parser.add_argument("--masking", action="store_true", help="Masking of the input data")
