@@ -42,12 +42,19 @@ def normalize(data):
     just to make the data scale to normal range
     data: [3, nt, nsta] or [3, nt]
     """
+    # check nan
+    data = np.nan_to_num(data)
+    std = np.std(data, axis=-1, keepdims=True)
+    data = np.where(np.isnan(std), 0, data)
+
     data = data - data.mean(axis=1, keepdims=True)
-    # std = data.std(axis=1, keepdims=True)
     std = data.std()
-    # std[std == 0.0] = 1.0
     if std > 0:
         data = data / std
+    # amp = np.max(np.abs(data))
+    # if amp > 0:
+    #     data = data / amp
+
     return data
 
 
@@ -611,7 +618,7 @@ class SeismicTraceIterableDataset(IterableDataset):
         nch, nt = waveform.shape
 
         ## phase picks
-        attrs = hdf5_fp[trace_id].attrs
+        attrs = dict(hdf5_fp[trace_id].attrs)
         meta = {}
 
         for phase in self.phases:
@@ -885,6 +892,8 @@ class SeismicTraceIterableDataset(IterableDataset):
                 event_time = meta["event_time"][np.newaxis, :: self.event_feature_scale]
                 event_mask = meta["event_mask"][np.newaxis, :: self.event_feature_scale]
                 station_location = meta["station_location"]
+
+                waveform = np.nan_to_num(waveform.astype(np.float16))
 
                 yield {
                     "data": torch.from_numpy(waveform).float(),

@@ -190,39 +190,53 @@ def plot_phasenet_train(meta, phase, epoch=0, figure_dir="figures", prefix=""):
             break
 
 
-def plot_phasenet_tf_train(meta, phase, epoch=0, figure_dir="figures", prefix=""):
+def plot_phasenet_tf_train(meta, phase, event_center, event_time, epoch=0, figure_dir="figures", prefix=""):
 
     for i in range(meta["data"].shape[0]):
         plt.close("all")
         chn_name = ["E", "N", "Z"]
-        fig, axes = plt.subplots(7, 1, figsize=(10, 10))
+        fig, axes = plt.subplots(8, 1, figsize=(10, 10))
 
-        shift = 0
+        idx = 0
         for j in range(3):
-            axes[shift + j].plot(meta["data"][i, j, :, 0], linewidth=0.5, color="k", label=f"{chn_name[j]}")
-            axes[shift + j].set_xticklabels([])
-            axes[shift + j].grid("on")
-            axes[shift + j].autoscale(enable=True, axis="x", tight=True)
+            axes[idx + j].plot(meta["data"][i, j, :, 0], linewidth=0.5, color="k", label=f"{chn_name[j]}")
+            axes[idx + j].set_xticklabels([])
+            axes[idx + j].grid("on")
+            axes[idx + j].autoscale(enable=True, axis="x", tight=True)
 
-        shift = 3
+        idx = 3
         if meta["spectrogram"].shape[1] == 6:
             meta["spectrogram"] = meta["spectrogram"][:, ::2, :, :]
         for j in range(3):
             # vmax = meta["spectrogram"][i, j, :, :].abs().max().item()
             vmax = 6
-            axes[shift + j].pcolormesh(meta["spectrogram"][i, j, :, :].T, cmap="seismic", vmin=-vmax, vmax=vmax)
-            axes[shift + j].set_xticklabels([])
+            axes[idx + j].pcolormesh(meta["spectrogram"][i, j, :, :].T, cmap="seismic", vmin=-vmax, vmax=vmax)
+            raise
+            axes[idx + j].set_xticklabels([])
 
-        shift = 6
-        axes[shift].plot(phase[i, 1, :, 0], "b")
-        axes[shift].plot(phase[i, 2, :, 0], "r")
-        axes[shift].plot(meta["phase_pick"][i, 1, :, 0], "--C0")
-        axes[shift].plot(meta["phase_pick"][i, 2, :, 0], "--C3")
-        axes[shift].plot(meta["phase_mask"][i, 0, :, 0], ":", color="gray")
-        axes[shift].set_ylim(-0.05, 1.05)
-        axes[shift].autoscale(enable=True, axis="x", tight=True)
-        axes[shift].set_xticklabels([])
-        axes[shift].grid("on")
+        idx = 6
+        axes[idx].plot(phase[i, 1, :, 0], "b")
+        axes[idx].plot(phase[i, 2, :, 0], "r")
+        axes[idx].plot(meta["phase_pick"][i, 1, :, 0], "--C0")
+        axes[idx].plot(meta["phase_pick"][i, 2, :, 0], "--C3")
+        axes[idx].plot(meta["phase_mask"][i, 0, :, 0], ":", color="gray")
+        axes[idx].set_ylim(-0.05, 1.05)
+        axes[idx].autoscale(enable=True, axis="x", tight=True)
+        axes[idx].set_xticklabels([])
+        axes[idx].grid("on")
+
+        idx = 7
+        axes[idx].plot(event_center[i, 0, :, 0], "b")
+        axes[idx].plot(meta["event_center"][i, 0, :, 0], "--C0")
+        axes[idx].plot(meta["event_mask"][i, 0, :, 0], ":", color="gray")
+        axes[idx].set_ylim(-0.05, 1.05)
+        axes[idx].autoscale(enable=True, axis="x", tight=True)
+        axes[idx].set_xticklabels([])
+        axes[idx].grid("on")
+
+        axes2 = axes[idx].twinx()
+        axes2.plot(event_time[i, 0, :, 0], "--C1")
+        axes2.plot(meta["event_time"][i, 0, :, 0], ":C3")
 
         if "RANK" in os.environ:
             rank = int(os.environ["RANK"])
@@ -418,12 +432,9 @@ def plot_phasenet_tf(
     file_name=None,
     figure_dir="figures",
 ):
-
     nb, nc, nt, ns = meta["data"].shape
     if isinstance(dt, torch.Tensor):
         dt = dt.item()
-    nt_spec = meta["spectrogram"].shape[2]
-    dt_spec = dt * nt / nt_spec
     nt_event = event_center.shape[2]
     dt_event = dt * nt / nt_event
     # nt_polarity = polarity.shape[2]
@@ -434,43 +445,104 @@ def plot_phasenet_tf(
     else:
         begin_time = [0] * nb
 
+    print(f"{meta['data'].shape[0] = }")
     for i in range(meta["data"].shape[0]):
         plt.close("all")
+
         chn_name = ["E", "N", "Z"]
 
-        fig, axes = plt.subplots(8, 1, figsize=(12, 10))
+        fig, axes = plt.subplots(8, 1, figsize=(10, 10))
+        idx = 0
 
-        shift = 0
+        for j in range(3):
+            t = pd.date_range(pd.Timestamp(begin_time[i]), periods=nt, freq=pd.Timedelta(seconds=dt))
+            axes[idx + j].plot(t, meta["data"][i, j, :, 0], lw=0.5, color="k", label=f"{chn_name[j]}")
+            axes[idx + j].set_xlim(t[0], t[-1])
+            axes[idx + j].set_xticklabels([])
+            axes[idx + j].grid("on")
+            axes[idx + j].legend(loc="upper right")
+
+        idx = 3
+        if meta["spectrogram"].shape[1] == 6:
+            meta["spectrogram"] = meta["spectrogram"][:, ::2, :, :]
+        for j in range(3):
+            # vmax = meta["spectrogram"][i, j, :, :].abs().max().item()
+            vmax = 6
+            axes[idx + j].pcolormesh(meta["spectrogram"][i, j, :, :].T, cmap="seismic", vmin=-vmax, vmax=vmax)
+            axes[idx + j].set_xticklabels([])
+
+        idx = 6
         t = pd.date_range(pd.Timestamp(begin_time[i]), periods=nt, freq=pd.Timedelta(seconds=dt))
-        for j in range(3):
-            axes[shift + j].plot(t, meta["data"][i, j, :, 0], linewidth=0.5, color="k", label=f"{chn_name[j]}")
-            axes[shift + j].set_xticklabels([])
-            axes[shift + j].grid("on")
-            axes[shift + j].autoscale(enable=True, axis="x", tight=True)
+        print(phase.shape)
+        print(f"{i = }")
+        axes[idx].plot(t, phase[i, 2, :, 0], "r", lw=1.0)
+        axes[idx].plot(t, phase[i, 1, :, 0], "b", lw=1.0)
+        color = {"P": "b", "S": "r"}
+        for ii, pick in enumerate(phase_picks[i]):
+            tt = pd.to_datetime(pick["phase_time"])
+            axes[idx].plot([tt, tt], [-0.05, 1.05], f"--{color[pick['phase_type']]}", linewidth=0.8)
 
-        shift = 3
-        t_spec = pd.date_range(pd.Timestamp(begin_time[i]), periods=nt_spec, freq=pd.Timedelta(seconds=dt_spec))
-        for j in range(3):
-            axes[shift + j].pcolormesh(meta["spectrogram"][i, j, :, :].T, cmap="jet")
-            axes[shift + j].set_xticklabels([])
-            axes[shift + j].autoscale(enable=True, axis="x", tight=True)
+        axes[idx].plot([], [], "-b", label="P-phase")
+        axes[idx].plot([], [], "-r", label="S-phase")
+        axes[idx].set_xlim(t[0], t[-1])
+        axes[idx].set_ylim(-0.05, 1.05)
+        axes[idx].set_xticklabels([])
+        axes[idx].grid("on")
+        axes[idx].legend(loc="upper right")
 
-        shift = 6
-        axes[shift].plot(t, phase[i, 1, :, 0], "b", lw=1.0)
-        axes[shift].plot(t, phase[i, 2, :, 0], "r", lw=1.0)
-        axes[shift].set_ylim(-0.05, 1.05)
-        axes[shift].autoscale(enable=True, axis="x", tight=True)
-        axes[shift].set_xticklabels([])
-        axes[shift].grid("on")
+        # t = pd.date_range(pd.Timestamp(begin_time[i]), periods=nt_polarity, freq=pd.Timedelta(seconds=dt_polarity))
+        # # axes[k + 1].plot(t, (polarity[i, 0, :, 0] - 0.5) * 2.0, "b", label="polarity")
+        # # axes[k + 1].plot(t, polarity[i, 1, :, 0] - polarity[i, 2, :, 0], "b", label="Polarity")
+        # for ii, pick in enumerate(phase_picks[i]):
+        #     tt = pd.to_datetime(pick["phase_time"])
+        #     amp = pick["phase_polarity"]
+        #     if abs(amp) > 0.15:
+        #         axes[k + 1].annotate(
+        #             "",
+        #             xy=(tt, -0.03 * np.sign(amp)),
+        #             xytext=(tt, amp),
+        #             arrowprops=dict(arrowstyle="<-", color=f"{color[pick['phase_type']]}", lw=1.5),
+        #         )
+        # axes[k + 1].plot([], [], "-b", label="P-polarity")
+        # axes[k + 1].plot([], [], "-r", label="S-polarity")
+        # axes[k + 1].plot([t[0], t[-1]], [0.0, 0.0], "-", color="blue", lw=1.0)
+        # axes[k + 1].set_xlim(t[0], t[-1])
+        # axes[k + 1].set_ylim(-1.05, 1.05)
+        # axes[k + 1].set_xticklabels([])
+        # axes[k + 1].grid("on")
+        # axes[k + 1].legend(loc="upper right")
 
-        shift = 7
-        t_event = pd.date_range(pd.Timestamp(begin_time[i]), periods=nt_event, freq=pd.Timedelta(seconds=dt_event))
-        axes[shift].plot(t_event, event_center[i, 0, :, 0], "b", label="Event")
-        axes[shift].set_xlim(t[0], t[-1])
-        axes[shift].set_ylim(-0.05, 1.05)
-        axes[shift].grid("on")
-        axes[shift].legend(loc="upper right")
-        axes[shift].set_xlabel("Time (s)")
+        idx = 7
+        t = pd.date_range(pd.Timestamp(begin_time[i]), periods=nt_event, freq=pd.Timedelta(seconds=dt_event))
+        axes[idx].plot(t, event_center[i, 0, :, 0], "b", label="Event")
+        axes[idx].set_xlim(t[0], t[-1])
+        axes[idx].set_ylim(-0.05, 1.05)
+        axes[idx].grid("on")
+        axes[idx].legend(loc="upper right")
+        axes[idx].set_xlabel("Time (s)")
+
+        # axes2 = axes[k + 2].twinx()
+        # axes2.plot(t, event_time[i, 0, :, 0], "--C1")
+        # axes2.set_ylabel("Time (s)")
+
+        for ii, event in enumerate(event_detects[i]):
+            ot = pd.to_datetime(event["event_time"])
+            axes[idx].plot([ot, ot], [-0.05, 1.05], "--r", linewidth=2.0)
+            at = pd.to_datetime(event["center_time"])
+            axes[idx].plot([at, at], [-0.05, 1.05], "--b", linewidth=1.0)
+            axes[idx].annotate(
+                "",
+                xy=(max(t[0], at), 0.3),
+                xytext=(max(t[0], ot), 0.3),
+                arrowprops=dict(arrowstyle="<-", color="C1", lw=2),
+            )
+        axes[idx].plot([], [], "--C3", label="Origin time")
+
+        axes[idx].set_xlim(t[0], t[-1])
+        axes[idx].set_ylim(-0.05, 1.05)
+        axes[idx].grid("on")
+        axes[idx].legend(loc="upper right")
+        axes[idx].set_xlabel("Time (s)")
 
         fig.tight_layout()
 
@@ -514,97 +586,97 @@ def plot_phasenet_plus(
 
         chn_name = ["E", "N", "Z"]
 
-        if "raw_data" in meta:
-            shift = 3
-            fig, axes = plt.subplots(9, 1, figsize=(10, 10))
-            t = pd.date_range(pd.Timestamp(begin_time[i]), periods=nt, freq=pd.Timedelta(seconds=dt))
-            for j in range(3):
-                axes[j].plot(t, meta["raw_data"][i, j, :, 0], lw=0.5, color="k", label=f"{chn_name[j]}")
-                axes[j].set_xlim(t[0], t[-1])
-                axes[j].set_xticklabels([])
-                axes[j].grid("on")
-                axes[j + shift].legend(loc="upper right")
-        else:
-            fig, axes = plt.subplots(6, 1, figsize=(10, 10))
-            shift = 0
-
+        # if "raw_data" in meta:
+        #     fig, axes = plt.subplots(9, 1, figsize=(10, 10))
+        #     t = pd.date_range(pd.Timestamp(begin_time[i]), periods=nt, freq=pd.Timedelta(seconds=dt))
+        #     for j in range(3):
+        #         axes[j].plot(t, meta["raw_data"][i, j, :, 0], lw=0.5, color="k", label=f"{chn_name[j]}")
+        #         axes[j].set_xlim(t[0], t[-1])
+        #         axes[j].set_xticklabels([])
+        #         axes[j].grid("on")
+        #         axes[j + idx].legend(loc="upper right")
+        # else:
+        fig, axes = plt.subplots(6, 1, figsize=(10, 10))
+        idx = 0
         for j in range(3):
             t = pd.date_range(pd.Timestamp(begin_time[i]), periods=nt, freq=pd.Timedelta(seconds=dt))
-            axes[j + shift].plot(t, meta["data"][i, j, :, 0], lw=0.5, color="k", label=f"{chn_name[j]}")
-            axes[j + shift].set_xlim(t[0], t[-1])
-            axes[j + shift].set_xticklabels([])
-            axes[j + shift].grid("on")
-            axes[j + shift].legend(loc="upper right")
-
-        k = 3 + shift
+            axes[j + idx].plot(t, meta["data"][i, j, :, 0], lw=0.5, color="k", label=f"{chn_name[j]}")
+            axes[j + idx].set_xlim(t[0], t[-1])
+            axes[j + idx].set_xticklabels([])
+            axes[j + idx].grid("on")
+            axes[j + idx].legend(loc="upper right")
+        
+        idx = 3
         t = pd.date_range(pd.Timestamp(begin_time[i]), periods=nt, freq=pd.Timedelta(seconds=dt))
-        axes[k].plot(t, phase[i, 2, :, 0], "r", lw=1.0)
-        axes[k].plot(t, phase[i, 1, :, 0], "b", lw=1.0)
+        axes[idx].plot(t, phase[i, 2, :, 0], "r", lw=1.0)
+        axes[idx].plot(t, phase[i, 1, :, 0], "b", lw=1.0)
         color = {"P": "b", "S": "r"}
         for ii, pick in enumerate(phase_picks[i]):
             tt = pd.to_datetime(pick["phase_time"])
-            axes[k].plot([tt, tt], [-0.05, 1.05], f"--{color[pick['phase_type']]}", linewidth=0.8)
+            axes[idx].plot([tt, tt], [-0.05, 1.05], f"--{color[pick['phase_type']]}", linewidth=0.8)
 
-        axes[k].plot([], [], "-b", label="P-phase")
-        axes[k].plot([], [], "-r", label="S-phase")
-        axes[k].set_xlim(t[0], t[-1])
-        axes[k].set_ylim(-0.05, 1.05)
-        axes[k].set_xticklabels([])
-        axes[k].grid("on")
-        axes[k].legend(loc="upper right")
+        axes[idx].plot([], [], "-b", label="P-phase")
+        axes[idx].plot([], [], "-r", label="S-phase")
+        axes[idx].set_xlim(t[0], t[-1])
+        axes[idx].set_ylim(-0.05, 1.05)
+        axes[idx].set_xticklabels([])
+        axes[idx].grid("on")
+        axes[idx].legend(loc="upper right")
 
+        idx = 4
         t = pd.date_range(pd.Timestamp(begin_time[i]), periods=nt_polarity, freq=pd.Timedelta(seconds=dt_polarity))
-        # axes[k + 1].plot(t, (polarity[i, 0, :, 0] - 0.5) * 2.0, "b", label="polarity")
-        # axes[k + 1].plot(t, polarity[i, 1, :, 0] - polarity[i, 2, :, 0], "b", label="Polarity")
+        # axes[idx].plot(t, (polarity[i, 0, :, 0] - 0.5) * 2.0, "b", label="polarity")
+        # axes[idx].plot(t, polarity[i, 1, :, 0] - polarity[i, 2, :, 0], "b", label="Polarity")
         for ii, pick in enumerate(phase_picks[i]):
             tt = pd.to_datetime(pick["phase_time"])
             amp = pick["phase_polarity"]
             if abs(amp) > 0.15:
-                axes[k + 1].annotate(
+                axes[idx].annotate(
                     "",
                     xy=(tt, -0.03 * np.sign(amp)),
                     xytext=(tt, amp),
                     arrowprops=dict(arrowstyle="<-", color=f"{color[pick['phase_type']]}", lw=1.5),
                 )
-        axes[k + 1].plot([], [], "-b", label="P-polarity")
-        axes[k + 1].plot([], [], "-r", label="S-polarity")
-        axes[k + 1].plot([t[0], t[-1]], [0.0, 0.0], "-", color="blue", lw=1.0)
-        axes[k + 1].set_xlim(t[0], t[-1])
-        axes[k + 1].set_ylim(-1.05, 1.05)
-        axes[k + 1].set_xticklabels([])
-        axes[k + 1].grid("on")
-        axes[k + 1].legend(loc="upper right")
+        axes[idx].plot([], [], "-b", label="P-polarity")
+        axes[idx].plot([], [], "-r", label="S-polarity")
+        axes[idx].plot([t[0], t[-1]], [0.0, 0.0], "-", color="blue", lw=1.0)
+        axes[idx].set_xlim(t[0], t[-1])
+        axes[idx].set_ylim(-1.05, 1.05)
+        axes[idx].set_xticklabels([])
+        axes[idx].grid("on")
+        axes[idx].legend(loc="upper right")
 
+        idx = 5
         t = pd.date_range(pd.Timestamp(begin_time[i]), periods=nt_event, freq=pd.Timedelta(seconds=dt_event))
-        axes[k + 2].plot(t, event_center[i, 0, :, 0], "b", label="Event")
-        axes[k + 2].set_xlim(t[0], t[-1])
-        axes[k + 2].set_ylim(-0.05, 1.05)
-        axes[k + 2].grid("on")
-        axes[k + 2].legend(loc="upper right")
-        axes[k + 2].set_xlabel("Time (s)")
+        axes[idx].plot(t, event_center[i, 0, :, 0], "b", label="Event")
+        axes[idx].set_xlim(t[0], t[-1])
+        axes[idx].set_ylim(-0.05, 1.05)
+        axes[idx].grid("on")
+        axes[idx].legend(loc="upper right")
+        axes[idx].set_xlabel("Time (s)")
 
-        # axes2 = axes[k + 2].twinx()
+        # axes2 = axes[idx].twinx()
         # axes2.plot(t, event_time[i, 0, :, 0], "--C1")
         # axes2.set_ylabel("Time (s)")
 
         for ii, event in enumerate(event_detects[i]):
             ot = pd.to_datetime(event["event_time"])
-            axes[k + 2].plot([ot, ot], [-0.05, 1.05], "--r", linewidth=2.0)
+            axes[idx].plot([ot, ot], [-0.05, 1.05], "--r", linewidth=2.0)
             at = pd.to_datetime(event["center_time"])
-            axes[k + 2].plot([at, at], [-0.05, 1.05], "--b", linewidth=1.0)
-            axes[k + 2].annotate(
+            axes[idx].plot([at, at], [-0.05, 1.05], "--b", linewidth=1.0)
+            axes[idx].annotate(
                 "",
                 xy=(max(t[0], at), 0.3),
                 xytext=(max(t[0], ot), 0.3),
                 arrowprops=dict(arrowstyle="<-", color="C1", lw=2),
             )
-        axes[k + 2].plot([], [], "--C3", label="Origin time")
+        axes[idx].plot([], [], "--C3", label="Origin time")
 
-        axes[k + 2].set_xlim(t[0], t[-1])
-        axes[k + 2].set_ylim(-0.05, 1.05)
-        axes[k + 2].grid("on")
-        axes[k + 2].legend(loc="upper right")
-        axes[k + 2].set_xlabel("Time (s)")
+        axes[idx].set_xlim(t[0], t[-1])
+        axes[idx].set_ylim(-0.05, 1.05)
+        axes[idx].grid("on")
+        axes[idx].legend(loc="upper right")
+        axes[idx].set_xlabel("Time (s)")
 
         fig.tight_layout()
 

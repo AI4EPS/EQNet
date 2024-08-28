@@ -202,10 +202,20 @@ def plot_results(meta, model, output, args, epoch, prefix=""):
 
         if args.model == "phasenet_tf":
             phase = torch.softmax(output["phase"], dim=1).cpu().float()
+            event_center = torch.sigmoid(output["event_center"]).cpu().float()
+            event_time = output["event_time"].cpu().float()
             meta["spectrogram"] = output["spectrogram"].cpu().float()
             print("Plotting...")
-            eqnet.utils.plot_phasenet_tf_train(meta, phase, epoch=epoch, figure_dir=args.figure_dir, prefix=prefix)
-            del phase
+            eqnet.utils.plot_phasenet_tf_train(
+                meta,
+                phase,
+                event_center=event_center,
+                event_time=event_time,
+                epoch=epoch,
+                figure_dir=args.figure_dir,
+                prefix=prefix,
+            )
+            del phase, event_center, event_time
 
         elif args.model == "phasenet_plus":
             phase = torch.softmax(output["phase"], dim=1).cpu().float()

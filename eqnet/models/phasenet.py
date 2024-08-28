@@ -229,6 +229,12 @@ class UNetHead(nn.Module):
                 loss = F.binary_cross_entropy_with_logits(inputs, targets)
             else:
                 loss = F.cross_entropy(inputs, targets)
+
+                # focal loss
+                # ce_loss = F.cross_entropy(inputs, targets, reduction="none")
+                # pt = torch.exp(-ce_loss)
+                # focal_loss = (1 - pt) ** 2 * ce_loss
+                # loss = focal_loss.mean()
         else:
             mask = mask.type_as(inputs)
             mask_sum = mask.sum()
@@ -243,6 +249,12 @@ class UNetHead(nn.Module):
                 loss = (
                     torch.sum(F.cross_entropy(inputs, targets, reduction="none") * mask.squeeze(1)) / mask_sum
                 )  # cross_entropy sum over dim=1/channel
+
+                # focal loss
+                # ce_loss = F.cross_entropy(inputs, targets, reduction="none")
+                # pt = torch.exp(-ce_loss)
+                # focal_loss = (1 - pt) ** 5 * ce_loss
+                # loss = torch.sum(focal_loss * mask.squeeze(1)) / mask_sum
 
         return loss
 

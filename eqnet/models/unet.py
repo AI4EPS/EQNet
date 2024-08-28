@@ -75,8 +75,8 @@ class STFT(nn.Module):
         if select_freq:
             dt = kwargs["dt"]
             fmax = 1.0 / 2.0 / dt
-            freq = torch.linspace(0, fmax, n_fft)
-            idx = torch.arange(n_fft)[(freq > kwargs["fmin"]) & (freq < kwargs["fmax"])]
+            freq = torch.linspace(0, fmax, n_fft // 2 + 1)  # Use n_fft // 2 + 1 to get correct frequency bins
+            idx = torch.arange(n_fft // 2 + 1)[(freq > kwargs["fmin"]) & (freq < kwargs["fmax"])]
             self.freq_start = idx[0].item()
             self.freq_length = idx.numel()
 
