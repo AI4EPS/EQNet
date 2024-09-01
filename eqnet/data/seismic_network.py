@@ -159,9 +159,8 @@ def sample_by_distance(distances, num_stations, num_manual_stations, critical_di
         
         return np.concatenate([np.arange(num_manual_stations), idxs_auto])
 
-def sample_event_for_stacking(event_id, e2sta_dict, sta2e_dict, event_attrs_dict, min_shared_sta=2, magnitude_range=1.0, snr_bar=3.0, returns=3, max_tries=30):
-    event_id0 = event_id #meta['event_id']
-    event_attrs0 = event_attrs_dict[event_id0]
+def sample_event_for_stacking(event_id0, e2sta_dict, sta2e_dict, events_dict, min_shared_sta=2, magnitude_range=1.0, snr_bar=3.0, returns=3, max_tries=30):
+    event_attrs0 = events_dict[event_id0]
     sta_ids0 = e2sta_dict[event_id0]
     mag0 = event_attrs0['magnitude']
     snr_median0 = event_attrs0['snr_median']
@@ -176,7 +175,7 @@ def sample_event_for_stacking(event_id, e2sta_dict, sta2e_dict, event_attrs_dict
         
         for _ in range(30):
             if (event_id == event_id0 or len(sta_ids_2)==1) \
-                or (i<=max_tries//2 and abs(year0-event_attrs_dict[event_id]['year'])>1):
+                or (i<=max_tries//2 and abs(year0-events_dict[event_id]['year'])>1):
                 event_id = np.random.choice(sta2e_dict[sta_id])
             else:
                 break
@@ -184,17 +183,18 @@ def sample_event_for_stacking(event_id, e2sta_dict, sta2e_dict, event_attrs_dict
             continue
         
         # prefer events in the close years
-        if i<=max_tries//2 and abs(year0-event_attrs_dict[event_id]['year'])>1:
+        # TODO: better solution needed
+        if i<=max_tries//2 and abs(year0-events_dict[event_id]['year'])>1:
             continue
         # check if at least given number stations are shared
         if len(set(sta_ids0).intersection(set(sta_ids_2)))<min_shared_sta:
             continue
         # check if the magnitude is in the range
-        if abs(event_attrs_dict[event_id]['magnitude']-mag0)>magnitude_range:
+        if abs(events_dict[event_id]['magnitude']-mag0)>magnitude_range:
             continue
         # check if the snrs are compatible
-        if not (snr_median0>snr_bar and event_attrs_dict[event_id]['snr_median']>snr_bar):
-            if abs(snr_median0-event_attrs_dict[event_id]['snr_median'])>snr_bar:
+        if not (snr_median0>snr_bar and events_dict[event_id]['snr_median']>snr_bar):
+            if abs(snr_median0-events_dict[event_id]['snr_median'])>snr_bar:
                 continue
         
         results.append(event_id)
@@ -398,6 +398,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
         ## for prediction
         is_pad=False,
         sampling_rate=100,
+        response_path=None,
         response_xml=None,
         highpass_filter=False,
         rank=0,
@@ -465,10 +466,27 @@ class SeismicNetworkIterableDataset(IterableDataset):
         self.drop_channel = drop_channel
         self.sample_by_magnitude = sample_by_magnitude
         self.sample_by_distance = sample_by_distance
-        #TODO: temp
-        self.e2sta_dict = json.load(open("/home/wanghy/tests/EQNet/nc_event2station.json", "r"))
-        self.sta2e_dict = json.load(open("/home/wanghy/tests/EQNet/nc_station2event.json", "r"))
-        self.event_attrs_dict = json.load(open("/home/wanghy/tests/EQNet/nc_event_attrs.json", "r"))
+        if self.stack_event:
+            #TODO: temp
+            # base_dir is the directory of hdf5_file
+            if self.hdf5_fp is not None:
+                self.base_dir = os.path.dirname(hdf5_file)
+            elif self.data_list is not None:
+                self.base_dir = os.path.dirname(self.data_list[0])
+            elif self.data_path is not None:
+                self.base_dir = data_path
+            
+            self.picks_dict = pd.read_csv(os.path.join(self.base_dir, "picks.csv"), usecols=['event_id', 'station_id', 'snr'])
+            self.events_dict = pd.read_csv(os.path.join(self.base_dir, "events.csv"), usecols=['event_id', 'magnitude', 'event_time', 'depth_km'])
+            self.events_dict['year'] = self.events_dict['event_time'].apply(lambda x: int(x[:4]))
+            self.picks_dict['snr'] = self.picks_dict['snr'].apply(lambda x: np.array([float(number) for number in x.split()[1:-1]]))
+            temp = self.picks_dict.groupby('event_id')['snr'].apply(lambda x: np.concatenate(x.values)).reset_index()
+            temp['snr_mean'] = temp['snr'].apply(lambda x: np.mean(x[x!=0] if len(x[x!=0]) > 0 else 0))
+            temp['snr_median'] = temp['snr'].apply(lambda x: np.median(x[x!=0] if len(x[x!=0]) > 0 else 0))
+            self.events_dict = self.events_dict.merge(temp[['event_id', 'snr_mean', 'snr_median']], on='event_id', how='left')[['event_id', 'magnitude', 'depth_km', 'year', 'snr_mean', 'snr_median']].set_index('event_id').to_dict('index')
+            self.picks_dict = self.picks_dict[['event_id', 'station_id']]
+            self.e2sta_dict = self.picks_dict.groupby('event_id')['station_id'].apply(list).to_dict()
+            self.sta2e_dict = self.picks_dict.groupby('station_id')['event_id'].apply(list).to_dict()
 
         ## prediction
         self.is_pad = is_pad
@@ -517,7 +535,11 @@ class SeismicNetworkIterableDataset(IterableDataset):
                         stream = obspy.read(fname)
                         break
                     except:
-                        pass
+                        try:
+                            stream = obspy.read(fname.split(',')[0])
+                            break
+                        except:
+                            pass
                 begin_time = min([st.stats.starttime for st in stream])
                 end_time = max([st.stats.endtime for st in stream])
                 nt = int((end_time - begin_time) * self.sampling_rate)
@@ -887,10 +909,10 @@ class SeismicNetworkIterableDataset(IterableDataset):
             if self.stack_event and random.random() < 0.7:
                 try:
                     selected_event_ids = sample_event_for_stacking(
-                        event_id = event_id,
+                        event_id0 = event_id,
                         e2sta_dict = self.e2sta_dict,
                         sta2e_dict = self.sta2e_dict,
-                        event_attrs_dict = self.event_attrs_dict,
+                        events_dict = self.events_dict,
                         min_shared_sta=3,
                         magnitude_range=0.7
                     )
@@ -931,16 +953,23 @@ class SeismicNetworkIterableDataset(IterableDataset):
             yield meta
             
     
-    def read_mseed(self, fname, response_xml=None, highpass_filter=False, sampling_rate=100):
+    def read_mseed(self, fname, response_path=None, response_xml=None, highpass_filter=False, sampling_rate=100):
         try:
-            stream = obspy.read(fname)
+            stream = obspy.Stream()
+            for tmp in fname.split(","):
+                with fsspec.open(tmp, "rb") as fs:
+                    meta = obspy.read(fs, format="MSEED")
+                    if response_path is not None:
+                        inv = obspy.read_inventory(os.path.join(response_path, f"{meta[0].id.split('.')[0]}.{meta[0].id.split('.')[1]}") + ".xml")
+                        meta = meta.remove_sensitivity(inv)
+                    stream += meta
+                # stream += obspy.read(tmp)
             stream = stream.merge(fill_value="latest")
-            if response_xml is not None:
+            if (response_path is None) and (response_xml is not None):
                 response = obspy.read_inventory(response_xml)
                 stream = stream.remove_sensitivity(response)
         except Exception as e:
             print(f"Error reading {fname}:\n{e}")
-            assert 0, f"Error reading {fname}:\n{e}"
             return None
 
         tmp_stream = obspy.Stream()
