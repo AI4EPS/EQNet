@@ -328,7 +328,7 @@ class SeismicTraceIterableDataset(IterableDataset):
         sampling_rate=100,
         response_path=None,
         response_xml=None,
-        highpass_filter=False,
+        highpass_filter=0.0,
         rank=0,
         world_size=1,
         cut_patch=False,
@@ -768,7 +768,7 @@ class SeismicTraceIterableDataset(IterableDataset):
             #     trace = trace.detrend("demean")
 
             ## highpass filtering > 1Hz
-            if highpass_filter is not None:
+            if highpass_filter > 0.0:
                 # trace = trace.filter("highpass", freq=1.0)
                 trace = trace.filter("highpass", freq=highpass_filter)
 
@@ -819,7 +819,7 @@ class SeismicTraceIterableDataset(IterableDataset):
             "dt_s": 1 / sampling_rate,
         }
 
-    def read_segy(self, fname, highpass_filter=False, sampling_rate=2000, channels=[2, 1, 0]):
+    def read_segy(self, fname, highpass_filter=0.0, sampling_rate=2000, channels=[2, 1, 0]):
         try:
             stream = obspy.read(fname, format="SEGY")
         except Exception as e:
