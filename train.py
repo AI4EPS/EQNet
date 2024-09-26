@@ -564,9 +564,18 @@ def main(args):
     custom_keys_weight_decay = []
     if args.bias_weight_decay is not None:
         custom_keys_weight_decay.append(("bias", args.bias_weight_decay))
-    if args.transformer_embedding_decay is not None:
-        for key in ["class_token", "position_embedding", "relative_position_bias_table"]:
-            custom_keys_weight_decay.append((key, args.transformer_embedding_decay))
+    if args.custom_weight_decay is not None:
+        #NOTE: actually no weight decay
+        assert isinstance(args.custom_weight_decay, float), f'use same weight decay for all custom keys or hack this code'
+        if hasattr(model, 'no_weight_decay'):
+            skip_list = model.no_weight_decay()
+            for k in skip_list:
+                custom_keys_weight_decay.append((k, args.custom_weight_decay))
+        if hasattr(model, 'no_weight_decay_keywords'):
+            skip_list = model.no_weight_decay_keywords()
+            for k in skip_list:
+                custom_keys_weight_decay.append((k, args.custom_weight_decay))
+    
     parameters = utils.set_weight_decay(
         model,
         args.weight_decay,
@@ -850,7 +859,7 @@ def get_args_parser(add_help=True):
         help="weight decay for bias parameters of all layers (default: None, same value as --wd)",
     )
     parser.add_argument(
-        "--transformer-embedding-decay",
+        "--custom-weight-decay",
         default=None,
         type=float,
         help="weight decay for embedding parameters for vision transformer models (default: None, same value as --wd)",

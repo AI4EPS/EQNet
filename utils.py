@@ -459,18 +459,26 @@ def set_weight_decay(
         for name, p in module.named_parameters(recurse=False):
             if not p.requires_grad:
                 continue
+            
+            if len(p.shape) == 1 and 'bias' in custom_keys:
+                params["bias"].append(p)
+                #params["bias"].append(name)
+                continue    
             is_custom_key = False
             for key in custom_keys:
                 target_name = f"{prefix}.{name}" if prefix != "" and "." in key else name
                 if key == target_name:
                     params[key].append(p)
+                    #params[key].append(name)
                     is_custom_key = True
                     break
             if not is_custom_key:
                 if norm_weight_decay is not None and isinstance(module, norm_classes):
                     params["norm"].append(p)
+                    #params["norm"].append(name)
                 else:
                     params["other"].append(p)
+                    #params["other"].append(name)
 
         for child_name, child_module in module.named_children():
             child_prefix = f"{prefix}.{child_name}" if prefix != "" else child_name

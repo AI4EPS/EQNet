@@ -291,7 +291,7 @@ class EQNet(nn.Module):
                 depths=[2, 2, 6, 2],
                 #num_heads=[3, 6, 12, 24],
                 num_heads=[2, 4, 8, 16],
-                window_size=[32, 10],
+                window_size=[8, 10],
                 #stochastic_depth_prob=0.2,
                 stochastic_depth_prob=0.15,
                 block_name="SwinTransformerBlockV2",
@@ -393,6 +393,32 @@ class EQNet(nn.Module):
     @property
     def device(self):
         return next(self.parameters()).device
+    
+    @torch.jit.ignore
+    def no_weight_decay(self):
+        keys = set()
+        if hasattr(self.backbone, 'no_weight_decay'):
+            keys.update({'backbone.' + i for i in self.backbone.no_weight_decay()})
+        if hasattr(self.neck, 'no_weight_decay'):
+            keys.update({'neck.' + i for i in self.neck.no_weight_decay()})
+        if hasattr(self.event_detector, 'no_weight_decay'):
+            keys.update({'event_detector.' + i for i in self.event_detector.no_weight_decay()})
+        if hasattr(self.phase_picker, 'no_weight_decay'):
+            keys.update({'phase_picker.' + i for i in self.phase_picker.no_weight_decay()})
+        return keys
+
+    @torch.jit.ignore
+    def no_weight_decay_keywords(self):
+        keys = set()
+        if hasattr(self.backbone, 'no_weight_decay_keywords'):
+            keys.update({i for i in self.backbone.no_weight_decay_keywords()})
+        if hasattr(self.neck, 'no_weight_decay_keywords'):
+            keys.update({i for i in self.neck.no_weight_decay_keywords()})
+        if hasattr(self.event_detector, 'no_weight_decay_keywords'):
+            keys.update({i for i in self.event_detector.no_weight_decay_keywords()})
+        if hasattr(self.phase_picker, 'no_weight_decay_keywords'):
+            keys.update({i for i in self.phase_picker.no_weight_decay_keywords()})
+        return keys
 
     def forward(self, batched_inputs: Tensor) -> Dict[str, Tensor]:
         data = batched_inputs["data"].to(self.device)
