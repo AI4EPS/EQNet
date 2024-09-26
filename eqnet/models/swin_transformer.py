@@ -73,7 +73,7 @@ class Permute(torch.nn.Module):
         self.dims = dims
 
     def forward(self, x: Tensor) -> Tensor:
-        return torch.permute(x, self.dims)
+        return torch.permute(x, self.dims).contiguous()
 
 
 ### from ..ops.stochastic_depth import StochasticDepth
@@ -840,6 +840,10 @@ class ShiftedWindowAttentionV2(ShiftedWindowAttention):
                 # from station 1 to station 2
                 relative_coords_sta = loc[:, None, :, :] - loc[:, :, None, :] # B, nx, nx, 3 (lon, lat, z)
                 a = torch.sin(relative_coords_sta[:, :, :, 1]/2)**2 + torch.cos(loc[:, :, None, 1]) * torch.cos(loc[:, None, :, 1]) * torch.sin(relative_coords_sta[:, :, :, 0]/2)**2
+                #NOTE: because of the precision, a may be slightly larger than 1, which will cause NaN in torch.sqrt
+                # assert torch.all(a <= 1), f"a is larger than 1: {a.max()}"
+                # assert torch.all(a >= 0), f"a is smaller than 0: {a.min()}"
+                # a = torch.clamp(a, 0, 1) # clamp to avoid NaN
                 relative_dist = 2 * torch.atan2(torch.sqrt(a), torch.sqrt(1-a))*self.earth_radius # B, nx, nx
                 # y = torch.sin(relative_coords_sta[:, :, :, 0]) * torch.cos(loc[:, None, :, 1]) # B, nx, nx, 1
                 # x = torch.cos(loc[:, :, None, 1]) * torch.sin(loc[:, None, :, 1]) - torch.sin(loc[:, :, None, 1]) * torch.cos(loc[:, None, :, 1]) * torch.cos(relative_coords_sta[:, :, :, 0]) # B, nx, nx, 1
@@ -909,8 +913,8 @@ class RotaryAxialWindowAttention(ShiftedWindowAttentionV2):
         attention_dropout: float = 0.0,
         dropout: float = 0.0,
         theta_t: float = 100.0,
-        freq_horizon: Tuple[float, float] = (2.0, 16.0),
-        freq_vertical: Tuple[float, float] = (-6.0, 8.0),
+        freq_horizon: Tuple[float, float] = (-6.0, 12.0),
+        freq_vertical: Tuple[float, float] = (-4.0, 10.0),
         use_station_location: bool = True,
         use_relative_position_bias: bool = False,
     ):
@@ -949,6 +953,7 @@ class RotaryAxialWindowAttention(ShiftedWindowAttentionV2):
         freqs_t = 1.0 / (self.theta_t ** (torch.arange(0, dim, 8)[: (dim // 8)].float() / dim))
         self.register_buffer("freqs_t", freqs_t)
         freqs_xy = 2.**torch.linspace(self.freq_horizon[0], self.freq_horizon[1], dim // 8)
+        #freqs_xy = 2.**torch.linspace(self.freq_horizon[0], self.freq_horizon[1], dim // 4)
         self.register_buffer("freqs_xy", freqs_xy)
         freqs_z = 2.**torch.linspace(self.freq_vertical[0], self.freq_vertical[1], dim // 8)
         self.register_buffer("freqs_z", freqs_z)
@@ -957,6 +962,7 @@ class RotaryAxialWindowAttention(ShiftedWindowAttentionV2):
         B, nsta, ch = loc.shape
         rope_t = torch.cat([self.rope_t_t[None, :, None, None].repeat(B, 1, nsta, 1),
                             loc[:, None, :, :].repeat(1, self.window_size[0], 1, 1)], dim=-1)
+        #rope_t = loc[:, None, :, :2].repeat(1, self.window_size[0], 1, 1)
         device = loc.device
         device = device if isinstance(device, str) and device != "mps" else "cpu"
         # No float 16 for this range
@@ -966,6 +972,8 @@ class RotaryAxialWindowAttention(ShiftedWindowAttentionV2):
             freqs_x = rope_t[:, :, :, 1:2] * self.freqs_xy[None, None, None, :]
             freqs_y = rope_t[:, :, :, 2:3] * self.freqs_xy[None, None, None, :]
             freqs_z = rope_t[:, :, :, 3:4] * self.freqs_z[None, None, None, :]
+            #freqs_x = rope_t[:, :, :, 0:1] * self.freqs_xy[None, None, None, :]
+            #freqs_y = rope_t[:, :, :, 1:2] * self.freqs_xy[None, None, None, :]
             freqs_cis.append(torch.polar(torch.ones_like(freqs_t), freqs_t))
             freqs_cis.append(torch.polar(torch.ones_like(freqs_x), freqs_x))
             freqs_cis.append(torch.polar(torch.ones_like(freqs_y), freqs_y))
@@ -1019,8 +1027,8 @@ class RotaryMixedWindowAttention(RotaryAxialWindowAttention):
         attention_dropout: float = 0.0,
         dropout: float = 0.0,
         theta_t: float = 10.0,
-        freq_horizon: Tuple[float, float] = (2.0, 16.0),
-        freq_vertical: Tuple[float, float] = (-6.0, 8.0),
+        freq_horizon: Tuple[float, float] = (-6.0, 12.0),
+        freq_vertical: Tuple[float, float] = (-4.0, 10.0),
         use_station_location: bool = True,
         use_relative_position_bias: bool = False,
     ):
@@ -1085,6 +1093,9 @@ class RotaryMixedWindowAttention(RotaryAxialWindowAttention):
             freqs_y = rope_t[:, :, :, 2:3] * self.freqs[2:3, None, None, :]
             freqs_z = rope_t[:, :, :, 3:4] * self.freqs[3:4, None, None, :]
             freqs_cis.append(torch.polar(torch.ones_like(freqs_t), freqs_t+freqs_x+freqs_y+freqs_z))
+            #freqs_x = rope_t[:, :, :, 0:1] * self.freqs[0:1, None, None, :]
+            #freqs_y = rope_t[:, :, :, 1:2] * self.freqs[1:2, None, None, :]
+            #freqs_cis.append(torch.polar(torch.ones_like(freqs_x), freqs_x+freqs_y))
 
         return torch.cat(freqs_cis, dim=-1)
 
@@ -1329,7 +1340,7 @@ class SwinTransformer(nn.Module):
                         stochastic_depth_prob=sd_prob,
                         norm_layer=norm_layer,
                         use_station_location=use_station_location,
-                        use_relative_position_bias=use_relative_position_bias if use_rope else True,
+                        use_relative_position_bias=use_relative_position_bias,
                         use_rope=use_rope,
                         use_rope_mixed=use_rope_mixed,
                     )
