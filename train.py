@@ -645,11 +645,14 @@ def main(args):
                     print(f"{k}: {pre_weight[i]:.4f}", end="\t")
                 print()
         
-        balancer = utils.MTLBalance(args.mtl, tasks, pre_weight, args.temp, args.epochs, device)
+        balancer = utils.MTLBalance(args.mtl, tasks, pre_weight, args.temp, args.epochs+1, device)
 
     model_without_ddp = model
     # print parameter number
-    print("Number of parameters: ", sum(p.numel() for p in model_without_ddp.parameters() if p.requires_grad))
+    #print("Number of parameters: ", sum(p.numel() for p in model_without_ddp.parameters() if p.requires_grad))
+    backbone_params = sum(p.numel() for p in model_without_ddp.backbone.parameters() if p.requires_grad)
+    total_params = sum(p.numel() for p in model_without_ddp.parameters() if p.requires_grad)
+    print(f"Toal parameters: {total_params}, backbone parameters: {backbone_params}, other parameters: {total_params - backbone_params}")
     # for name, param in model.named_parameters():
     #     if param.grad is None:
     #         print(name)
@@ -666,6 +669,24 @@ def main(args):
         alpha = min(1.0, alpha * adjust)
         model_ema = utils.ExponentialMovingAverage(model_without_ddp, device=device, decay=1.0 - alpha)
 
+    if args.pretrained:
+        backbone_pretrained = None
+        if os.path.isfile(args.pretrained):
+            print(f"Loading pretrained model from '{args.pretrained}'")
+            backbone_pretrained = torch.load(args.pretrained, map_location="cpu")
+        elif os.path.isfile(args.output_dir + "/backbone.pth"):
+            print(f"Loading pretrained model from '{args.output_dir}/backbone.pth'")
+            backbone_pretrained = torch.load(args.output_dir + "/backbone.pth", map_location="cpu")
+        else:
+            print(f"No pretrained model found")
+        
+        if backbone_pretrained is not None:
+            if "model" in backbone_pretrained:
+                model_without_ddp.backbone.load_state_dict(backbone_pretrained["model"])
+            else:
+                model_without_ddp.backbone.load_state_dict(backbone_pretrained)
+            
+        
     if args.resume:
         checkpoint = None
         if os.path.isfile(args.resume):
@@ -867,6 +888,7 @@ def get_args_parser(add_help=True):
     parser.add_argument("--output-dir", default="./output", type=str, help="path to save outputs")
     parser.add_argument("--resume", default="", type=str, help="path of checkpoint")
     parser.add_argument("--resume_wandb", action="store_true", help="resume from wandb")
+    parser.add_argument("--pretrained", default="", type=str, help="path to pre-trained model")
     parser.add_argument("--start-epoch", default=0, type=int, metavar="N", help="start epoch")
     parser.add_argument(
         "--sync-bn",
