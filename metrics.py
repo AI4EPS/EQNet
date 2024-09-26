@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import re
+import errno
 import h5py
 import argparse
 from glob import glob
@@ -12,10 +13,9 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
 import obspy
-from collections import OrderedDict
+from collections import OrderedDict, defaultdict, deque
 from tqdm import tqdm
 import itertools
-from collections import defaultdict, deque
 from sklearn.cluster import DBSCAN
 
 import datasets
@@ -48,13 +48,15 @@ csv_file = f"{h5_file.split('.')[0]}.csv"
 suffix = args.suffix
 if suffix != "":
     suffix = f"_{suffix}"
+    
+os.makedirs("./metrics", exist_ok=True)
 
 dt_bar = 0.5 # s
 distribution_bar = 0.5 # s
 station_threshold = 10
 event_dt_bar = 3 # s
-dbscan_epsilon = 5
-time_space_weight = [1, 0.5, 0.5, 1]
+dbscan_epsilon = 16
+time_space_weight = [1, 0.8, 0.8, 2]
 
 sample_rate = 100
 feature_scale = 16
@@ -202,6 +204,18 @@ class PickMetric:
             plt.savefig(save_path)
         else:
             plt.show()
+        plt.close()
+        fig, ax = plt.subplots(4, 2, figsize=(10, 10))
+        ax[0,0].scatter(self.tp_p_picks, self.tp_p_scores, s=10, c='orange', label='TP_P')
+        ax[0,0].set_xlabel('pred-label time residual [s]')
+        ax[0,0].set_ylabel('phase score')
+        ax[0,1].scatter(self.tp_s_picks, self.tp_s_scores, s=10, c='#43BEFF', label='TP_S')
+        ax[0,1].set_xlabel('pred-label time residual [s]')
+        if save_path is not None:
+            plt.savefig(save_path.replace("phase_picking", "phase_score"))
+        else:
+            plt.show()
+        plt.close()
         
         return
 
@@ -620,6 +634,7 @@ with h5py.File(h5_file, "r") as fp:
                 azi_diff[azi_diff>180] = azi_diff[azi_diff>180] - 360
                 magnitude_pr = np.median(cluster_picks[:,8])
                 min_time_diff = time_diff
+        #print(f"{event_id}: {min_time_diff:.2f}s, {avg_center}, {label_x:.2f}, {label_y:.2f}, {label_z:.2f}, {x_pred:.2f}, {y_pred:.2f}, {z_pred:.2f}, {x_diff:.2f}, {y_diff:.2f}, {z_diff:.2f}, {magnitude_pr:.2f}")
         event_metric.update_matched_picks([min_time_diff], [x_diff], [y_diff], [z_diff], [x_pred], [y_pred], [z_pred], [event.attrs["magnitude"]], [magnitude_pr], [cluster_picks[:,6]], [dist_diff], [azi_diff])
         if num_stations>=station_threshold:
             event_metric_thld.update_matched_picks([min_time_diff], [x_diff], [y_diff], [z_diff], [x_pred], [y_pred], [z_pred], [event.attrs["magnitude"]], [magnitude_pr], [cluster_picks[:,6]], [dist_diff], [azi_diff])
