@@ -20,7 +20,6 @@ from scipy.interpolate import LSQUnivariateSpline
 from scipy.signal import butter, filtfilt
 
 from ..utils.station_sampler import reorder_keys
-from .utils import random_shift
 
 @np.vectorize
 def mapping_phase_type(phase):
@@ -957,12 +956,11 @@ class SeismicNetworkIterableDataset(IterableDataset):
         try:
             stream = obspy.Stream()
             for tmp in fname.split(","):
-                with fsspec.open(tmp, "rb") as fs:
-                    meta = obspy.read(fs, format="MSEED")
-                    if response_path is not None:
-                        inv = obspy.read_inventory(os.path.join(response_path, f"{meta[0].id.split('.')[0]}.{meta[0].id.split('.')[1]}") + ".xml")
-                        meta = meta.remove_sensitivity(inv)
-                    stream += meta
+                meta = obspy.read(tmp, format="MSEED")
+                if response_path is not None:
+                    inv = obspy.read_inventory(os.path.join(response_path, f"{meta[0].id.split('.')[0]}.{meta[0].id.split('.')[1]}") + ".xml")
+                    meta = meta.remove_sensitivity(inv)
+                stream += meta
                 # stream += obspy.read(tmp)
             stream = stream.merge(fill_value="latest")
             if (response_path is None) and (response_xml is not None):
