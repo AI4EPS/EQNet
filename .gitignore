@@ -81,6 +81,8 @@ test_*.txt
 test_*.sh
 test_*.py
 test_*.png
+test*.parquet
+*.npy
 train_*.txt
 *.json
 temp*
@@ -92,3 +94,4 @@ test_plot_eqnet.py
 multimetrics.py
 test_*/
 
+tests/eqnet
