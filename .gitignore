@@ -57,7 +57,8 @@ train_old.py
 eqnet/data/quakeflow_nc_old.py
 
 eqnet/models/swin_transformer_v2_old.py
-result_eqnet*/
+result*/
+pretrained*/
 
 test_eqnet_plot*/
 test_eqnet_predict*/
@@ -79,11 +80,15 @@ test_predict.txt
 test_*.txt
 test_*.sh
 test_*.py
+test_*.png
 train_*.txt
+*.json
+temp*
 eqnet/models/uper_head_old.py
 test_metric.sh
 metric*.sh
 eqnet/data/quakeflow_nc_plot.py
 test_plot_eqnet.py
 multimetrics.py
+test_*/
 
