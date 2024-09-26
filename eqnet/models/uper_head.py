@@ -309,7 +309,7 @@ class EventHead(nn.Module):
                  dilations=[1, 4, 8, 16],
                  kernel_size=7,
                  loss_dict: dict = {"hm_loss": "focal", "hw_loss": "wl1", "travel_time_loss": "sl1", "dist_loss": "sl1", "angle_loss": "sl1", "depth_loss": "bl1", "mag_loss": "bl1"},
-                 weights=[1.495, 0.018, 0.055],
+                 weights=[1.49, 0.018, 0.055],
                  offset_weight=[1, 1], 
                  reg_weight=[0.8,2,20,1.0, 0.8],
                  angle_coder="trigono",
@@ -338,9 +338,18 @@ class EventHead(nn.Module):
         
         #TODO: subhead layers? dilation?
         self.heatmap = nn.Sequential(
-            convolution(self.channels, hidden_channels[2],
-                k=kernel_size, dilation=dilations[2],
-                padding_mode="reflect", act='relu',),
+            nn.Conv1d(
+                self.channels,
+                hidden_channels[2],
+                kernel_size=kernel_size,
+                dilation=dilations[2],
+                padding=((kernel_size - 1) * dilations[2] + 1) // 2,
+                padding_mode="reflect",
+                bias=False,
+            ),
+            nn.BatchNorm1d(hidden_channels[2]),
+            nn.ReLU(inplace=True),
+            #Sample(scale_factor=2, mode='linear', align_corners=False),
             nn.Conv1d(
                 hidden_channels[2],
                 1,
@@ -354,9 +363,17 @@ class EventHead(nn.Module):
         
         
         self.offset = nn.Sequential(
-            convolution(self.channels, hidden_channels[2],
-                k=kernel_size, dilation=dilations[3],
-                padding_mode="reflect", act=act_layer,),
+            nn.Conv1d(
+                self.channels,
+                hidden_channels[2],
+                kernel_size=kernel_size,
+                dilation=dilations[3],
+                padding=((kernel_size - 1) * dilations[3] + 1) // 2,
+                padding_mode="reflect",
+                bias=False,
+            ),
+            nn.BatchNorm1d(hidden_channels[2]),
+            nn.GELU(),
             #Sample(scale_factor=2, mode='linear', align_corners=False),
             nn.Conv1d(
                 hidden_channels[2],
@@ -370,40 +387,95 @@ class EventHead(nn.Module):
         
         
         self.hypocenter = nn.Sequential(
-            convolution(self.channels, hidden_channels[1],
-                k=kernel_size, dilation=dilations[2],
-                padding_mode="reflect", act=act_layer,),
+            nn.Conv1d(
+                self.channels,
+                hidden_channels[1],
+                kernel_size=kernel_size,
+                dilation=dilations[2],
+                padding=((kernel_size - 1) * dilations[2] + 1) // 2,
+                padding_mode="reflect",
+                bias=False,
+            ),
+            nn.BatchNorm1d(hidden_channels[1]),
+            nn.GELU(),
         )
         
         self.amplitude = nn.Sequential(
-            convolution(3, hidden_channels[3],
-                k=kernel_size, dilation=dilations[2],
-                padding_mode="reflect", act=act_layer,),
-            convolution(hidden_channels[3], hidden_channels[2],
-                k=kernel_size, dilation=dilations[1],
-                padding_mode="reflect", act=act_layer,)
+            nn.Conv1d(
+                3,
+                hidden_channels[3],
+                kernel_size=kernel_size,
+                dilation=dilations[2],
+                padding=((kernel_size - 1) * dilations[2] + 1) // 2,
+                padding_mode="reflect",
+                bias=False,
+            ),
+            nn.BatchNorm1d(hidden_channels[3]),
+            nn.GELU(),
+            nn.Conv1d(
+                hidden_channels[3],
+                hidden_channels[2],
+                kernel_size=kernel_size,
+                dilation=dilations[1],
+                padding=((kernel_size - 1) * dilations[1] + 1) // 2,
+                padding_mode="reflect",
+                bias=False,
+            ),
+            nn.BatchNorm1d(hidden_channels[2]),
+            nn.GELU(),
         )
         
         self.angle = nn.Sequential(
-            convolution(3, hidden_channels[3],
-                k=kernel_size, dilation=dilations[2],
-                padding_mode="reflect", act=act_layer,),
-            convolution(hidden_channels[3], hidden_channels[2],
-                k=kernel_size, dilation=dilations[1],
-                padding_mode="reflect", act=act_layer,)
+            nn.Conv1d(
+                4,
+                hidden_channels[3],
+                kernel_size=kernel_size,
+                dilation=dilations[2],
+                padding=((kernel_size - 1) * dilations[2] + 1) // 2,
+                padding_mode="reflect",
+                bias=False,
+            ),
+            nn.BatchNorm1d(hidden_channels[3]),
+            nn.GELU(),
+            nn.Conv1d(
+                hidden_channels[3],
+                hidden_channels[2],
+                kernel_size=kernel_size,
+                dilation=dilations[1],
+                padding=((kernel_size - 1) * dilations[1] + 1) // 2,
+                padding_mode="reflect",
+                bias=False,
+            ),
+            nn.BatchNorm1d(hidden_channels[2]),
+            nn.GELU(),
         )
         
         self.fuse = nn.Sequential(
-            convolution(hidden_channels[1]+hidden_channels[1],
-                hidden_channels[1], 
-                k=kernel_size, dilation=dilations[2],
-                padding_mode="reflect", act=act_layer,)
+            nn.Conv1d(
+                hidden_channels[1]+hidden_channels[1],
+                hidden_channels[1],
+                kernel_size=kernel_size,
+                dilation=dilations[2],
+                padding=((kernel_size - 1) * dilations[2] + 1) // 2,
+                padding_mode="reflect",
+                bias=False,
+            ),
+            nn.BatchNorm1d(hidden_channels[1]),
+            nn.GELU(),
         )
         
         self.travel_time = nn.Sequential(
-            convolution(hidden_channels[1], hidden_channels[3],
-                k=kernel_size, dilation=dilations[1],
-                padding_mode="reflect", act=act_layer,),
+            nn.Conv1d(
+                hidden_channels[1],
+                hidden_channels[3],
+                kernel_size=kernel_size,
+                dilation=dilations[1],
+                padding=((kernel_size - 1) * dilations[1] + 1) // 2,
+                padding_mode="reflect",
+                bias=False,
+            ),
+            nn.BatchNorm1d(hidden_channels[3]),
+            nn.GELU(),
             nn.Conv1d(
                 hidden_channels[3],
                 1,
@@ -415,9 +487,17 @@ class EventHead(nn.Module):
             #nn.LeakyReLU(inplace=True), # the origin time and the distance should be positive
         )
         self.distance = nn.Sequential(
-            convolution(hidden_channels[1], hidden_channels[3],
-                k=kernel_size, dilation=dilations[1],
-                padding_mode="reflect", act=act_layer,),
+            nn.Conv1d(
+                hidden_channels[1],
+                hidden_channels[3],
+                kernel_size=kernel_size,
+                dilation=dilations[1],
+                padding=((kernel_size - 1) * dilations[1] + 1) // 2,
+                padding_mode="reflect",
+                bias=False,
+            ),
+            nn.BatchNorm1d(hidden_channels[3]),
+            nn.GELU(),
             nn.Conv1d(
                 hidden_channels[3],
                 1,
@@ -429,9 +509,17 @@ class EventHead(nn.Module):
             #nn.LeakyReLU(inplace=True), # the origin time and the distance should be positive
         )
         self.azimuth = nn.Sequential(
-            convolution(hidden_channels[1], hidden_channels[3],
-                k=kernel_size, dilation=dilations[3],
-                padding_mode="reflect", act=act_layer,),
+            nn.Conv1d(
+                hidden_channels[1],
+                hidden_channels[3],
+                kernel_size=kernel_size,
+                dilation=dilations[3],
+                padding=((kernel_size - 1) * dilations[3] + 1) // 2,
+                padding_mode="reflect",
+                bias=False,
+            ),
+            nn.BatchNorm1d(hidden_channels[3]),
+            nn.GELU(),
             nn.Conv1d(
                 hidden_channels[3],
                 self.angle_dims,
@@ -447,9 +535,17 @@ class EventHead(nn.Module):
         #self.angle[-2].bias.data[::2].fill_(0)
         #self.angle[-2].bias.data[1::2].fill_(1.5708)
         self.depth = nn.Sequential(
-            convolution(hidden_channels[1], hidden_channels[3],
-                k=kernel_size, dilation=dilations[3],
-                padding_mode="reflect", act=act_layer,),
+            nn.Conv1d(
+                hidden_channels[1],
+                hidden_channels[3],
+                kernel_size=kernel_size,
+                dilation=dilations[3],
+                padding=((kernel_size - 1) * dilations[3] + 1) // 2,
+                padding_mode="reflect",
+                bias=False,
+            ),
+            nn.BatchNorm1d(hidden_channels[3]),
+            nn.GELU(),
             nn.Conv1d(
                 hidden_channels[3],
                 1,
@@ -461,16 +557,31 @@ class EventHead(nn.Module):
         )
         
         self.magnitude_1 = nn.Sequential(
-            convolution(self.channels, hidden_channels[2],
-                k=kernel_size, dilation=dilations[3],
-                padding_mode="reflect", act=act_layer,),
+            nn.Conv1d(
+                self.channels,
+                hidden_channels[2],
+                kernel_size=kernel_size,
+                dilation=dilations[3],
+                padding=((kernel_size - 1) * dilations[3] + 1) // 2,
+                padding_mode="reflect",
+                bias=False,
+            ),
+            nn.BatchNorm1d(hidden_channels[2]),
+            nn.GELU(),
         )
         self.magnitude_2 = nn.Sequential(
             #Sample(scale_factor=2, mode='linear', align_corners=False),
-            convolution(hidden_channels[2]+hidden_channels[2],
+            nn.Conv1d(
+                hidden_channels[2]+hidden_channels[2],
                 hidden_channels[4],
-                k=kernel_size, dilation=dilations[2],
-                padding_mode="reflect", act=act_layer,),
+                kernel_size=kernel_size,
+                dilation=dilations[2],
+                padding=((kernel_size - 1) * dilations[2] + 1) // 2,
+                padding_mode="reflect",
+                bias=False,
+            ),
+            nn.BatchNorm1d(hidden_channels[4]),
+            nn.GELU(),
             nn.Conv1d(
                 hidden_channels[4],
                 1,
@@ -528,15 +639,27 @@ class EventHead(nn.Module):
         #amplitude = F.avg_pool2d(amplitude, kernel_size=(1024, 1), stride=(128, 1))
         #amplitude = F.interpolate(amplitude, scale_factor=(1024, 1), mode="bilinear", align_corners=False)[:, :, :nt, :nx]
         amplitude[torch.abs(amplitude)<1e-6] = 1e-6
-        horizon_amp = torch.sqrt(torch.sum(amplitude[:,:2,:,:]**2, dim=1, keepdim=True))
+        #horizon_amp = torch.sqrt(torch.sum(amplitude[:,:2,:,:]**2, dim=1, keepdim=True))
+        horizon_amp = amplitude[:, 0:1, :, :] / amplitude[:, 1:2, :, :]
         horizon_amp[torch.abs(horizon_amp)<1e-6] = 1e-6
-        angle = torch.cat([amplitude[:, :2, :, :]/horizon_amp, torch.atan2(amplitude[:, 2:, :, :], horizon_amp)], dim=1) # sin, cos, takeoff angle
+        #full_amp = torch.sqrt(torch.sum(amplitude[:,:,:,:]**2, dim=1, keepdim=True))
+        full_amp = amplitude[:, :2, :, :] / amplitude[:, 2:, :, :]
+        full_amp[torch.abs(full_amp)<2e-6] = 2e-6
+        #assert torch.all(torch.isfinite(horizon_amp)), f"horizon_amp should be finite {torch.abs(amplitude).max()}"
+        #assert torch.all(torch.isfinite(full_amp)), "full_amp should be finite"
+        
+        #angle = torch.cat([amplitude[:, :2, :, :]/horizon_amp, amplitude[:, 2:, :, :]/full_amp, horizon_amp/full_amp], dim=1) # sin, cos, sin(incident angle), cos(incident angle)
+        angle = torch.cat([1/torch.sqrt(1+(1/horizon_amp)**2), 
+                            1/torch.sqrt(1+horizon_amp**2),
+                            1/torch.sqrt(1+torch.sum(full_amp**2, dim=1, keepdim=True)),
+                            1/torch.sqrt(1+1/torch.sum(full_amp**2, dim=1, keepdim=True))], dim=1)
+        #assert not torch.any(torch.isnan(angle)), "angle should not be nan"
         #assert torch.all(angle<100), "angle should be finite"
         amplitude = torch.log10(torch.abs(amplitude))
         amplitude = torch.cat([amplitude, angle], dim=1)
-        assert torch.all(torch.isfinite(amplitude)), "amplitude should be finite"
         assert not torch.any(torch.isnan(amplitude)), "amplitude should not be nan"
-        amplitude = amplitude.permute(0, 3, 1, 2).contiguous().view(bt*st, ch*2, nt)
+        assert torch.all(torch.isfinite(amplitude)), "amplitude should be finite"
+        amplitude = amplitude.permute(0, 3, 1, 2).contiguous().view(bt*st, ch+4, nt)
         # downsample amplitude
         amplitude = F.interpolate(amplitude, size=x.shape[-1], mode='linear', align_corners=False)
         
