@@ -263,6 +263,8 @@ class EQNet(nn.Module):
         self.backbone_name = backbone
         self.head_name = head
         self.moving_norm = moving_norm
+        embed_dim = 64#96
+        
         if backbone == "resnet18":
             self.backbone = ResNet(BasicBlock, [2, 2, 2, 2])  # ResNet18
             # self.backbone = ResNet(BasicBlock, [3, 4, 6, 3]) #ResNet34
@@ -272,11 +274,9 @@ class EQNet(nn.Module):
             out_indices = [0, 1, 2, 3] if head == "upernet" else [3]
             self.backbone = SwinTransformer(
                 patch_size=[4, 1],
-                embed_dim=96,
-                #embed_dim=16,
+                embed_dim=embed_dim,
                 depths=[2, 2, 6, 2],
                 num_heads=[3, 6, 12, 24],
-                #num_heads=[2, 4, 8, 8],
                 window_size=[7, 10],
                 stochastic_depth_prob=0.2,
                 block_name="SwinTransformerBlock",
@@ -287,13 +287,13 @@ class EQNet(nn.Module):
             out_indices = [0, 1, 2, 3] if head == "upernet" else [3]
             self.backbone = SwinTransformer(
                 patch_size=[4, 1],
-                embed_dim=96,
-                #embed_dim=16,
+                embed_dim=embed_dim,
                 depths=[2, 2, 6, 2],
-                num_heads=[3, 6, 12, 24],
-                #num_heads=[2, 4, 8, 8],
-                window_size=[8, 10],
-                stochastic_depth_prob=0.2,
+                #num_heads=[3, 6, 12, 24],
+                num_heads=[2, 4, 8, 16],
+                window_size=[32, 10],
+                #stochastic_depth_prob=0.2,
+                stochastic_depth_prob=0.15,
                 block_name="SwinTransformerBlockV2",
                 out_indices=out_indices,
                 use_station_location=use_station_location,
@@ -302,7 +302,7 @@ class EQNet(nn.Module):
             out_indices = [0, 1, 2, 3] if head == "upernet" else [3]
             self.backbone = SwinTransformer(
                 patch_size=[4, 1],
-                embed_dim=96,
+                embed_dim=embed_dim,
                 #embed_dim=16,
                 depths=[2, 2, 6, 2],
                 num_heads=[3, 6, 12, 24],
@@ -320,7 +320,7 @@ class EQNet(nn.Module):
             out_indices = [0, 1, 2, 3] if head == "upernet" else [3]
             self.backbone = SwinTransformer(
                 patch_size=[4, 1],
-                embed_dim=96,
+                embed_dim=embed_dim,
                 #embed_dim=16,
                 depths=[2, 2, 6, 2],
                 num_heads=[3, 6, 12, 24],
@@ -338,7 +338,7 @@ class EQNet(nn.Module):
             out_indices = [0, 1, 2, 3] if head == "upernet" else [3]
             self.backbone = SwinTransformer1D(
                 patch_size=4,
-                embed_dim=96,
+                embed_dim=embed_dim,
                 depths=[2, 2, 6, 2],
                 num_heads=[3, 6, 12, 24],
                 window_size=7,
@@ -350,7 +350,7 @@ class EQNet(nn.Module):
             out_indices = [0, 1, 2, 3] if head == "upernet" else [3]
             self.backbone = SwinTransformer1D(
                 patch_size=4,
-                embed_dim=96,
+                embed_dim=embed_dim,
                 depths=[2, 2, 6, 2],
                 num_heads=[3, 6, 12, 24],
                 window_size=8,
@@ -365,16 +365,17 @@ class EQNet(nn.Module):
         # the len of channels and dilations should be 5 when using other config
         # or you need to change the structure of event_detector and phase_picker
         if "swin" in backbone:
-            #channels=[768, 128, 32, 16, 8] 
-            channels=[768, 256, 64, 16, 8]
+            channels=[embed_dim * (2**3), 128, 32, 16, 8] 
+            #channels=[embed_dim * (2**3), 256, 64, 16, 8]
             #dilations=[1, 6, 24, 48, 96] 
             dilations=[1, 4, 8, 32, 64]
-            neck_channels=256 # TODO: 512 is the original setting
+            #neck_channels=256 # TODO: 512 is the original setting
+            neck_channels=128
         elif backbone[:6] == "resnet":
             channels=[128, 64, 32, 16, 8]
             dilations=[1, 2, 4, 8, 16]
             
-        self.neck = UPerNeck(channels=neck_channels) if head == "upernet" else nn.Sequential()
+        self.neck = UPerNeck(in_channels=[embed_dim * (2**i) for i in range(4)], channels=neck_channels) if head == "upernet" else nn.Sequential()
 
         if head == "simple":
             self.event_detector = EventDetector(channels=channels, bn=True, dilations=dilations)
