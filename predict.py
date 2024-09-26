@@ -35,6 +35,8 @@ from eqnet.utils import (
 matplotlib.use("agg")
 logger = logging.getLogger()
 
+# cuda:1
+#os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
 def postprocess(meta, output, polarity_scale=4, event_scale=16):
     assert torch.all(meta["nt"]==meta["nt"][0]), "nt should be the same for all data"
@@ -305,8 +307,19 @@ def pred_eqnet(args, model, data_loader, pick_path, figure_path, event_path=None
     with torch.inference_mode():
         for meta in metric_logger.log_every(data_loader, 1, header):
             num_stations = len(meta["station_id"])
-            with ctx:
-                output = model(meta)
+            try:
+                with ctx:
+                    output = model(meta)
+            except torch.OutOfMemoryError:
+                print(f"Out of memory during processing {meta['file_name']}")
+                try:
+                    del meta, output
+                except:
+                    pass
+                if args.device != "cpu" and args.device != "mps":
+                    torch.cuda.empty_cache()
+                continue
+            
             if "phase" in output:
                 output["phase"] = output["phase"][:, :, :, :num_stations]
             if "event" in output:
@@ -447,6 +460,11 @@ def pred_eqnet(args, model, data_loader, pick_path, figure_path, event_path=None
                     feature_scale=feature_scale,
                 )
                 print("saving:", meta["file_name"])
+                
+            del meta, output
+            # if cuda, clear cache
+            if args.device != "cpu" and args.device != "mps":
+                torch.cuda.empty_cache()
 
     ## merge picks
     if args.distributed:
@@ -495,7 +513,7 @@ def main(args):
             world_size = 1
 
     device = torch.device(args.device)
-    dtype = "float16" if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else "float16"
+    dtype = "bfloat16" if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else "float16"
     #TODO: check if bfloat16 decreases the accuracy
     ptdtype = {"float32": torch.float32, "bfloat16": torch.bfloat16, "float16": torch.float16}[dtype]
     args.dtype, args.ptdtype = dtype, ptdtype
@@ -564,6 +582,7 @@ def main(args):
         ## for prediction
         sampling_rate=100,
         highpass_filter=args.highpass_filter,
+        response_path=args.response_path,
         response_xml=args.response_xml,
         cut_patch=args.cut_patch,
         nx=args.nx,
@@ -604,6 +623,7 @@ def main(args):
         checkpoint = torch.load(args.resume, map_location="cpu")
         model.load_state_dict(checkpoint["model"], strict=True)
         print("Loaded checkpoint '{}' (epoch {})".format(args.resume, checkpoint["epoch"]))
+        #print(f"weight keys: {checkpoint['model'].keys()}")
     else:
         if args.model == "phasenet":
             raise ("No pretrained model for phasenet, please use phasenet_plus instead")
