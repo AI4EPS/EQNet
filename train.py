@@ -470,9 +470,9 @@ def main(args):
             )    
             train_sampler = None
             dataset_test = SeismicNetworkIterableDataset(
-                data_path=args.data_path,
-                data_list=args.data_list,
-                hdf5_file='/nfs/quakeflow_dataset/NC/waveform_h5/2020.h5',
+                data_path=args.test_data_path,
+                data_list=args.test_data_list,
+                hdf5_file=args.test_hdf5_file,
                 num_stations=args.num_stations_list[0] if args.num_stations_list is not None else None,
                 format="h5",
                 training=True,
