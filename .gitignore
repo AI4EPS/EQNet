@@ -95,3 +95,6 @@ multimetrics.py
 test_*/
 
 tests/eqnet
+*.sh
+logs/
+tmp/
