@@ -6,6 +6,7 @@ import time
 from contextlib import nullcontext
 from glob import glob
 from functools import partial
+import pickle
 
 import matplotlib
 import numpy as np
@@ -218,6 +219,13 @@ def train_one_epoch(
                     wandb.log({"train/balancer_" + k: balancer.batch_weight[epoch,i]})
     plot_results(meta, model, output, args, epoch, "train_")
     del meta, output, loss
+    if epoch==0 and utils.is_main_process():
+        try:
+            with open('/tmp/ill_event_ids.pkl', 'wb') as f:
+                pickle.dump(data_loader.dataset.ill_event_ids, f)
+            print('ill event ids saved in /tmp')
+        except:
+            pass
 
 
 def plot_results(meta, model, output, args, epoch, prefix=""):

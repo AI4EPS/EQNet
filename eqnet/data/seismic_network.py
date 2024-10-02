@@ -1,6 +1,7 @@
 import os
 import random
 from glob import glob
+import pickle
 
 import h5py
 import numpy as np
@@ -450,6 +451,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
             
         self.data_path = data_path
         self.hdf5_file = hdf5_file
+        self.ill_event_ids = set() if not os.path.exists('/tmp/ill_event_ids.pkl') else pickle.load(open('/tmp/ill_event_ids.pkl', 'rb'))
         self.phases = phases
         self.response_xml = response_xml
         self.sampling_rate = sampling_rate
@@ -553,11 +555,18 @@ class SeismicNetworkIterableDataset(IterableDataset):
     
     
     def _read_training_h5(self, event_id):
+        if event_id in self.ill_event_ids:
+            return None
         num_stations = self.num_stations
         hdf5_fp = self.hdf5_fp
-        event = hdf5_fp[event_id]
+        try:
+            event = hdf5_fp[event_id]
+        except KeyError:
+            self.ill_event_ids.add(event_id)
+            return None
         station_ids = list(event.keys())
         if num_stations is not None and len(station_ids) < num_stations:
+            self.ill_event_ids.add(event_id)
             return None
         #else:
         #    station_ids = np.random.choice(station_ids, num_stations, replace=False)
@@ -607,6 +616,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
             is_sick = True
             print(f"\nevent {event_id} all auto picks")
         if is_sick:
+            self.ill_event_ids.add(event_id)
             return None
         
         #reference_latitude = 0
@@ -854,7 +864,9 @@ class SeismicNetworkIterableDataset(IterableDataset):
                 random_idx = np.random.permutation(len(data_list))
                 random_idx = iter(random_idx)
                 event_id = data_list[next(random_idx)]
-            
+                
+            if event_id in self.ill_event_ids:
+                continue
             if self.sample_by_magnitude:
                 if not sample_by_magnitude(self.hdf5_fp[event_id].attrs["magnitude"], critical_magnitude=2, sample_rate=0.6, min_magnitude=0.3):
                     continue
@@ -913,7 +925,8 @@ class SeismicNetworkIterableDataset(IterableDataset):
                         sta2e_dict = self.sta2e_dict,
                         events_dict = self.events_dict,
                         min_shared_sta=3,
-                        magnitude_range=0.7
+                        magnitude_range=0.7,
+                        returns=5,
                     )
                     meta2 = None
                     for e_id in selected_event_ids:
