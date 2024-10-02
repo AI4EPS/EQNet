@@ -5,6 +5,7 @@ import sys
 import re
 import h5py
 import errno
+import pickle
 import argparse
 from glob import glob
 import numpy as np
@@ -222,11 +223,13 @@ parser.add_argument('--catalog_pred_dir', type=str, default="/home/wanghy/tests/
 parser.add_argument('--station_info_dir', type=str, default="/home/wanghy/tests/QuakeFlow/slurm/Ridgecrest/obspy/stations.json", help="station information dir (json)")
 parser.add_argument('--valid_station_dir', type=str, default="/home/wanghy/tests/QuakeFlow/slurm/Ridgecrest/obspy/stations_valid.csv", help="valid station dir (csv)")
 parser.add_argument('--save_path', type=str, default="./ridgecrest_metrics/", help='save path')
+parser.add_argument('--score_threshold', type=float, default=0.3, help='the threshold of phase score')
 parser.add_argument('--suffix', type=str, default="", help='suffix of the pics')
 
 args = parser.parse_args()
 pick_dir = args.pick_dir
 event_dir = args.event_dir
+check_point_dir = os.path.dirname(event_dir)+"/metrics"
 catalog_dir = args.catalog_dir
 catalog_pred_dir = args.catalog_pred_dir
 station_info_dir = args.station_info_dir
@@ -235,16 +238,13 @@ save_path = args.save_path
 suffix = args.suffix
 if suffix != "":
     suffix = f"_{suffix}"
-    
-try:
-    os.makedirs(save_path)
-except OSError as e:
-    if e.errno != errno.EEXIST:
-        raise
+
+os.makedirs(save_path, exist_ok=True)
+os.makedirs(check_point_dir, exist_ok=True)
 
 event_dt_bar = 3 # s
-dbscan_epsilon = 8
-time_space_weight = [1, 0.25, 0.25, 1]
+dbscan_epsilon = 16
+time_space_weight = [1, 0.8, 0.8, 2]
 #time_space_weight = [1, 3.3, 3.3, 1]
 
 sample_rate = 100
@@ -293,7 +293,8 @@ event_files = [os.path.join(event_dir, f) for f in os.listdir(event_dir) if f.en
 
 ridgecrest_metric = EventMetric()
 
-dbscan = DBSCAN(eps=dbscan_epsilon, min_samples=1)
+#dbscan = DBSCAN(eps=dbscan_epsilon, min_samples=1)
+dbscan = DBSCAN(eps=dbscan_epsilon, min_samples=3)
 
 station_info = json.load(open(station_info_dir, "r"))
 
@@ -305,6 +306,10 @@ for pick in tqdm(event_files):
         ridgecrest_metric.empty_files += 1
         continue
     df = pd.read_csv(pick)
+    df = df[df["phase_score"] >= args.score_threshold]
+    if len(df) == 0:
+        ridgecrest_metric.empty_files += 1
+        continue
     
     stations = df["station_id"].values
     time_stamps = pd.to_datetime(df["event_original_time"])
@@ -436,6 +441,9 @@ assert ridgecrest_metric.num_event_picks == len(catalog_pred), f"predict catalog
 ridgecrest_metric.num_event_picks_label = len(catalog)
 
 ridgecrest_metric.calc_metrics()
+if check_point_dir is not None:
+    with open(f"{check_point_dir}/ridgecrest_metric{suffix}.pkl", "wb") as f:
+        pickle.dump(ridgecrest_metric, f)
 # %%
 ridgecrest_metric.plot_residual(save_path=f"./ridgecrest_metrics/event_residual{suffix}.png")
 
@@ -664,7 +672,7 @@ labels = ['SCSN', 'Prediction']
 heats=[]
 # 对于每个DataFrame，计算热图数据并绘制热图
 for df in [catalog, catalog_pred]:
-    df['time_bin'] = pd.cut(df['time'], bins=pd.date_range(start='2019-07-04 00:00:00', end='2019-07-10 00:00:00', freq='3H'), include_lowest=True)
+    df['time_bin'] = pd.cut(df['time'], bins=pd.date_range(start='2019-07-04 00:00:00+00:00', end='2019-07-10 00:00:00+00:00', freq='3H'), include_lowest=True)
     df['magnitude_bin'] = pd.cut(df['magnitude'], bins=np.arange(-1, 8, 0.25), include_lowest=True)
     heatmap_data = df.groupby(['magnitude_bin', 'time_bin']).size().unstack()
     heats.append(np.log1p(heatmap_data))

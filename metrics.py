@@ -5,6 +5,7 @@ import os
 import sys
 import re
 import errno
+import pickle
 import h5py
 import argparse
 from glob import glob
@@ -39,6 +40,8 @@ parser.add_argument('--pick_dir', type=str, default="/home/wanghy/tests/EQNet/te
 parser.add_argument('--event_dir', type=str, default="/home/wanghy/tests/EQNet/test_eqnet_predict/events_eqnet", help='event dir path')
 parser.add_argument('--suffix', type=str, default="", help='suffix of the pics')
 parser.add_argument('--model', type=str, default="eqnet", help='the model that performed prediction')
+parser.add_argument('--score_threshold', type=float, default=0.3, help='the threshold of phase score')
+parser.add_argument('--save_path', type=str, default=None, help='the path to save the metric pickle file')
 
 args = parser.parse_args()
 h5_file = args.h5_file
@@ -50,6 +53,8 @@ if suffix != "":
     suffix = f"_{suffix}"
     
 os.makedirs("./metrics", exist_ok=True)
+if args.save_path is not None:
+    os.makedirs(args.save_path, exist_ok=True)
 
 dt_bar = 0.5 # s
 distribution_bar = 0.5 # s
@@ -205,12 +210,13 @@ class PickMetric:
         else:
             plt.show()
         plt.close()
-        fig, ax = plt.subplots(4, 2, figsize=(10, 10))
-        ax[0,0].scatter(self.tp_p_picks, self.tp_p_scores, s=10, c='orange', label='TP_P')
-        ax[0,0].set_xlabel('pred-label time residual [s]')
-        ax[0,0].set_ylabel('phase score')
-        ax[0,1].scatter(self.tp_s_picks, self.tp_s_scores, s=10, c='#43BEFF', label='TP_S')
-        ax[0,1].set_xlabel('pred-label time residual [s]')
+        fig, ax = plt.subplots(2, 1, figsize=(10, 10))
+        ax[0].scatter(self.tp_p_picks, self.tp_p_scores, s=10, c='orange', label='TP_P')
+        ax[0].set_xlabel('pred-label time residual [s]')
+        ax[0].set_ylabel('phase score')
+        ax[1].scatter(self.tp_s_picks, self.tp_s_scores, s=10, c='#43BEFF', label='TP_S')
+        ax[1].set_xlabel('pred-label time residual [s]')
+        plt.legend()
         if save_path is not None:
             plt.savefig(save_path.replace("phase_picking", "phase_score"))
         else:
@@ -249,6 +255,22 @@ with h5py.File(h5_file, "r") as fp:
                 if os.path.getsize(sta) != 0:
                     empty = False
                     break
+        
+        if args.model == "eqnet" and not empty:
+            df = pd.read_csv(pick)
+        elif args.model == "phasenet_plus" and not empty:
+            dfs = []
+            stations=[os.path.join(pick, f) for f in os.listdir(pick) if f.endswith(".csv")]
+            for sta in stations:
+                if os.path.getsize(sta) == 0:
+                    continue
+                dfs.append(pd.read_csv(sta))
+            df = pd.concat(dfs)
+            
+        df = df[df["phase_score"] >= args.score_threshold]
+        if len(df) == 0:
+            empty = True
+            
         if empty:
             pick_metric.empty_files += 1
             pick_metric_thld.empty_files +=1 if num_stations>=station_threshold else 0
@@ -268,16 +290,6 @@ with h5py.File(h5_file, "r") as fp:
                 pick_metric_thld.num_s_picks_label += len(s_picks_gt) if num_stations>=station_threshold else 0
             continue
         
-        if args.model == "eqnet":
-            df = pd.read_csv(pick)
-        elif args.model == "phasenet_plus":
-            dfs = []
-            stations=[os.path.join(pick, f) for f in os.listdir(pick) if f.endswith(".csv")]
-            for sta in stations:
-                if os.path.getsize(sta) == 0:
-                    continue
-                dfs.append(pd.read_csv(sta))
-            df = pd.concat(dfs)
         df = df.sort_values(by=["station_id", "phase_index"], ignore_index=True)
         
         for sta_id in list(event.keys()):
@@ -348,11 +360,17 @@ pick_metric.calc_metrics(dt_bar=dt_bar, distribution_bar=distribution_bar)
 pick_metric_thld.calc_metrics(dt_bar=dt_bar, distribution_bar=distribution_bar)
 
 # %%
-print("\nWhole dataset:\n")
-pick_metric.plot_residual(save_path=f"./metrics/phase_picking{suffix}.png")
-print(f"\nnum_station >= {station_threshold} subset:\n")
-pick_metric_thld.plot_residual(save_path=f"./metrics/phase_picking_threshold{station_threshold}{suffix}.png")
-print("\n")
+if args.save_path is not None:
+    with open(f"{args.save_path}/pick_metric_score_thld{args.score_threshold}{suffix}.pkl", "wb") as f:
+        pickle.dump(pick_metric, f)
+    with open(f"{args.save_path}/pick_metric_score_thld{args.score_threshold}_thld{station_threshold}{suffix}.pkl", "wb") as f:
+        pickle.dump(pick_metric_thld, f)
+else:
+    print("\nWhole dataset:\n")
+    pick_metric.plot_residual(save_path=f"./metrics/phase_picking{suffix}.png")
+    print(f"\nnum_station >= {station_threshold} subset:\n")
+    pick_metric_thld.plot_residual(save_path=f"./metrics/phase_picking_threshold{station_threshold}{suffix}.png")
+    print("\n")
 
 # %% [markdown]
 # ### Event detection
@@ -540,7 +558,8 @@ def average_location(locations):
 event_metric = EventMetric()
 event_metric_thld = EventMetric()
 
-dbscan = DBSCAN(eps=dbscan_epsilon, min_samples=1)
+#dbscan = DBSCAN(eps=dbscan_epsilon, min_samples=1)
+dbscan = DBSCAN(eps=dbscan_epsilon, min_samples=3)
 
 with h5py.File(h5_file, "r") as fp:
     for pick in tqdm(event_files):
@@ -565,6 +584,11 @@ with h5py.File(h5_file, "r") as fp:
             df = pd.concat(
                 [pd.read_csv(os.path.join(pick, f)) for f in os.listdir(pick) if f.endswith(".csv")]
             )
+        df = df[df["phase_score"] >= args.score_threshold]
+        if len(df) == 0:
+            event_metric.empty_files += 1
+            event_metric_thld.empty_files +=1 if num_stations>=station_threshold else 0
+            continue
         assert 'event_center_index' in df.columns, f'event_center_index not in {event_id}.columns'
         assert 'p_index' in df.columns, f'p_index not in {event_id}.columns'
         assert 's_index' in df.columns, f's_index not in {event_id}.columns'
@@ -588,7 +612,8 @@ with h5py.File(h5_file, "r") as fp:
             if classes[0] == -1:
                 classes = classes[1:]
                 counts = counts[1:]
-            classes = classes[counts>1]
+            #classes = classes[counts>1]
+            classes = classes[counts>=3]
             
         event_metric.num_event_picks += len(classes)
         event_metric_thld.num_event_picks += len(classes) if num_stations>=station_threshold else 0
@@ -653,9 +678,15 @@ event_metric.calc_metrics(event_dt_bar=event_dt_bar)
 event_metric_thld.calc_metrics(event_dt_bar=event_dt_bar)
 
 # %%
-print("\nWhole dataset:\n")
-event_metric.plot_residual(f"./metrics/event_residual{suffix}.png")
-print(f"azimuth residual: len: {len(event_metric.azimuth_res.flatten())}, abs medium: {np.median(np.abs(event_metric.azimuth_res.flatten()))}, max: {event_metric.azimuth_res.flatten()[np.argmax(np.abs(event_metric.azimuth_res.flatten()))]}, min: {event_metric.azimuth_res.flatten()[np.argmin(np.abs(event_metric.azimuth_res.flatten()))]}")
-print(f"\nnum_station >= {station_threshold} subset:\n")
-event_metric_thld.plot_residual(f"./metrics/event_residual_threshold{station_threshold}{suffix}.png")
-print(f"azimuth residual: len: {len(event_metric_thld.azimuth_res.flatten())}, abs medium: {np.median(np.abs(event_metric_thld.azimuth_res.flatten()))}, max: {event_metric_thld.azimuth_res.flatten()[np.argmax(np.abs(event_metric_thld.azimuth_res.flatten()))]}, min: {event_metric_thld.azimuth_res.flatten()[np.argmin(np.abs(event_metric_thld.azimuth_res.flatten()))]}")
+if args.save_path is not None:
+    with open(f"{args.save_path}/event_metric_score_thld{args.score_threshold}{suffix}.pkl", "wb") as f:
+        pickle.dump(event_metric, f)
+    with open(f"{args.save_path}/event_metric_score_thld{args.score_threshold}_thld{station_threshold}{suffix}.pkl", "wb") as f:
+        pickle.dump(event_metric_thld, f)
+else:
+    print("\nWhole dataset:\n")
+    event_metric.plot_residual(f"./metrics/event_residual{suffix}.png")
+    print(f"azimuth residual: len: {len(event_metric.azimuth_res.flatten())}, abs medium: {np.median(np.abs(event_metric.azimuth_res.flatten()))}, max: {event_metric.azimuth_res.flatten()[np.argmax(np.abs(event_metric.azimuth_res.flatten()))]}, min: {event_metric.azimuth_res.flatten()[np.argmin(np.abs(event_metric.azimuth_res.flatten()))]}")
+    print(f"\nnum_station >= {station_threshold} subset:\n")
+    event_metric_thld.plot_residual(f"./metrics/event_residual_threshold{station_threshold}{suffix}.png")
+    print(f"azimuth residual: len: {len(event_metric_thld.azimuth_res.flatten())}, abs medium: {np.median(np.abs(event_metric_thld.azimuth_res.flatten()))}, max: {event_metric_thld.azimuth_res.flatten()[np.argmax(np.abs(event_metric_thld.azimuth_res.flatten()))]}, min: {event_metric_thld.azimuth_res.flatten()[np.argmin(np.abs(event_metric_thld.azimuth_res.flatten()))]}")
