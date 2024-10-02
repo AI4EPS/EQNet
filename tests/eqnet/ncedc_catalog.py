@@ -26,6 +26,7 @@ import fsspec
 import datasets
 from scipy.sparse.csgraph import minimum_spanning_tree
 from scipy.sparse.csgraph import breadth_first_order
+from scipy import signal
 
 
 # TODO: Add BibTeX citation
@@ -53,32 +54,53 @@ _LICENSE = ""
 # TODO: Add link to the official dataset URLs here
 # The HuggingFace Datasets library doesn't host the datasets but only points to the original files.
 # This can be an arbitrary nested dict/list of URLs (see below in `_split_generators` method)
-_REPO = "https://huggingface.co/datasets/AI4EPS/quakeflow_nc/resolve/main/data"
+_REPO = "https://huggingface.co/datasets/AI4EPS/quakeflow_nc/resolve/main/waveform_h5"
 _FILES = [
-    "NC1970-1989.h5",
-    "NC1990-1994.h5",
-    "NC1995-1999.h5",
-    "NC2000-2004.h5",
-    "NC2005-2009.h5",
-    "NC2010.h5",
-    "NC2011.h5",
-    "NC2012.h5",
-    "NC2013.h5",
-    "NC2014.h5",
-    "NC2015.h5",
-    "NC2016.h5",
-    "NC2017.h5",
-    "NC2018.h5",
-    "NC2019.h5",
-    "NC2020.h5",
+    "1987.h5",
+    "1988.h5",
+    "1989.h5",
+    "1990.h5",
+    "1991.h5",
+    "1992.h5",
+    "1993.h5",
+    "1994.h5",
+    "1995.h5",
+    "1996.h5",
+    "1997.h5",
+    "1998.h5",
+    "1999.h5",
+    "2000.h5",
+    "2001.h5",
+    "2002.h5",
+    "2003.h5",
+    "2004.h5",
+    "2005.h5",
+    "2006.h5",
+    "2007.h5",
+    "2008.h5",
+    "2009.h5",
+    "2010.h5",
+    "2011.h5",
+    "2012.h5",
+    "2013.h5",
+    "2014.h5",
+    "2015.h5",
+    "2016.h5",
+    "2017.h5",
+    "2018.h5",
+    "2019.h5",
+    "2020.h5",
+    "2021.h5",
+    "2022.h5",
+    "2023.h5",
 ]
 
-_PATH = "/home/zhuwq/quakeflow_share/quakeflow_nc/data"
-_NAMES = ["2016.h5", "2017.h5", "2018.h5", "2019.h5", "2020.h5"]#, "2021.h5", "2022.h5"]
+_PATH = "/nfs/quakeflow_dataset/NC/waveform_h5"
+_NAMES = ["2014.h5", "2015.h5", "2016.h5", "2017.h5", "2018.h5", "2019.h5", "2020.h5"]#, "2021.h5", "2022.h5"]
 _URLS = {
     "station": [f"{_REPO}/{x}" for x in _FILES],
-    "event": [f"{_REPO}/{x}" for x in _FILES],
-    #"event": [f"{_PATH}/{x}" for x in _NAMES],
+    #"event": [f"{_REPO}/{x}" for x in _FILES],
+    "event": [f"{_PATH}/{x}" for x in _FILES],
     "station_train": [f"{_REPO}/{x}" for x in _FILES[:-1]],
     "event_train": [f"{_REPO}/{x}" for x in _FILES[:-1]],
     "station_test": [f"{_REPO}/{x}" for x in _FILES[-1:]],
@@ -99,6 +121,47 @@ class BatchBuilderConfig(datasets.BuilderConfig):
         self.batch_size = batch_size
         self.num_stations_list = num_stations_list
 
+
+@np.vectorize
+def mapping_phase_type(phase):
+    if phase in ["P", "Pn", "Pg", "Pb"]:
+        return "P"
+    elif phase in ["S", "Sn", "Sg", "Sb"]:
+        return "S"
+    else:
+        return phase
+    
+def calc_freq_index(waveforms, picks, upper_band=(10, 15), lower_band=(1, 5), before=1, after=6, dt_s=0.01):
+    r'''FI = log_10 (\bar{A}_upper / \bar{A}_lower)
+    \bar{A}_upper and \bar{A}_lower are the mean spectral amplitudes in a predefined high-frequency
+    band and a low-frequency band, respectively. Time windows starting 1s prior to and ending 6s after P arrivals 
+    are extracted to calculate FIs. 
+    input is a 3-component waveform, output is a numpy array of shape (3,), each element is a frequency index
+    if one component is all zeros, the corresponding frequency index is np.nan
+    if picks is empty or last pick is larger than waveforms length, all frequency index are np.nan
+    
+    Args:
+        waveforms: numpy.ndarray, (3, nt)
+        picks: numpy.ndarray, (2,)
+        upper_band: tuple, (low, high)
+        lower_band: tuple, (low, high)
+    '''
+    
+    if len(picks) == 0 or picks.max() >= waveforms.shape[1]:
+        return np.array([np.nan, np.nan, np.nan])
+    
+    fi = np.zeros(3)
+    for i in range(3):
+        #if np.all(waveforms[i]==0):
+        if np.abs(waveforms[i]).max() == 0:
+            fi[i] = np.nan
+            continue
+        window = waveforms[i, int(picks[0]-before/dt_s):int(picks[0]+after/dt_s)]
+        freqs, psd = signal.welch(window, fs=1/dt_s, nperseg=512)
+        upper = np.where(np.logical_and(freqs >= upper_band[0], freqs <= upper_band[1]))[0]
+        lower = np.where(np.logical_and(freqs >= lower_band[0], freqs <= lower_band[1]))[0]
+        fi[i] = np.log10(psd[upper].mean() / psd[lower].mean())
+    return fi
 
 # TODO: Name of the dataset usually matches the script name with CamelCase instead of snake_case
 class Ncedc_Catalog(datasets.GeneratorBasedBuilder):
@@ -193,9 +256,12 @@ class Ncedc_Catalog(datasets.GeneratorBasedBuilder):
                     "depth_km": datasets.Value("float32"),
                     "magnitude": datasets.Value("float32"),
                     "magnitude_type": datasets.Value("string"),
+                    "event_frequency_index": datasets.Value("float32"),
                     "station_ids": datasets.Sequence(datasets.Value("string")),
                     "station_location": datasets.Array2D(shape=(None, 3), dtype='float32'),
                     "station_dist_azi": datasets.Array2D(shape=(None, 2), dtype='float32'),
+                    "station_frequency_index": datasets.Array2D(shape=(None, 3), dtype='float32'),
+                    "station_snr": datasets.Array2D(shape=(None, 3), dtype='float32'),
                     "picks": datasets.Array2D(shape=(None, 2), dtype='float32'),
                     "dt_s": datasets.Sequence(datasets.Value("float32")),
                 }
@@ -238,7 +304,7 @@ class Ncedc_Catalog(datasets.GeneratorBasedBuilder):
                     name=datasets.Split.TRAIN,
                     # These kwargs will be passed to _generate_examples
                     gen_kwargs={
-                        "filepath": files[-7:-1],
+                        "filepath": files[:-1],
                         "split": "train",
                     },
                 ),
@@ -304,6 +370,7 @@ class Ncedc_Catalog(datasets.GeneratorBasedBuilder):
                 with h5py.File(fs, "r") as fp:
                     # for event_id in sorted(list(fp.keys())):
                     event_ids = list(fp.keys())
+                    print(f"total {len(event_ids)} events in {file}")
                     for event_id in event_ids:
                         event = fp[event_id]
                         station_ids = list(event.keys())
@@ -352,35 +419,45 @@ class Ncedc_Catalog(datasets.GeneratorBasedBuilder):
 
                             # avoid stations with P arrival equals S arrival
                             is_sick = False
+                            auto_count = 0
                             for sta_id in station_ids:
+                                if len(np.unique(mapping_phase_type(event[sta_id].attrs["phase_type"]))) < 2:
+                                    auto_count += 1
+                                    continue # only one phase type indicates automatic picks
+                                valid_manual_events = 0
                                 attrs = event[sta_id].attrs
-                                # if len(attrs.keys()) <22:
-                                #     is_sick = True
-                                #     break
-                                # try:
-                                #     print(event_id)
-                                #     p_picks = attrs["phase_index"][attrs["phase_type"] == "P"]
-                                # except:
-                                #     print(event_id, event_attrs)
-                                #     print(sta_id, attrs)
-                                #     raise
-                                p_picks = attrs["phase_index"][attrs["phase_type"] == "P"]
-                                s_picks = attrs["phase_index"][attrs["phase_type"] == "S"]
-                                if len(s_picks)==0:
-                                    continue
-                                p_events = attrs["event_id"][attrs["phase_type"] == "P"]
-                                s_events = attrs["event_id"][attrs["phase_type"] == "S"]
-                                for p_pick, s_pick, p_event, s_event in zip(p_picks, s_picks, p_events, s_events):
-                                    if p_pick>=s_pick and p_event==s_event:
+                                sta_phase_type = mapping_phase_type(attrs["phase_type"])
+                                for e_id in [event_id]:#sorted(np.unique(event[sta_id].attrs["event_id"])):
+                                    if len(np.unique(sta_phase_type[attrs["event_id"]==e_id])) < 2:
+                                        continue
+                                    
+                                    p_picks = attrs["phase_index"][np.logical_and(sta_phase_type == "P", attrs["event_id"] == e_id)]
+                                    s_picks = attrs["phase_index"][np.logical_and(sta_phase_type == "S", attrs["event_id"] == e_id)]
+                                    if p_picks.min()>self.nt or s_picks.min()>self.nt:
+                                        continue # phases too late
+                                    # try:
+                                    #     if len(p_picks)!=len(s_picks):
+                                    #         is_sick = True
+                                    #         break
+                                    # except:
+                                    #     pass
+                                    #assert len(p_picks)==len(s_picks), f"{event_id}/{sta_id} manual P&S picks num don't match"
+                                    if len(p_picks)!=len(s_picks):
+                                        print(f"{event_id}/{sta_id} manual P&S picks num don't match")
                                         is_sick = True
                                         break
-                                p_picks = attrs["phase_index"][np.logical_and(attrs["phase_type"] == "P", attrs["event_id"] == event_attrs["event_id"])]
-                                s_picks = attrs["phase_index"][np.logical_and(attrs["phase_type"] == "S", attrs["event_id"] == event_attrs["event_id"])]
-                                if len(p_picks)==0 or len(s_picks)==0:
-                                    continue
-                                if ((p_picks) + (s_picks))[0] > self.nt * 2:
-                                    is_sick = True
-                                    break
+                                    if np.any(p_picks+5>=s_picks):
+                                        print(f"\n{event_id} when {sta_id} during {e_id} p pick arrives after s pick")
+                                        is_sick = True
+                                        break
+                                    valid_manual_events += 1
+                                if is_sick:
+                                    break    
+                                if valid_manual_events == 0:
+                                    auto_count += 1
+                            if auto_count >= len(station_ids):
+                                is_sick = True
+                                print(f"\nevent {event_id} all auto picks")
                             if is_sick:
                                 continue
 
@@ -396,12 +473,15 @@ class Ncedc_Catalog(datasets.GeneratorBasedBuilder):
                             station_location = np.zeros((num_stations, 3))
                             station_dist_azi = np.zeros((num_stations, 2))
                             station_picks = np.zeros((num_stations, 2))
+                            station_frequency_index = np.zeros((num_stations, 3))
+                            station_snr = np.zeros((num_stations, 3))
                             dt_s = np.zeros(num_stations)
 
                             for i, sta_id in enumerate(station_ids):
                                 attrs = event[sta_id].attrs
-                                p_picks = attrs["phase_index"][np.logical_and(attrs["phase_type"] == "P", attrs["event_id"] == event_attrs["event_id"])]
-                                s_picks = attrs["phase_index"][np.logical_and(attrs["phase_type"] == "S", attrs["event_id"] == event_attrs["event_id"])]
+                                sta_phase_type = mapping_phase_type(attrs["phase_type"])
+                                p_picks = attrs["phase_index"][np.logical_and(sta_phase_type == "P", attrs["event_id"] == event_attrs["event_id"])]
+                                s_picks = attrs["phase_index"][np.logical_and(sta_phase_type == "S", attrs["event_id"] == event_attrs["event_id"])]
                                 if len(p_picks)==0:
                                     p_picks = np.array([1])
                                 if len(s_picks)==0:
@@ -414,8 +494,20 @@ class Ncedc_Catalog(datasets.GeneratorBasedBuilder):
                                 station_location[i, 2] = round(-attrs["elevation_m"]/1e3, 2)
                                 station_dist_azi[i, 0] = attrs["distance_km"]
                                 station_dist_azi[i, 1] = attrs["azimuth"]
+                                station_snr[i] = attrs['snr']
+                                station_frequency_index[i] = calc_freq_index(event[sta_id][:,:], p_picks)
+                                if np.all(np.isnan(station_frequency_index[i])):
+                                    if len(p_picks) == 0:
+                                        print(f"{event_id}/{sta_id} no p pick")
+                                    elif np.all(event[sta_id][:,:]==0):
+                                        print(f"{event_id}/{sta_id} waveform all zeros")
+                                    elif p_picks[0] >= event[sta_id][:,:].shape[-1]:
+                                        print(f"{event_id}/{sta_id} p pick too late")
                                 dt_s[i] = attrs["dt_s"]
                                 
+                            # mean of station_frequency_index exclude NaN
+                            event_freq_index = np.nanmean(station_frequency_index) if not np.all(np.isnan(station_frequency_index)) else np.nan
+                            
                             station_ids = np.array(station_ids)
                             
                             if (self.config.name == "event_large" or self.config.name == "event") and len(station_ids) > 5:
@@ -426,6 +518,8 @@ class Ncedc_Catalog(datasets.GeneratorBasedBuilder):
                                 station_location = station_location[index]
                                 station_dist_azi = station_dist_azi[index]
                                 station_picks = station_picks[index]
+                                station_frequency_index = station_frequency_index[index]
+                                station_snr = station_snr[index]
                                 dt_s = dt_s[index]
 
                             yield event_id, {
@@ -437,9 +531,12 @@ class Ncedc_Catalog(datasets.GeneratorBasedBuilder):
                                 "depth_km": location[2],
                                 "magnitude": magnitude,
                                 "magnitude_type": magnitude_type,
+                                "event_frequency_index": event_freq_index,
                                 "station_ids": station_ids,
                                 "station_location": torch.from_numpy(station_location).float(),
                                 "station_dist_azi": torch.from_numpy(station_dist_azi).float(),
+                                "station_frequency_index": torch.from_numpy(station_frequency_index).float(),
+                                "station_snr": torch.from_numpy(station_snr).float(),
                                 "picks": torch.from_numpy(station_picks).float(),
                                 "dt_s": torch.from_numpy(dt_s).float(),
                             }
