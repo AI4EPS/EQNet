@@ -307,7 +307,7 @@ def main(args):
     device = torch.device(args.device)
     dtype = "bfloat16" if (torch.cuda.is_available() and torch.cuda.is_bf16_supported()) else "float16"
     ptdtype = {"float32": torch.float32, "bfloat16": torch.bfloat16, "float16": torch.float16}[dtype]
-    scaler = torch.cuda.amp.GradScaler(enabled=((dtype == "float16") & torch.cuda.is_available()))
+    scaler = torch.amp.GradScaler('cuda', enabled=((dtype == "float16") & torch.cuda.is_available()))
     args.dtype, args.ptdtype = dtype, ptdtype
     torch.backends.cuda.matmul.allow_tf32 = True  # allow tf32 on matmul
     torch.backends.cudnn.allow_tf32 = True  # allow tf32 on cudnn

@@ -157,6 +157,7 @@ class PatchMerging(nn.Module):
     def __init__(self, dim: int, norm_layer: Callable[..., nn.Module] = nn.LayerNorm):
         super().__init__()
         self.dim = dim
+        #self.reduction = nn.Linear(2 * dim, 2 * dim, bias=False)
         self.norm = norm_layer(2 * dim)
 
     def forward(self, meta: Dict):
@@ -168,6 +169,7 @@ class PatchMerging(nn.Module):
         """
         x, loc = meta["x"], meta["loc"]
         x = _patch_merging_pad(x)
+        #x = self.reduction(x)
         x = self.norm(x)
 
         return {"x": x, "loc": loc}
