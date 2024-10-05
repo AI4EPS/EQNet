@@ -594,7 +594,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
                 
                 p_picks = attrs["phase_index"][np.logical_and(sta_phase_type == "P", attrs["event_id"] == e_id)]
                 s_picks = attrs["phase_index"][np.logical_and(sta_phase_type == "S", attrs["event_id"] == e_id)]
-                if p_picks.min()>self.nt or s_picks.min()>self.nt:
+                if p_picks.min()>self.raw_nt or s_picks.min()>self.raw_nt:
                     continue # phases too late
                 # try:
                 #     if len(p_picks)!=len(s_picks):
@@ -715,6 +715,15 @@ class SeismicNetworkIterableDataset(IterableDataset):
                 c0_width = max(((s_picks - p_picks) * self.sampling_rate / 200.0).max(), 10)
                 # c0_width = ((s_picks - p_picks) * self.sampling_rate / 200.0).max() # min=160
                 assert c0_width>0
+                assert len(c0)==1, f"{event_id}/{sta_id} multiple phase centers at {e_id}: {c0}"
+                assert c0[0]<self.raw_nt
+                c0 = c0/self.feature_scale
+                assert c0[0]<self.raw_feature_nt
+                c0_width = c0_width/self.feature_scale
+                #assert c0_width>=160/self.feature_scale
+                c0_int = c0.astype(np.int32)
+                assert c0_int[0]<self.raw_feature_nt
+                assert abs(c0-c0_int)[0]<1
                 # cartesian
                 # dx = round(
                 #     (e_attrs["longitude"] - attrs["longitude"])
@@ -751,16 +760,6 @@ class SeismicNetworkIterableDataset(IterableDataset):
                 )) if e_id != event_id else 0
                 )
                 t0 = e_attrs["event_time_index"] + begin_time_index_shift
-
-                assert len(c0)==1, f"{event_id}/{sta_id} multiple phase centers at {e_id}: {c0}"
-                assert c0[0]<self.nt
-                c0 = c0/self.feature_scale
-                assert c0[0]<self.feature_nt
-                c0_width = c0_width/self.feature_scale
-                #assert c0_width>=160/self.feature_scale
-                c0_int = c0.astype(np.int32)
-                assert c0_int[0]<self.feature_nt
-                assert abs(c0-c0_int)[0]<1
             
                 event_center_eid = generate_label(
                     [
@@ -778,7 +777,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
                 )[1, :]
                 #mask = event_center_eid >= 0.5
                 mask = np.zeros_like(event_center_eid, dtype=bool)
-                mask[max(0, c0_int[0]-4):min(self.feature_nt, c0_int[0]+4)] = True
+                mask[max(0, c0_int[0]-4):min(self.raw_feature_nt, c0_int[0]+4)] = True
                 #print(f"{event_id}/{sta_id}: {e_id} c0:{c0}, c0_int:{c0_int}, mask:{np.sum(mask)}")
                 assert np.max(event_center[i, :])<=1, f"{event_id}/{sta_id} event_center overlap when {e_id}:{event_center[i, :]}"
                 if not np.all(event_location[i, :, mask]==0):
@@ -786,9 +785,9 @@ class SeismicNetworkIterableDataset(IterableDataset):
                     #continue
                 
                 event_center[i, :] += event_center_eid
-                event_location[i, 0, max(0, c0_int[0]-4):min(self.feature_nt, c0_int[0]+4)] = ((
+                event_location[i, 0, max(0, c0_int[0]-4):min(self.raw_feature_nt, c0_int[0]+4)] = ((
                     self.feature_scale * np.arange(self.raw_feature_nt) - t0
-                )/self.sampling_rate * mask.astype(np.float32))[max(0, c0_int[0]-4):min(self.feature_nt, c0_int[0]+4)]
+                )/self.sampling_rate * mask.astype(np.float32))[max(0, c0_int[0]-4):min(self.raw_feature_nt, c0_int[0]+4)]
                 # print(event_location[i, 1:, mask].shape, event_location.shape, event_location[i][1:, mask].shape)
                 event_location[i][1:, mask] += np.array([dist, azimuth, dz, magnitude, (c0-c0_int)[0], c0_width])[:, np.newaxis]
                 event_location_mask[i, :] = np.logical_or(event_location_mask[i, :], mask)
