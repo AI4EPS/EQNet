@@ -11,7 +11,7 @@ PhaseNet for picking arrival time and polarity.
 python predict.py --model phasenet_plus --data_list mseed.txt --result_path ./results --batch_size=1 --format mseed
 ```
 
-### [PhaseNet-TF](https://ziyixi.science/researchprojects/phasenet-tf/)
+### [PhaseNet-TF](https://github.com/swei-seismo/PhaseNet-TF)
 PhaseNet in time-frequency domain for deep earthquakes
 
 
