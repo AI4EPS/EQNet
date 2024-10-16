@@ -2,6 +2,7 @@ import os
 import random
 from glob import glob
 import pickle
+import copy
 
 import h5py
 import numpy as np
@@ -486,6 +487,10 @@ class SeismicNetworkIterableDataset(IterableDataset):
             temp['snr_median'] = temp['snr'].apply(lambda x: np.median(x[x!=0] if len(x[x!=0]) > 0 else 0))
             self.events_dict = self.events_dict.merge(temp[['event_id', 'snr_mean', 'snr_median']], on='event_id', how='left')[['event_id', 'magnitude', 'depth_km', 'year', 'snr_mean', 'snr_median']].set_index('event_id').to_dict('index')
             self.picks_dict = self.picks_dict[['event_id', 'station_id']]
+            
+            # remove the ill event ids
+            self.picks_dict = self.picks_dict[~self.picks_dict['event_id'].isin(self.ill_event_ids)]
+            
             self.e2sta_dict = self.picks_dict.groupby('event_id')['station_id'].apply(list).to_dict()
             self.sta2e_dict = self.picks_dict.groupby('station_id')['event_id'].apply(list).to_dict()
 
@@ -863,9 +868,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
                 random_idx = np.random.permutation(len(data_list))
                 random_idx = iter(random_idx)
                 event_id = data_list[next(random_idx)]
-                
-            if event_id in self.ill_event_ids:
-                continue
+            
             if self.sample_by_magnitude:
                 if not sample_by_magnitude(self.hdf5_fp[event_id].attrs["magnitude"], critical_magnitude=2, sample_rate=0.6, min_magnitude=0.3):
                     continue
@@ -916,8 +919,12 @@ class SeismicNetworkIterableDataset(IterableDataset):
                     "first_arrival": meta['first_arrival'],
                 }
             
-            if self.stack_event and random.random() < 0.7:
+            if self.stack_event and random.random() < 0.9:
                 try:
+                    #if random.random() < 0.4:
+                    #    # copy the meta into meta2
+                    #    meta2 = copy.deepcopy(meta)
+                    #else:
                     selected_event_ids = sample_event_for_stacking(
                         event_id0 = event_id,
                         e2sta_dict = self.e2sta_dict,
