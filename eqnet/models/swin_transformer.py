@@ -916,7 +916,7 @@ class RotaryAxialWindowAttention(ShiftedWindowAttentionV2):
         dropout: float = 0.0,
         theta_t: float = 100.0,
         freq_horizon: Tuple[float, float] = (-6.0, 12.0),
-        freq_vertical: Tuple[float, float] = (-4.0, 10.0),
+        freq_vertical: Tuple[float, float] = (-2.0, 8.0),
         use_station_location: bool = True,
         use_relative_position_bias: bool = False,
     ):
@@ -1030,7 +1030,7 @@ class RotaryMixedWindowAttention(RotaryAxialWindowAttention):
         dropout: float = 0.0,
         theta_t: float = 10.0,
         freq_horizon: Tuple[float, float] = (-6.0, 12.0),
-        freq_vertical: Tuple[float, float] = (-4.0, 10.0),
+        freq_vertical: Tuple[float, float] = (-2.0, 8.0),
         use_station_location: bool = True,
         use_relative_position_bias: bool = False,
     ):
