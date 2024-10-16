@@ -3,6 +3,7 @@ import os
 import time
 from contextlib import nullcontext
 from glob import glob
+import pickle
 
 import matplotlib
 import pandas as pd
@@ -376,8 +377,12 @@ def pred_eqnet(args, model, data_loader, pick_path, figure_path, event_path=None
                 filename = meta["file_name"][i].split("//")[-1].replace("/", "_")
 
                 if args.save_score:
-                    torch.save(phase_scores[i], os.path.join(pick_path, filename + "_score.pt"))
-                    torch.save(event_scores[i], os.path.join(event_path, filename + "_score.pt"))
+                    torch.save(phase_scores[i], os.path.join(pick_path.replace('picks', 'scores'), filename + "_phase_score.pt"))
+                    torch.save(event_scores[i], os.path.join(event_path.replace('events', 'scores'), filename + "_event_score.pt"))
+                    torch.save(output["offset"][i], os.path.join(event_path.replace('events', 'scores'), filename + "_offset.pt"))
+                    torch.save(output["hypocenter"][i], os.path.join(event_path.replace('events', 'scores'), filename + "_hypocenter.pt"))
+                    with open(os.path.join(pick_path.replace('picks', 'scores'), filename + "_station_id.txt"), "w") as f:
+                        f.write("\n".join([j[i] for j in meta["station_id"]]))
                 if "phase" in output:
                     if len(phase_picks_[i]) == 0:
                         ## keep an empty file for the file with no picks to make it easier to track processed files
@@ -497,6 +502,8 @@ def main(args):
         utils.mkdir(event_path)
     if not os.path.exists(figure_path):
         utils.mkdir(figure_path)
+    if not os.path.exists(pick_path.replace("picks", "scores")):
+        utils.mkdir(pick_path.replace("picks", "scores"))
 
     utils.init_distributed_mode(args)
     print(args)
