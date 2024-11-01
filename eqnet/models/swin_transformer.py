@@ -6,7 +6,6 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import nn, Tensor
-from ._utils import _ovewrite_named_param
 from torch.fx import wrap
 
 __all__ = [
@@ -830,7 +829,8 @@ class ShiftedWindowAttentionV2(ShiftedWindowAttention):
 
     def get_relative_position_bias(self, loc: Union[Tensor, None]) -> Tensor:
         if self.use_station_location:
-            relative_coords_t = self.relative_coords_t.repeat(loc.shape[0], loc.shape[1], loc.shape[1], 1) # B, nt*nx, nt*nx, 1
+            #relative_coords_t = self.relative_coords_t.repeat(loc.shape[0], loc.shape[1], loc.shape[1], 1) # B, nt*nx, nt*nx, 1 #FIXME: this is wrong, causing mismatch in relative_position_coords
+            relative_coords_t = self.relative_coords_t.repeat(loc.shape[0], 1,1,1).repeat_interleave(loc.shape[1], dim=1).repeat_interleave(loc.shape[1], dim=2) # B, nt*nx, nt*nx, 1
             device = loc.device
             dtype = loc.dtype
             device = device if isinstance(device, str) and device != "mps" else "cpu"
@@ -859,6 +859,7 @@ class ShiftedWindowAttentionV2(ShiftedWindowAttention):
                                                 relative_coords_sta[:, :, :, 2:]), dim=-1) # B, nx, nx, 4
             relative_coords_sta = relative_coords_sta.to(dtype) # recover to previous data type
             relative_coords_sta = relative_coords_sta.repeat(1, self.window_size[0], self.window_size[0], 1) # B, nt*nx, nt*nx, 4
+            #relative_coords_sta = relative_coords_sta.repeat_interleave(self.window_size[0], dim=1).repeat_interleave(self.window_size[0], dim=2) # B, nt*nx, nt*nx, 4
             # relative_coords = torch.cat((relative_coords_t, relative_coords_sta), dim=-1) # B, nt*nx, nt*nx, 5
             # relative_position_bias = self.cpb_mlp(relative_coords) #bt, Wh*Ww, Wh*Ww, nH
             relative_position_bias = self.cpb_mlp(torch.cat((relative_coords_t, relative_coords_sta), dim=-1)) #bt, Wh*Ww, Wh*Ww, nH
