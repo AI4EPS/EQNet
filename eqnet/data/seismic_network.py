@@ -478,14 +478,17 @@ class SeismicNetworkIterableDataset(IterableDataset):
             elif self.data_path is not None:
                 self.base_dir = data_path
             
-            self.picks_dict = pd.read_csv(os.path.join(self.base_dir, "picks.csv"), usecols=['event_id', 'station_id', 'snr'])
-            self.events_dict = pd.read_csv(os.path.join(self.base_dir, "events.csv"), usecols=['event_id', 'magnitude', 'event_time', 'depth_km'])
+            self.picks_dict = pd.read_csv(os.path.join(self.base_dir, "picks_train.csv"), usecols=['event_id', 'station_id', 'snr', 'phase_status'])
+            self.events_dict = pd.read_csv(os.path.join(self.base_dir, "events_train.csv"), usecols=['event_id', 'magnitude', 'event_time', 'depth_km'])
             self.events_dict['year'] = self.events_dict['event_time'].apply(lambda x: int(x[:4]))
             self.picks_dict['snr'] = self.picks_dict['snr'].apply(lambda x: np.array([float(number) for number in x.split()[1:-1]]))
             temp = self.picks_dict.groupby('event_id')['snr'].apply(lambda x: np.concatenate(x.values)).reset_index()
             temp['snr_mean'] = temp['snr'].apply(lambda x: np.mean(x[x!=0] if len(x[x!=0]) > 0 else 0))
             temp['snr_median'] = temp['snr'].apply(lambda x: np.median(x[x!=0] if len(x[x!=0]) > 0 else 0))
-            self.events_dict = self.events_dict.merge(temp[['event_id', 'snr_mean', 'snr_median']], on='event_id', how='left')[['event_id', 'magnitude', 'depth_km', 'year', 'snr_mean', 'snr_median']].set_index('event_id').to_dict('index')
+            self.events_dict = self.events_dict.merge(temp[['event_id', 'snr_mean', 'snr_median']], on='event_id', how='left'
+                                                      )[['event_id', 'magnitude', 'depth_km', 'year', 'snr_mean', 'snr_median']].set_index('event_id').to_dict('index')
+            # only use manual picks
+            self.picks_dict = self.picks_dict[self.picks_dict['phase_status']=='manual']
             self.picks_dict = self.picks_dict[['event_id', 'station_id']]
             
             # remove the ill event ids
@@ -554,7 +557,11 @@ class SeismicNetworkIterableDataset(IterableDataset):
     
     def __len__(self):
         if self.training:
-            return int(self._data_len*0.978)
+            #return self._data_len
+            if self._data_len * self.world_size < 100000:
+                return self._data_len
+            else:
+                return self._data_len // 2
         else:
             return self._data_len
     
@@ -695,7 +702,10 @@ class SeismicNetworkIterableDataset(IterableDataset):
 
             event_time0 = datetime.fromisoformat(event_attrs["event_time"])
             for e_id in sorted(np.unique(attrs["event_id"])):
-                e_attrs = hdf5_fp[e_id].attrs
+                try: # skip the event_id not in the dataset
+                    e_attrs = hdf5_fp[e_id].attrs
+                except KeyError:
+                    continue
                 if len(np.unique(sta_phase_type[attrs["event_id"]==e_id])) < 2:
                     continue
                 
@@ -919,7 +929,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
                     "first_arrival": meta['first_arrival'],
                 }
             
-            if self.stack_event and random.random() < 0.9:
+            if self.stack_event:# and random.random() < 0.9:
                 try:
                     #if random.random() < 0.4:
                     #    # copy the meta into meta2
@@ -941,6 +951,24 @@ class SeismicNetworkIterableDataset(IterableDataset):
                             break
                     if meta2 is not None:
                         meta = stack_event(meta, meta2, max_shift=64*4, feature_scale=self.feature_scale)
+                    # try to stack more events
+                    # if random.random() < 0.3:
+                    #     selected_event_ids = sample_event_for_stacking(
+                    #         event_id0 = event_id,
+                    #         e2sta_dict = self.e2sta_dict,
+                    #         sta2e_dict = self.sta2e_dict,
+                    #         events_dict = self.events_dict,
+                    #         min_shared_sta=3,
+                    #         magnitude_range=0.7,
+                    #         returns=5,
+                    #     )
+                    #     meta2 = None
+                    #     for e_id in selected_event_ids:
+                    #         meta2 = self._read_training_h5(e_id)
+                    #         if meta2 is not None:
+                    #             break
+                    #     if meta2 is not None:
+                    #         meta = stack_event(meta, meta2, max_shift=64*4, feature_scale=self.feature_scale)
                 except Exception as e:
                     print(f"Error stacking {event_id}:\n{e}")
             
@@ -1242,7 +1270,9 @@ class SeismicNetworkIterableDataset(IterableDataset):
                 _, nt, nx = meta["data"].shape
                 for i in list(range(0, nt, self.nt_cut)):
                     for j in list(range(0, nx, self.nx)):
-                        assert meta["data"][:, i : i + self.nt_cut, j : j + self.nx].shape[1] > 256, f"Error: {fname} {i} {j}, too short {meta['data'][:, i : i + self.nt_cut, j : j + self.nx].shape[1]}, please check the data or adjust cut_patch parameters"
+                        if nt - i <=32:
+                            continue # too short
+                        assert meta["data"][:, i : i + self.nt_cut, j : j + self.nx].shape[1] > 256, f"Error: {fname} i:{i} j:{j}, nt:{nt}, nt_cut:{self.nt_cut}, too short {meta['data'][:, i : i + self.nt_cut, j : j + self.nx].shape[1]}, please check the data or adjust cut_patch parameters"
                         yield {
                             "data": meta["data"][:, i : i + self.nt_cut, j : j + self.nx],
                             "amplitude": meta["amplitude"][:, i : i + self.nt_cut, j : j + self.nx],
