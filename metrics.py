@@ -24,7 +24,7 @@ import torch
 import torch.nn as nn
 import torch.functional as F
 
-sns.set_theme()
+sns.set_theme(style="white")
 # %% [markdown]
 # ## Metrics for NC dataset
 
@@ -205,6 +205,7 @@ class PickMetric:
         plt.subplot(122)
         plt.hist(self.res_s, bins=11, range=(-distribution_bar, distribution_bar))
         plt.title("S phase")
+        plt.tight_layout()
         if save_path is not None:
             plt.savefig(save_path)
         else:
@@ -217,12 +218,25 @@ class PickMetric:
         ax[1].scatter(self.tp_s_picks, self.tp_s_scores, s=10, c='#43BEFF', label='TP_S')
         ax[1].set_xlabel('pred-label time residual [s]')
         plt.legend()
+        plt.tight_layout()
         if save_path is not None:
             plt.savefig(save_path.replace("phase_picking", "phase_score"))
         else:
             plt.show()
         plt.close()
-        
+        fig, ax = plt.subplots(2, 1, figsize=(10, 10))
+        ax[0].hist(self.tp_p_scores, bins=41, range=(0, 1), color='orange', alpha=0.7, label='TP_P')
+        ax[0].set_xlabel('phase score')
+        ax[0].set_ylabel('count')
+        ax[1].hist(self.tp_s_scores, bins=41, range=(0, 1), color='#43BEFF', alpha=0.7, label='TP_S')
+        ax[1].set_xlabel('phase score')
+        plt.legend()
+        plt.tight_layout()
+        if save_path is not None:
+            plt.savefig(save_path.replace("phase_picking", "phase_score_hist"))
+        else:
+            plt.show()
+        plt.close()
         return
 
 # %%

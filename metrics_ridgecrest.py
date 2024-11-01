@@ -543,7 +543,7 @@ if save_path is not None:
 else:
     plt.show()
 
-raw_picks = catalog_pred[catalog_pred['magnitude']>=0.5]
+raw_picks = catalog_pred[catalog_pred['magnitude']>=0.0]
 # %%
 # plot the distribution of the event location (raw picks)
 fig = plt.figure(figsize=(14, 24), dpi=300)
