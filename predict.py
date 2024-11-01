@@ -585,7 +585,7 @@ def main(args):
         dataset=args.dataset,
         training=False,
         phases=["P", "S"],
-        sort=False,
+        sort=args.sort,
         ## for prediction
         sampling_rate=100,
         highpass_filter=args.highpass_filter,
@@ -735,7 +735,7 @@ def get_args_parser(add_help=True):
     parser.add_argument("--plot_figure", action="store_true", help="If plot figure for test")
     parser.add_argument("--min_prob", default=0.3, type=float, help="minimum probability for picking")
     parser.add_argument("--is_pad", action="store_true", help="If pad the data to at least num_stations for eqnet")
-    parser.add_argument("--sort", default=True, type=bool, help="If sort the data by station locations for eqnet")
+    parser.add_argument("--sort", action="store_true", help="If sort the data by station locations for eqnet")
     parser.add_argument("--num_stations", default=10, type=int, help="number of stations for eqnet")
     parser.add_argument("--save_score", action="store_true", help="If save score for test")
 
