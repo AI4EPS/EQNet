@@ -34,6 +34,9 @@ def moving_normalize(data, filter=1024, stride=128):
         data_ = F.pad(data, (0, 0, padding, padding), mode="reflect")
         # std = (F.lp_pool2d(data_, norm_type=2, kernel_size=(filter, 1), stride=(stride, 1)) / ((filter) ** 0.5))
         std = F.avg_pool2d(torch.abs(data_), kernel_size=(filter, 1), stride=(stride, 1))
+        #channel_count = torch.any(std!=0, dim=(2,), keepdim=True).sum(dim=(1,), keepdim=True)
+        #std = std.sum(dim=(1,), keepdim=True)/channel_count
+        std = torch.mean(std, dim=(1,), keepdim=True)
         std = F.interpolate(std, scale_factor=(stride, 1), mode="bilinear", align_corners=False)[:, :, :nt, :nx]
         std[std == 0.0] = 1.0
         data = data / std

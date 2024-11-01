@@ -8,7 +8,7 @@ from .swin_transformer import SwinTransformer
 from .swin_transformer_1d import SwinTransformer1D
 from .centernet import CenterNetHead, CenterNetHeadV1
 from .losses import smoothl1_reg_loss, weighted_l1_reg_loss, cross_entropy_loss, focal_loss
-from .uper_head import UPerNeck, EventHead, PhaseHead
+from .uper_head import UPerNeck, EventHead, PhaseHead, EventHead2, PhaseHead2
 
 
 def _log_transform(x):
@@ -271,7 +271,7 @@ class EQNet(nn.Module):
         elif backbone == "resnet50":
             self.backbone = ResNet(Bottleneck, [3, 4, 6, 3])  # ResNet50
         elif backbone == "swin": 
-            out_indices = [0, 1, 2, 3] if head == "upernet" else [3]
+            out_indices = [0, 1, 2, 3] if "upernet" in head else [3]
             self.backbone = SwinTransformer(
                 patch_size=[4, 1],
                 embed_dim=embed_dim,
@@ -284,7 +284,7 @@ class EQNet(nn.Module):
                 use_station_location=use_station_location,
             )
         elif backbone == "swin2":
-            out_indices = [0, 1, 2, 3] if head == "upernet" else [3]
+            out_indices = [0, 1, 2, 3] if "upernet" in head else [3]
             self.backbone = SwinTransformer(
                 patch_size=[4, 1],
                 embed_dim=embed_dim,
@@ -299,7 +299,7 @@ class EQNet(nn.Module):
                 use_station_location=use_station_location,
             )
         elif backbone == "swin_rope_axial":
-            out_indices = [0, 1, 2, 3] if head == "upernet" else [3]
+            out_indices = [0, 1, 2, 3] if "upernet" in head else [3]
             self.backbone = SwinTransformer(
                 patch_size=[4, 1],
                 embed_dim=embed_dim,
@@ -317,7 +317,7 @@ class EQNet(nn.Module):
                 use_rope_mixed=False,
             )
         elif backbone == "swin_rope_mixed":
-            out_indices = [0, 1, 2, 3] if head == "upernet" else [3]
+            out_indices = [0, 1, 2, 3] if "upernet" in head else [3]
             self.backbone = SwinTransformer(
                 patch_size=[4, 1],
                 embed_dim=embed_dim,
@@ -335,7 +335,7 @@ class EQNet(nn.Module):
                 use_rope_mixed=True,
             )
         elif backbone == "swin_1D": 
-            out_indices = [0, 1, 2, 3] if head == "upernet" else [3]
+            out_indices = [0, 1, 2, 3] if "upernet" in head else [3]
             self.backbone = SwinTransformer1D(
                 patch_size=4,
                 embed_dim=embed_dim,
@@ -347,7 +347,7 @@ class EQNet(nn.Module):
                 out_indices=out_indices,
             )
         elif backbone == "swin2_1D":
-            out_indices = [0, 1, 2, 3] if head == "upernet" else [3]
+            out_indices = [0, 1, 2, 3] if "upernet" in head else [3]
             self.backbone = SwinTransformer1D(
                 patch_size=4,
                 embed_dim=embed_dim,
@@ -375,7 +375,7 @@ class EQNet(nn.Module):
             channels=[128, 64, 32, 16, 8]
             dilations=[1, 2, 4, 8, 16]
             
-        self.neck = UPerNeck(in_channels=[embed_dim * (2**i) for i in range(4)], channels=neck_channels) if head == "upernet" else nn.Sequential()
+        self.neck = UPerNeck(in_channels=[embed_dim * (2**i) for i in range(4)], channels=neck_channels) if "upernet" in head else nn.Sequential()
 
         if head == "simple":
             self.event_detector = EventDetector(channels=channels, bn=True, dilations=dilations)
@@ -386,9 +386,15 @@ class EQNet(nn.Module):
                 self.event_detector = CenterNetHead(channels=[768, 256, 64])
         elif head == "upernet":
             self.event_detector = EventHead(channels=neck_channels)
-               
-        self.phase_picker = PhaseHead(channels=neck_channels) if head == "upernet" else \
-            PhasePicker(channels=channels, bn=True, dilations=dilations)
+        elif head == "upernet2":
+            self.event_detector = EventHead2(channels=neck_channels)
+        
+        if head == "upernet":
+            self.phase_picker = PhaseHead(channels=neck_channels)
+        elif head == "upernet2":
+            self.phase_picker = PhaseHead2(channels=neck_channels)
+        else:
+            self.phase_picker = PhasePicker(channels=channels, bn=True, dilations=dilations)
 
     @property
     def device(self):
