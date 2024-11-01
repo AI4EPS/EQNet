@@ -214,7 +214,7 @@ def train_one_epoch(
     if balancer is not None:
         balancer.update(meters=metric_logger.meters, epoch=epoch)
         if args.wandb and utils.is_main_process():
-            if args.mtl=="dwa":
+            if args.mtl=="dwa" or args.mtl=="dwa_inverse":
                 for i, k in enumerate(balancer.tasks):
                     wandb.log({"train/balancer_" + k: balancer.batch_weight[epoch,i]})
     plot_results(meta, model, output, args, epoch, "train_")
@@ -651,7 +651,7 @@ def main(args):
         lr_scheduler = main_lr_scheduler
         
     if args.mtl is not None:
-        if args.mtl == "dwa":
+        if args.mtl == "dwa" or args.mtl == "dwa_inverse":
             if args.model == "eqnet":
                 #tasks = ["loss_phase", "loss_event", "loss_offset", "loss_hypocenter"]
                 tasks = ["loss_phase", "loss_event", "loss_offset", "loss_origin_time", "loss_x", "loss_y", "loss_depth", "loss_magnitude"]
@@ -827,7 +827,7 @@ def get_args_parser(add_help=True):
     )
     parser.add_argument(
         "--epochs",
-        default=30,
+        default=33,
         type=int,
         metavar="N",
         help="number of total epochs to run",
@@ -959,7 +959,7 @@ def get_args_parser(add_help=True):
     # MTL training strategy
     parser.add_argument("--mtl", default=None, type=str, help="type of mtl training strategy")
     parser.add_argument("--pre-weight", default=None, type=float, nargs="+", help="pre-factor weight of mtl loss")
-    parser.add_argument("--temp", default=2.0, type=float, help="temperature of dwa")
+    parser.add_argument("--temp", default=1.5, type=float, help="temperature of dwa")
 
     ## Data Augmentation
     parser.add_argument("--phases", default=["P", "S"], type=str, nargs="+", help="phases to use")

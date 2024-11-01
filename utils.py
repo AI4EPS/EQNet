@@ -496,6 +496,8 @@ def set_weight_decay(
 def MTLBalance(type, tasks, pre_weight, temp, epochs, device):
     if type == "dwa":
         return DWA(tasks, pre_weight, temp, epochs, device)
+    elif type == "dwa_inverse":
+        return DWAInverse(tasks, pre_weight, temp, epochs, device)
     else:
         return None
     
@@ -533,3 +535,45 @@ class DWA:
         if epoch > 0:
             w_i = self.train_loss_buffer[:,epoch]/self.train_loss_buffer[:,epoch-1]
             self.batch_weight[epoch+1] = self.task_num*torch.nn.functional.softmax(w_i/self.temp, dim=-1)
+
+class DWAInverse:
+    r"""Dynamic Weight Average (DWA).
+    
+    This method is proposed in `End-To-End Multi-Task Learning With Attention (CVPR 2019) <https://openaccess.thecvf.com/content_CVPR_2019/papers/Liu_End-To-End_Multi-Task_Learning_With_Attention_CVPR_2019_paper.pdf>`_ \
+    and implemented by modifying from the `official PyTorch implementation <https://github.com/lorenmt/mtan>`_. 
+
+    Args:
+        T (float, default=1.5): The softmax temperature.
+
+    """
+    def __init__(self, tasks, pre_weight, temp=1.5, epochs=100, device="cpu"):
+        self.tasks=tasks
+        self.task_num = len(tasks)
+        self.temp = temp
+        self.epochs = epochs
+        self.pre_weight = pre_weight
+        self.train_loss_buffer = torch.zeros((self.task_num, epochs)).to(device)
+        self.batch_weight = torch.ones((epochs, self.task_num)).to(device)
+        
+    def balance(self, output, epoch=0, **kwargs):
+        # output: dict
+        loss = 0
+        for i, k in enumerate(self.tasks):
+            loss += self.batch_weight[epoch,i]*output[k]*self.pre_weight[i]
+            
+        return loss
+    
+    def update(self, meters, epoch, delay=['loss_phase', 'loss_event'], **kwargs):
+        for i, k in enumerate(self.tasks):
+            self.train_loss_buffer[i, epoch] = meters[k].global_avg
+                
+        if epoch > 0:
+            w_i = self.train_loss_buffer[:,epoch]/self.train_loss_buffer[:,epoch-1]
+            if epoch==1:
+                self.batch_weight[epoch+1] = 1./(self.task_num*torch.nn.functional.softmax(w_i/2.0, dim=-1))
+                if delay is not None:
+                    for i, k in enumerate(self.tasks):
+                        if k in delay:
+                            self.batch_weight[epoch+1, i] = 1.0
+            else:
+                self.batch_weight[epoch+1] = 1./(self.task_num*torch.nn.functional.softmax(w_i/self.temp, dim=-1))
