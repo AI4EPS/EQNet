@@ -10,6 +10,7 @@
 output*/
 Trash/
 results/
+debug*
 
 model_phasenet*
 EQNet.egg-info/
@@ -53,3 +54,5 @@ Ridgecrest_DAS
 **/paper_figures/
 wandb
 tests/phasenet_plus/figures_*
+*.png
+*.pdf

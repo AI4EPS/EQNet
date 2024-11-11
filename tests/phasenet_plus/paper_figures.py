@@ -65,14 +65,24 @@ def calc_metrics(picks, labels, polarity_threshold, score_threshold, time_tolera
     }
 
 
-def calc_error(picks, labels, score_threshold, phase_type):
+def calc_pick_error(picks, labels, score_threshold, phase_type):
     picks_ = picks[(picks["phase_score"] > score_threshold) & (picks["phase_type"] == phase_type)].copy()
     labels_ = labels[(labels["phase_type"] == phase_type)].copy()
     picks_.drop(columns=["phase_type"], inplace=True)
     labels_.drop(columns=["phase_type"], inplace=True)
 
-    merged = pd.merge(labels_, picks_, how="left", on=["station_id", "event_index"], suffixes=("_true", "_pred"))
+    merged = pd.merge(labels_, picks_, how="left", on=["station_id", "event_id"], suffixes=("_true", "_pred"))
     merged["time_error"] = (merged["phase_time_pred"] - merged["phase_time_true"]).dt.total_seconds()
+
+    return merged
+
+
+def calc_event_error(events, labels, score_threshold):
+    events_ = events[(events["event_score"] > score_threshold)].copy()
+    labels_ = labels
+
+    merged = pd.merge(labels_, events_, how="left", on=["station_id", "event_id"], suffixes=("_true", "_pred"))
+    merged["time_error"] = (merged["event_time_pred"] - merged["event_time_true"]).dt.total_seconds()
 
     return merged
 
@@ -121,6 +131,7 @@ def read_labels(file):
         event_ids = list(fp.keys())
         for event_id in tqdm(event_ids):
             event_attrs = dict(fp[event_id].attrs)
+            event_time = event_attrs["event_time"]
             station_ids = list(fp[event_id].keys())
             # for station_id in station_ids:
             #     label.append(fp[event_id][station_id]["label"][()])
@@ -128,8 +139,9 @@ def read_labels(file):
                 station_attrs = dict(fp[event_id][station_id].attrs)
                 num_picks = len(station_attrs["phase_time"])
                 labels = {
-                    "event_index": [event_id] * num_picks,
+                    "event_id": [event_id] * num_picks,
                     "station_id": [station_id] * num_picks,
+                    "event_time": [event_time] * num_picks,
                     "phase_time": list(station_attrs["phase_time"]),
                     "phase_type": list(station_attrs["phase_type"]),
                     "phase_polarity": list(station_attrs["phase_polarity"]),
@@ -137,6 +149,7 @@ def read_labels(file):
                 label_list.append(pd.DataFrame(labels))
         labels = pd.concat(label_list, ignore_index=True)
         labels["phase_time"] = pd.to_datetime(labels["phase_time"])
+        labels["event_time"] = pd.to_datetime(labels["event_time"])
 
     return labels
 
@@ -172,6 +185,11 @@ if __name__ == "__main__":
         phasenet_picks = pd.read_csv(phasenet_csv)
     phasenet_picks["event_index"] = phasenet_picks["event_id"]
     phasenet_picks["phase_time"] = pd.to_datetime(phasenet_picks["phase_time"])
+
+    # %%
+    figure_path = "figures"
+    if not os.path.exists(figure_path):
+        os.makedirs(figure_path)
 
     # %%
     phasenet_pt_csv = f"phasenet_pt_picks_{region}.csv"
@@ -215,6 +233,7 @@ if __name__ == "__main__":
 
     # %% Load PhaseNet+ model
     phasenet_plus_csv = f"phasenet_plus_picks_{region}.csv"
+    phasenet_plus_events_csv = f"phasenet_plus_events_{region}.csv"
     if reload or not os.path.exists(phasenet_plus_csv):
         if region == "NC":
             phasenet_plus_picks = pd.read_csv(
@@ -224,32 +243,69 @@ if __name__ == "__main__":
             phasenet_plus_picks = pd.read_csv(
                 "https://huggingface.co/datasets/AI4EPS/quakeflow_sc/resolve/main/models/phasenet_plus_picks.csv"
             )
-        # pick_path = "../../results_ps_test_sc/picks_phasenet_plus"
-        # event_ids = glob(f"{pick_path}/*")
-        # picks_list = []
-        # for event_id in tqdm(event_ids):
-        #     station_ids = glob(f"{event_id}/*.csv")
-        #     for station_id in station_ids:
-        #         if os.stat(station_id).st_size == 0:
-        #             # print(f"Empty file: {station_id}")
-        #             continue
-        #         phasenet_plus_picks = pd.read_csv(station_id)
-        #         phasenet_plus_picks["event_index"] = event_id.split("/")[-1]
-        #         picks_list.append(phasenet_plus_picks)
-        # phasenet_plus_picks = pd.concat(picks_list, ignore_index=True)
-        # phasenet_plus_picks["phase_time"] = pd.to_datetime(phasenet_plus_picks["phase_time"])
-        # phasenet_plus_picks.drop(columns=["dt_s"], inplace=True)
-        # phasenet_plus_picks = filter_duplicates(phasenet_plus_picks)
-        # phasenet_plus_picks.drop(columns=["phase_index"], inplace=True)
-        # phasenet_plus_picks.rename(columns={"event_index": "event_id"}, inplace=True)
-        # phasenet_plus_picks.to_csv(
-        #     phasenet_plus_csv,
-        #     columns=["event_id", "station_id", "phase_time", "phase_score", "phase_type", "phase_polarity"],
-        #     index=False,
-        # )
+
+        if region == "NC":
+            pick_path = "../../results_ps_test/picks_phasenet_plus"
+        if region == "SC":
+            pick_path = "../../results_ps_test_sc/picks_phasenet_plus"
+        # pick_path = "../../results_phasenet_plus_quakeflow_nc_20240628/picks_phasenet_plus"
+        event_ids = glob(f"{pick_path}/*")
+        picks_list = []
+        for event_id in tqdm(event_ids):
+            station_ids = glob(f"{event_id}/*.csv")
+            for station_id in station_ids:
+                if os.stat(station_id).st_size == 0:
+                    # print(f"Empty file: {station_id}")
+                    continue
+                phasenet_plus_picks = pd.read_csv(station_id)
+                phasenet_plus_picks["event_index"] = event_id.split("/")[-1]
+                picks_list.append(phasenet_plus_picks)
+        phasenet_plus_picks = pd.concat(picks_list, ignore_index=True)
+        phasenet_plus_picks["phase_time"] = pd.to_datetime(phasenet_plus_picks["phase_time"])
+        phasenet_plus_picks.drop(columns=["dt_s"], inplace=True)
+        phasenet_plus_picks = filter_duplicates(phasenet_plus_picks)
+        phasenet_plus_picks.drop(columns=["phase_index"], inplace=True)
+        phasenet_plus_picks.rename(columns={"event_index": "event_id"}, inplace=True)
+
+        phasenet_plus_picks.to_csv(
+            phasenet_plus_csv,
+            columns=["event_id", "station_id", "phase_time", "phase_score", "phase_type", "phase_polarity"],
+            index=False,
+        )
+
+        if region == "NC":
+            event_path = "../../results_ps_test/events_phasenet_plus"
+        if region == "SC":
+            event_path = "../../results_ps_test_sc/events_phasenet_plus"
+        # pick_path = "../../results_phasenet_plus_quakeflow_nc_20240628/picks_phasenet_plus"
+        event_ids = glob(f"{event_path}/*")
+        events_list = []
+        for event_id in tqdm(event_ids):
+            station_ids = glob(f"{event_id}/*.csv")
+            for station_id in station_ids:
+                if os.stat(station_id).st_size == 0:
+                    # print(f"Empty file: {station_id}")
+                    continue
+                phasenet_plus_events = pd.read_csv(station_id)
+                phasenet_plus_events["event_index"] = event_id.split("/")[-1]
+                events_list.append(phasenet_plus_events)
+        phasenet_plus_events = pd.concat(events_list, ignore_index=True)
+        phasenet_plus_events["event_time"] = pd.to_datetime(phasenet_plus_events["event_time"])
+        phasenet_plus_events["center_time"] = pd.to_datetime(phasenet_plus_events["center_time"])
+        phasenet_plus_events.rename(columns={"travel_time_s": "travel_time"}, inplace=True)
+        # phasenet_plus_events = filter_duplicates(phasenet_plus_events)
+        phasenet_plus_events.drop(columns=["center_index"], inplace=True)
+        phasenet_plus_events.rename(columns={"event_index": "event_id"}, inplace=True)
+
+        phasenet_plus_events.to_csv(
+            phasenet_plus_events_csv,
+            columns=["event_id", "station_id", "event_time", "event_score", "center_time", "travel_time"],
+            index=False,
+        )
+
     else:
         phasenet_plus_picks = pd.read_csv(phasenet_plus_csv, parse_dates=["phase_time"])
-
+        phasenet_plus_events = pd.read_csv(phasenet_plus_events_csv, parse_dates=["event_time", "center_time"])
     phasenet_plus_picks["event_index"] = phasenet_plus_picks["event_id"]
     phasenet_plus_picks["phase_time"] = pd.to_datetime(phasenet_plus_picks["phase_time"])
 
@@ -262,7 +318,7 @@ if __name__ == "__main__":
             labels = read_labels(file="/nfs/quakeflow_dataset/SC/quakeflow_sc/waveform_test.h5")
         labels.to_csv(label_csv, index=False)
     else:
-        labels = pd.read_csv(label_csv, parse_dates=["phase_time"])
+        labels = pd.read_csv(label_csv, parse_dates=["phase_time", "event_time"])
 
     # %%
     plt.figure()
@@ -273,10 +329,10 @@ if __name__ == "__main__":
     idx = phasenet_picks["phase_type"] == "P"
     plt.hist(phasenet_picks[idx]["phase_score"], bins=np.linspace(0.3, 1, 70 // 2 + 1), alpha=0.5, label="PhaseNet")
     plt.legend()
-    idx = phasenet_pt_picks["phase_type"] == "P"
-    plt.hist(
-        phasenet_pt_picks[idx]["phase_score"], bins=np.linspace(0.3, 1, 70 // 2 + 1), alpha=0.5, label="PhaseNet (PT)"
-    )
+    # idx = phasenet_pt_picks["phase_type"] == "P"
+    # plt.hist(
+    #     phasenet_pt_picks[idx]["phase_score"], bins=np.linspace(0.3, 1, 70 // 2 + 1), alpha=0.5, label="PhaseNet (PT)"
+    # )
     plt.legend()
 
     plt.figure()
@@ -287,10 +343,10 @@ if __name__ == "__main__":
     idx = phasenet_picks["phase_type"] == "S"
     plt.hist(phasenet_picks[idx]["phase_score"], bins=np.linspace(0.3, 1, 70 // 2 + 1), alpha=0.5, label="PhaseNet")
     plt.legend()
-    idx = phasenet_pt_picks["phase_type"] == "S"
-    plt.hist(
-        phasenet_pt_picks[idx]["phase_score"], bins=np.linspace(0.3, 1, 70 // 2 + 1), alpha=0.5, label="PhaseNet (PT)"
-    )
+    # idx = phasenet_pt_picks["phase_type"] == "S"
+    # plt.hist(
+    #     phasenet_pt_picks[idx]["phase_score"], bins=np.linspace(0.3, 1, 70 // 2 + 1), alpha=0.5, label="PhaseNet (PT)"
+    # )
     plt.legend()
 
     # %%
@@ -345,16 +401,19 @@ if __name__ == "__main__":
     # param = "phase_polarity"
 
     # %%
-    for phase_type in ["P", "S"]:
-        plt.figure()
-        # for picks, name in zip([phasenet_plus_picks, phasenet_picks], ["PhaseNet+", "PhaseNet"]):
-        for picks, name in zip(
-            [phasenet_plus_picks, phasenet_picks, phasenet_pt_picks], ["PhaseNet+", "PhaseNet", "PhaseNet (PT)"]
-        ):
+    # plt.figure()
+    fig, ax = plt.subplots(1, 2, figsize=(9, 4))
+    numbers = ["(i)", "(ii)"]
+    for i, phase_type in enumerate(["P", "S"]):
 
-            merged = calc_error(picks, labels, score_threshold, phase_type)
+        for picks, name in zip([phasenet_plus_picks, phasenet_picks], ["PhaseNet+", "PhaseNet"]):
+            # for picks, name in zip(
+            #     [phasenet_plus_picks, phasenet_picks, phasenet_pt_picks], ["PhaseNet+", "PhaseNet", "PhaseNet (PT)"]
+            # ):
 
-            plt.hist(
+            merged = calc_pick_error(picks, labels, score_threshold, phase_type)
+
+            ax[i].hist(
                 merged["time_error"],
                 bins=np.linspace(-0.5, 0.5, 51),
                 edgecolor="k",
@@ -362,8 +421,85 @@ if __name__ == "__main__":
                 alpha=0.5,
                 label=name,
             )
-        plt.legend()
-        plt.show()
+
+        ax[i].legend()
+        ax[i].set_title(f"{phase_type}-phase")
+        ax[i].set_xlabel("Time error (s)")
+        ax[i].set_ylabel("Frequency")
+        ax[i].grid(True, linestyle="--", linewidth=0.5)
+        # add text in a white box
+
+        ax[i].text(
+            0.05,
+            0.95,
+            f"{numbers[i]}",
+            verticalalignment="top",
+            horizontalalignment="left",
+            transform=ax[i].transAxes,
+            fontsize=15,
+            bbox={"facecolor": "white", "alpha": 0.5, "boxstyle": "round,pad=0.3"},
+        )
+
+    plt.tight_layout()
+    plt.savefig(f"{figure_path}/phase_time_error_{region}.png", dpi=300, bbox_inches="tight")
+    plt.savefig(f"{figure_path}/phase_time_error_{region}.pdf", dpi=300, bbox_inches="tight")
+    plt.show()
+
+    # %%
+    # plt.figure()
+    fig, ax = plt.subplots(1, 2, figsize=(9, 4))
+
+    events = phasenet_plus_events
+    name = "PhaseNet+"
+
+    merged = calc_event_error(events, labels, score_threshold)
+
+    ax[0].hist(
+        merged["time_error"],
+        bins=np.linspace(-2, 2, 51),
+        edgecolor="k",
+        # facecolor="b",
+        alpha=0.5,
+        label=name,
+    )
+
+    ax[0].legend(loc="upper right")
+    # ax.set_title(f"Event")
+    ax[0].set_xlabel("Time error (s)")
+    ax[0].set_ylabel("Frequency")
+    ax[0].grid(True, linestyle="--", linewidth=0.5)
+
+    # ax[1].hist(
+    #     merged["time_error"] / merged["travel_time"] * 100,
+    #     bins=np.linspace(-50, 50, 51),
+    #     edgecolor="k",
+    #     # facecolor="b",
+    #     alpha=0.5,
+    #     label=name,
+    # )
+    ax[1].scatter(
+        merged["time_error"],
+        merged["travel_time"],
+        # s=merged["travel_time"],
+        s=2.0,
+        alpha=0.2,
+        linewidth=0,
+        marker=".",
+        rasterized=True,
+    )
+    ax[1].scatter([], [], s=20.0, c="C0", marker=".", rasterized=True, label=name)
+    ax[1].legend(loc="upper right")
+    ax[1].set_xlim([-2, 2])
+    ax[1].set_ylim([0, 30])
+    ax[1].set_xlabel("Time error (s)")
+    ax[1].set_ylabel("Travel time (s)")
+    ax[1].grid(True, linestyle="--", linewidth=0.5)
+
+    plt.tight_layout()
+
+    plt.savefig(f"{figure_path}/event_time_error_{region}.png", dpi=300, bbox_inches="tight")
+    plt.savefig(f"{figure_path}/event_time_error_{region}.pdf", dpi=300, bbox_inches="tight")
+    plt.show()
 
     # %%
     metrics_summary = []
@@ -516,6 +652,22 @@ if __name__ == "__main__":
     polarity_threshold = 0.5
     score_threshold = 0.5
     picks = phasenet_plus_picks
+
+    phase_type = "P"
+    polarity_threshold = 0.5
+    score_threshold = 0.5
+    picks = phasenet_picks
+
+    phase_type = "S"
+    polarity_threshold = 0.5
+    score_threshold = 0.5
+    picks = phasenet_plus_picks
+
+    # phase_type = "S"
+    # polarity_threshold = 0.5
+    # score_threshold = 0.5
+    # picks = phasenet_picks
+
     metrics = calc_metrics(picks, labels, polarity_threshold, score_threshold, time_tolerance, phase_type, "phase_time")
     for key, value in metrics.items():
         print(f"{key}: {value}")

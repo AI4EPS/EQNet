@@ -124,7 +124,7 @@ if __name__ == "__main__":
     # %%
     score_threshold = 0.5
     polarity_threshold = 0.5
-    phase_type = "P"
+    phase_type = "S"
     time_tolerance = 0.1
     picks = phasenet_plus_picks.copy()
     picks_ = picks[(picks["phase_score"] > score_threshold) & (picks["phase_type"] == phase_type)].copy()
@@ -144,7 +144,9 @@ if __name__ == "__main__":
             # abs((row[f"phase_time_true"] - row[f"phase_time_pred"]).total_seconds()) <= tolerance
             # and row[f"phase_polarity_true"] == row[f"phase_polarity_pred"]
             abs((row[f"phase_time_true"] - row[f"phase_time_pred"]).total_seconds()) <= tolerance
-            and row[f"phase_polarity_true"] != row[f"phase_polarity_pred"]
+            # and row[f"phase_polarity_true"] != row[f"phase_polarity_pred"]
+            # and (row[f"phase_polarity_pred"] != "N")
+            # and row[f"phase_polarity_true"] != row[f"phase_polarity_pred"]
             and (row[f"phase_polarity_pred"] != "N")
         )
 
@@ -154,7 +156,7 @@ if __name__ == "__main__":
     # no space between ax
     fig, ax = plt.subplots(1, 1, figsize=(6, 2), sharex=True, gridspec_kw={"hspace": 0.0})
     dt = 0.01
-    figure_path = "./figures_errors"
+    figure_path = "./figures_s_polarity"
     if not os.path.exists(figure_path):
         os.makedirs(figure_path)
     with h5py.File("/nfs/quakeflow_dataset/NC/quakeflow_nc/waveform_test.h5", "r") as fp:
@@ -166,7 +168,7 @@ if __name__ == "__main__":
                 end_time = pd.to_datetime(fp[f"{row['event_id']}"].attrs["end_time"])
                 t = pd.date_range(begin_time, end_time, freq=f"{dt}S", inclusive="left")
 
-                idx1 = int(((row["phase_time_true"] - begin_time).total_seconds() - 0.5) / dt)
+                idx1 = int(((row["phase_time_true"] - begin_time).total_seconds() - 1.5) / dt)
                 idx2 = int(((row["phase_time_true"] - begin_time).total_seconds() + 1.5) / dt)
 
                 # ax[0].clear()
@@ -181,12 +183,13 @@ if __name__ == "__main__":
                 # ax[1].grid(axis="x")
 
                 ax.clear()
-                ax.plot(t[idx1:idx2], data[-1, idx1:idx2], color="k", label="Z")
+                ax.plot(t[idx1:idx2], data[-1, idx1:idx2], color="k")  # , label="Z")
                 ax.axvline(
                     row["phase_time_true"],
                     color="r",
                     linestyle="--",
-                    label=f"Label: {row['phase_polarity_true']}",
+                    # label=f"Label: {row['phase_polarity_true']}",
+                    label=f"Label S pick",
                     alpha=0.5,
                 )
                 ax.axvline(
