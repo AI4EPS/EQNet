@@ -282,8 +282,8 @@ def stack_noise(
 
     if noise is not None:
         amp_signal = meta["amp_signal"]
-        amp_noise = meta["amp_noise"]
-        ratio = random.uniform(0.0, 2.0) * amp_signal / amp_noise
+        amp_noise = meta["amp_noise"]  # the amp_noise refer to the noise before signal sample, not the noise sample
+        ratio = random.uniform(0.0, 2.0) * amp_signal
         std_noise = np.std(noise)
         if std_noise > 0:
             noise = noise / std_noise * ratio

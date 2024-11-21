@@ -211,7 +211,6 @@ def plot_phasenet_tf_train(meta, phase, event_center, event_time, epoch=0, figur
             # vmax = meta["spectrogram"][i, j, :, :].abs().max().item()
             vmax = 6
             axes[idx + j].pcolormesh(meta["spectrogram"][i, j, :, :].T, cmap="seismic", vmin=-vmax, vmax=vmax)
-            raise
             axes[idx + j].set_xticklabels([])
 
         idx = 6
@@ -605,7 +604,7 @@ def plot_phasenet_plus(
             axes[j + idx].set_xticklabels([])
             axes[j + idx].grid("on")
             axes[j + idx].legend(loc="upper right")
-        
+
         idx = 3
         t = pd.date_range(pd.Timestamp(begin_time[i]), periods=nt, freq=pd.Timedelta(seconds=dt))
         axes[idx].plot(t, phase[i, 2, :, 0], "r", lw=1.0)
