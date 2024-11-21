@@ -152,10 +152,10 @@ def stack_event(
 
     first_arrival1 = meta1["first_arrival"].copy()
     first_arrival2 = meta2["first_arrival"].copy()
-    amp_noise1 = meta1["amp_noise"].copy()
-    amp_noise2 = meta2["amp_noise"].copy()
-    amp_signal1 = meta1["amp_signal"].copy()
-    amp_signal2 = meta2["amp_signal"].copy()
+    amp_noise1 = meta1["amp_noise"]
+    amp_noise2 = meta2["amp_noise"]
+    amp_signal1 = meta1["amp_signal"]
+    amp_signal2 = meta2["amp_signal"]
 
     _, nt, nx = waveform1.shape  # nch, nt, nx
     duration_mask1 = np.zeros([nt, nx])
@@ -174,6 +174,10 @@ def stack_event(
     max_tries = 5
     # while random.random() < 0.5:
     for i in range(random.randint(1, 10)):
+
+        if (amp_signal1 == 0) or (amp_noise1 == 0) or (amp_signal2 == 0) or (amp_noise2 == 0):
+            break
+
         tries = 0
         while tries < max_tries:
             min_ratio2 = np.log10(amp_noise1 * 2 / amp_signal2)
@@ -546,7 +550,7 @@ class SeismicTraceIterableDataset(IterableDataset):
         noises = []
         signals = []
         snr = []
-
+        # waveform: [nch, nt]
         for i in range(waveform.shape[0]):
             for j in picks:
                 if (j - gap_window > 0) and (j + gap_window < waveform.shape[1]):
@@ -570,7 +574,7 @@ class SeismicTraceIterableDataset(IterableDataset):
         else:
             # return snr[-1], signals[-1], noises[-1]
             # return np.max(snr), np.max(signals), np.max(noises)
-            return np.max(snr), np.std(signals), np.std(noises)
+            return np.max(snr).item(), np.std(signals).item(), np.std(noises).item()
         # else:
         # idx = np.argmax(snr).item()
         # return snr[idx], signals[idx], noises[idx]
@@ -623,7 +627,7 @@ class SeismicTraceIterableDataset(IterableDataset):
 
         for phase in self.phases:
             phase_type = np.array([mapping_phase_type(x) for x in attrs["phase_type"]])
-            meta[phase] = attrs["phase_index"][phase_type == phase]
+            meta[phase] = sorted(attrs["phase_index"][phase_type == phase])
             # meta[phase] = attrs["phase_index"][attrs["phase_type"] == phase]
             # if not np.all(np.isin(phase_type, ["P", "S"])):
             #     print(f"Unknown phase type: {phase_type}")
@@ -635,6 +639,8 @@ class SeismicTraceIterableDataset(IterableDataset):
 
         ## calc snr
         snr, amp_signal, amp_noise = self.calc_snr(waveform, meta["P"])
+        if snr == 0:
+            return None
         # if snr < self.min_snr:
         #     return None
 
@@ -1212,5 +1218,3 @@ if __name__ == "__main__":
 
         plt.savefig("test.png")
         plt.show()
-
-        raise
