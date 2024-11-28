@@ -104,7 +104,7 @@ def extract_picks(
 
         for j in range(nch):
             if waveform is not None:
-                window_amp_i = int(window_amp[j] / dt[i])
+                window_amp_i = int(window_amp[j] / dt[i])  ## index of window
 
             for k in range(nst):
                 if station_id is None:
@@ -169,6 +169,9 @@ def extract_events(
     dt=0.01,
     event_scale=16,
     event_time=None,
+    waveform=None,
+    window_amp=[2, 2],
+    VPVS_RATIO=1.73,
     **kwargs,
 ):
     """Extract picks from prediction results.
@@ -215,6 +218,9 @@ def extract_events(
                 begin_i = "1970-01-01T00:00:00.000"
         begin_i = datetime.fromisoformat(begin_i.rstrip("Z"))
 
+        p_window = int(window_amp[0] / dt[i])  ## index of window
+        s_window = int(window_amp[1] / dt[i])  ## index of window
+
         for j in range(nch):
             for k in range(nst):
                 if station_id is None:
@@ -242,7 +248,30 @@ def extract_events(
                         if event_time is not None:
                             t0 = center_time - timedelta(seconds=event_time[i, 0, index.item(), k].item() * dt[i])
                             event_dict["event_time"] = t0.strftime("%Y-%m-%dT%H:%M:%S.%f")
-                            event_dict["travel_time_s"] = event_time[i, 0, index.item(), k].item() * dt[i]
+                            event_dict["travel_time"] = event_time[i, 0, index.item(), k].item() * dt[i]
+
+                        if waveform is not None:
+                            ## calculate PS ratio
+                            ps_delta = max(
+                                2,
+                                event_time[i, 0, index.item(), k].item() * 2.0 * (VPVS_RATIO - 1) / (VPVS_RATIO + 1),
+                            )  # 2 is to prevent error of torch.max()
+                            itp = max(0, index.item() - int(ps_delta * 0.5))
+                            its = max(0, index.item() + int(ps_delta * 0.5))
+
+                            # p_amp = torch.max(torch.abs(waveform[i, :, itp : min(itp + p_window, its), k]))
+                            # s_amp = torch.max(torch.abs(waveform[i, :, its : its + s_window, k]))
+                            waveform_cut = waveform[i, :, itp : min(itp + p_window, its), k]
+                            p_amp = torch.max(waveform_cut) - torch.min(waveform_cut)
+                            waveform_cut = waveform[i, :, its : its + s_window, k]
+                            s_amp = torch.max(waveform_cut) - torch.min(waveform_cut)
+                            event_dict["sp_ratio"] = s_amp.item() / p_amp.item()
+
+                            ## calculate event amplitude
+                            # event_amp = torch.max(torch.abs(waveform[i, :, itp : its + (its - itp), k]))
+                            waveform_cut = waveform[i, :, itp : its + (its - itp), k]
+                            event_amp = (torch.max(torch.abs(waveform_cut)) - torch.min(torch.abs(waveform_cut))) / 2.0
+                            event_dict["event_amplitude"] = event_amp.item()
 
                         events_per_file.append(event_dict)
 
