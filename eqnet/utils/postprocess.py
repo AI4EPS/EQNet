@@ -18,8 +18,10 @@ def detect_peaks(scores, vmin=0.3, kernel=101, stride=1, K=0, dt=0.01):
     nb, nc, nt, nx = scores.shape
     pad = kernel // 2
     smax = F.max_pool2d(scores, (kernel, 1), stride=(stride, 1), padding=(pad, 0))[:, :, :nt, :]
-    keep = (smax == scores).float()
-    scores = scores * keep
+    sdiff = torch.zeros_like(scores)
+    sdiff[:, :, 1:, :] = scores[:, :, 1:, :] - scores[:, :, :-1, :]
+    keep = (smax == scores) & (sdiff != 0.0)
+    scores = scores * keep.float()
 
     batch, chn, nt, ns = scores.size()
     scores = torch.transpose(scores, 2, 3)
