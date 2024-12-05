@@ -18,6 +18,7 @@ from collections import OrderedDict, defaultdict, deque
 from tqdm import tqdm
 import itertools
 from sklearn.cluster import DBSCAN
+from sklearn.metrics import confusion_matrix
 
 import datasets
 import torch
@@ -41,7 +42,11 @@ parser.add_argument('--event_dir', type=str, default="/home/wanghy/tests/EQNet/t
 parser.add_argument('--suffix', type=str, default="", help='suffix of the pics')
 parser.add_argument('--model', type=str, default="eqnet", help='the model that performed prediction')
 parser.add_argument('--score_threshold', type=float, default=0.3, help='the threshold of phase score')
+parser.add_argument('--polarity_threshold', type=float, default=0.3, help='the threshold of polarity score')
 parser.add_argument('--save_path', type=str, default=None, help='the path to save the metric pickle file')
+parser.add_argument('--main_event_only', action='store_true', help='exclude the picks not in the main event duration')
+parser.add_argument('--filter_events', type=str, default=None, help='the path to the file containing the events to be filtered out')
+parser.add_argument('--include_events', action='store_true', help='exclude the other events instead of excluding the specified events')
 
 args = parser.parse_args()
 h5_file = args.h5_file
@@ -51,6 +56,8 @@ csv_file = f"{h5_file.split('.')[0]}.csv"
 suffix = args.suffix
 if suffix != "":
     suffix = f"_{suffix}"
+
+filter_events = json.load(open(args.filter_events)) if args.filter_events is not None else dict()
     
 os.makedirs("./metrics", exist_ok=True)
 if args.save_path is not None:
@@ -94,6 +101,12 @@ class PickMetric:
         self.epicenter_distance_s = []
         self.scores_p = []
         self.scores_s = []
+        self.polarity_score_p = []
+        self.polarity_score_s = []
+        self.polarity_pred_p = []
+        self.polarity_pred_s = []
+        self.polarity_manual_p = []
+        self.polarity_manual_s = []
 
         self.empty_files = 0
         
@@ -110,10 +123,16 @@ class PickMetric:
         self.epicenter_distance_s = np.array(self.epicenter_distance_s)
         self.scores_p = np.array(self.scores_p)
         self.scores_s = np.array(self.scores_s)
+        self.polarity_score_p = np.array(self.polarity_score_p)
+        self.polarity_score_s = np.array(self.polarity_score_s)
+        self.polarity_pred_p = np.array(self.polarity_pred_p)
+        self.polarity_pred_s = np.array(self.polarity_pred_s)
+        self.polarity_manual_p = np.array(self.polarity_manual_p)
+        self.polarity_manual_s = np.array(self.polarity_manual_s)
         
         return
         
-    def update_matched_picks(self, min_res_p, min_res_s, min_scores_p, min_scores_s, magnitude, distance_km, snr_sta):
+    def update_matched_picks(self, min_res_p, min_res_s, min_scores_p, min_scores_s, magnitude, distance_km, snr_sta, polarity_score_p=None, polarity_score_s=None, polarity_pred_p=None, polarity_pred_s=None, polarity_manual_p=None, polarity_manual_s=None):
         self.time_res_p+=min_res_p
         self.time_res_s+=min_res_s
         self.scores_p+=min_scores_p
@@ -124,6 +143,12 @@ class PickMetric:
         self.epicenter_distance_s+=distance_km*len(min_res_s)
         self.snr_p+=snr_sta*len(min_res_p)
         self.snr_s+=snr_sta*len(min_res_s)
+        self.polarity_score_p+=polarity_score_p if polarity_score_p is not None else [0]*len(min_res_p)
+        self.polarity_score_s+=polarity_score_s if polarity_score_s is not None else [0]*len(min_res_s)
+        self.polarity_pred_p+=polarity_pred_p if polarity_pred_p is not None else ['N']*len(min_res_p)
+        self.polarity_pred_s+=polarity_pred_s if polarity_pred_s is not None else ['N']*len(min_res_s)
+        self.polarity_manual_p+=polarity_manual_p if polarity_manual_p is not None else ['N']*len(min_res_p)
+        self.polarity_manual_s+=polarity_manual_s if polarity_manual_s is not None else ['N']*len(min_res_s)
 
         return
     
@@ -140,6 +165,12 @@ class PickMetric:
         self.tp_s_snr = self.snr_s[index_s]
         self.tp_p_scores = self.scores_p[index_p]
         self.tp_s_scores = self.scores_s[index_s]
+        self.tp_p_polarity_score = self.polarity_score_p[index_p]
+        self.tp_s_polarity_score = self.polarity_score_s[index_s]
+        self.tp_p_polarity_pred = self.polarity_pred_p[index_p]
+        self.tp_s_polarity_pred = self.polarity_pred_s[index_s]
+        self.tp_p_polarity_manual = self.polarity_manual_p[index_p]
+        self.tp_s_polarity_manual = self.polarity_manual_s[index_s]
 
         true_positives_p = len(self.tp_p_picks)
         true_positives_s = len(self.tp_s_picks)
@@ -190,13 +221,16 @@ class PickMetric:
         
         return
     
-    def plot_residual(self, save_path=None):
+    def plot_residual(self, save_path=None, info_only=False):
         print(f"p_picks: {self.num_p_picks}, s_picks: {self.num_s_picks}, p_picks_label: {self.num_p_picks_label}, s_picks_label: {self.num_s_picks_label}")
         print(f"TP_p: {self.metric_dict['true_positives_p']}, TP_s: {self.metric_dict['true_positives_s']}, FP_p: {self.metric_dict['false_positives_p']}, FP_s: {self.metric_dict['false_positives_s']}, FN_p: {self.metric_dict['false_negatives_p']}, FN_s: {self.metric_dict['false_negatives_s']}")
         print(f"precision_p: {self.metric_dict['precision_p']:.4f}, recall_p: {self.metric_dict['recall_p']:.4f}, f1_p: {self.metric_dict['f1_p']:.4f}")
         print(f"precision_s: {self.metric_dict['precision_s']:.4f}, recall_s: {self.metric_dict['recall_s']:.4f}, f1_s: {self.metric_dict['f1_s']:.4f}")
         print(f"miu_p: {self.metric_dict['miu_p']}, sigma_p: {self.metric_dict['sigma_p']}")
         print(f"miu_s: {self.metric_dict['miu_s']}, sigma_s: {self.metric_dict['sigma_s']}")
+        
+        if info_only:
+            return
         
         plt.figure(figsize=(10, 5))
         plt.subplot(121)
@@ -238,12 +272,55 @@ class PickMetric:
             plt.show()
         plt.close()
         return
+    
+    def plot_polarity(self, save_path=None):
+        # 构建混淆矩阵
+        conf_matrix_p = confusion_matrix(self.polarity_manual_p, self.polarity_pred_p, labels=["D", "N", "U"])[::-1]
+        conf_matrix_s = confusion_matrix(self.polarity_manual_s, self.polarity_pred_s, labels=["D", "N", "U"])[::-1]
+
+        # 创建热力图
+        fig, axes = plt.subplots(1, 2, figsize=(11, 5))
+        axes[0].set_title("P phase")
+        sns.heatmap(
+            conf_matrix_p, annot=True, fmt="d", cmap="Blues", linewidths=1.0,# linecolor="gray",
+            xticklabels=["D", "N", "U"], yticklabels=["U", "N", "D"], cbar=False, ax=axes[0]
+        )
+        # 添加百分比文本
+        conf_percentages_p = conf_matrix_p / conf_matrix_p.sum(axis=1, keepdims=True) * 100
+        for i in range(conf_matrix_p.shape[0]):
+            for j in range(conf_matrix_p.shape[1]):
+                axes[0].text(j + 0.5, i + 0.6, f"{conf_percentages_p[i, j]:.2f}%", 
+                        ha='center', va='center', fontsize=8, color='black' if conf_percentages_p[i, j]<50 else 'white')
+        axes[0].set_xlabel("Predicted")
+        axes[0].set_ylabel("Manual")
+
+        axes[1].set_title("S phase")
+        sns.heatmap(
+            conf_matrix_s, annot=True, fmt="d", cmap="Blues", linewidths=1.0,# linecolor="gray",
+            xticklabels=["D", "N", "U"], yticklabels=["U", "N", "D"], cbar=False, ax=axes[1]
+        )
+        # 添加百分比文本
+        conf_percentages_s = conf_matrix_s / conf_matrix_s.sum(axis=1, keepdims=True) * 100
+        for i in range(conf_matrix_s.shape[0]):
+            for j in range(conf_matrix_s.shape[1]):
+                axes[1].text(j + 0.5, i + 0.6, f"{conf_percentages_s[i, j]:.2f}%", 
+                        ha='center', va='center',fontsize=8, color='black' if conf_percentages_p[i, j]<50 else 'white')
+        axes[1].set_xlabel("Predicted")
+        axes[1].set_ylabel("Manual")
+        if save_path is not None:
+            plt.savefig(save_path)
+        else:
+            plt.show()
+        plt.close()
 
 # %%
 pick_metric = PickMetric(sample_rate=sample_rate)
 pick_metric_thld = PickMetric(sample_rate=sample_rate)
 
 # %%
+true_pick_files = 0
+fn_p_trace = []
+fn_s_trace = []
 with h5py.File(h5_file, "r") as fp:
     for pick in tqdm(pick_files):
         if args.model == "eqnet":
@@ -251,6 +328,10 @@ with h5py.File(h5_file, "r") as fp:
         elif args.model == "phasenet_plus":
             event_id = pick.split('/')[-1]
 
+        if len(filter_events) > 0:
+            if (event_id in filter_events.keys()) != args.include_events:
+                continue
+        true_pick_files += 1
         try:
             event = fp[event_id]
         except:
@@ -284,46 +365,85 @@ with h5py.File(h5_file, "r") as fp:
         df = df[df["phase_score"] >= args.score_threshold]
         if len(df) == 0:
             empty = True
-            
+        
+        station_ids = list(event.keys()) if len(filter_events) == 0 or (not args.include_events) else list(set(filter_events[event_id]).intersection(set(event.keys())))
         if empty:
             pick_metric.empty_files += 1
             pick_metric_thld.empty_files +=1 if num_stations>=station_threshold else 0
             
-            for sta_id in list(event.keys()):
+            for sta_id in station_ids:
                 phase_type_gt = event[sta_id].attrs["phase_type"]
+                phase_index_gt = event[sta_id].attrs["phase_index"]
                 try:
                     if len(phase_type_gt)==1 or event[sta_id].attrs["phase_status"]=='automatic':
                         continue
                 except:
                     pass
-                p_picks_gt = np.sort(event[sta_id].attrs["phase_index"][phase_type_gt=='P'])
-                s_picks_gt = np.sort(event[sta_id].attrs["phase_index"][phase_type_gt=='S'])
+                p_picks_gt, s_picks_gt = [], []
+                e_ids = event[sta_id].attrs["event_id"]
+                for e_id in set(e_ids): # exclude single p event in more than one event case
+                    if len(set(event[sta_id].attrs["phase_type"][e_ids==e_id])) < 2:
+                        continue
+                    p_picks_gt.append(phase_index_gt[np.logical_and(e_ids==e_id, phase_type_gt=='P')][0])
+                    s_picks_gt.append(phase_index_gt[np.logical_and(e_ids==e_id, phase_type_gt=='S')][0])
                 pick_metric.num_p_picks_label+=len(p_picks_gt)
                 pick_metric.num_s_picks_label+=len(s_picks_gt)
                 pick_metric_thld.num_p_picks_label += len(p_picks_gt) if num_stations>=station_threshold else 0
                 pick_metric_thld.num_s_picks_label += len(s_picks_gt) if num_stations>=station_threshold else 0
+            fn_p_trace.append([f"{event_id}/{sta_id}" for sta_id in station_ids if len(set(event[sta_id].attrs["phase_type"]))>1])
+            fn_s_trace.append([f"{event_id}/{sta_id}" for sta_id in station_ids if len(set(event[sta_id].attrs["phase_type"]))>1])
             continue
         
         df = df.sort_values(by=["station_id", "phase_index"], ignore_index=True)
+        if 'phase_polarity' not in df.columns:
+            df['phase_polarity'] = 0
+        # map: polarity_score -> polarity_pred: score<-polarity_thld -> D,  -polarity_thld<score<polarity_thld -> N,  polarity_thld<score -> U
+        df['phase_polarity_pred'] = df['phase_polarity'].apply(lambda x: 'D' if x < -args.polarity_threshold else 'U' if x > args.polarity_threshold else 'N')
         
-        for sta_id in list(event.keys()):
+        for sta_id in station_ids:
             phase_type_gt = event[sta_id].attrs["phase_type"]
+            phase_index_gt = event[sta_id].attrs["phase_index"]
+            phase_polarity_gt = event[sta_id].attrs["phase_polarity"]
             
             try:
                 if len(phase_type_gt)==1 or event[sta_id].attrs["phase_status"]=='automatic':
                     continue
             except:
                 pass
-            p_picks_gt = np.sort(event[sta_id].attrs["phase_index"][phase_type_gt=='P'])
-            s_picks_gt = np.sort(event[sta_id].attrs["phase_index"][phase_type_gt=='S'])
+            
+            p_picks_gt, s_picks_gt = [], []
+            p_pol_gt, s_pol_gt = [], []
+            e_ids = event[sta_id].attrs["event_id"]
+            for e_id in set(e_ids): # exclude single p event in more than one event case
+                if len(set(event[sta_id].attrs["phase_type"][e_ids==e_id])) < 2:
+                    continue
+                p_picks_gt.append(phase_index_gt[np.logical_and(e_ids==e_id, phase_type_gt=='P')][0])
+                s_picks_gt.append(phase_index_gt[np.logical_and(e_ids==e_id, phase_type_gt=='S')][0])
+                p_pol_gt.append(phase_polarity_gt[np.logical_and(e_ids==e_id, phase_type_gt=='P')][0])
+                s_pol_gt.append(phase_polarity_gt[np.logical_and(e_ids==e_id, phase_type_gt=='S')][0])
+            p_picks_gt = np.array(p_picks_gt)
+            s_picks_gt = np.array(s_picks_gt)
+            p_pol_gt = np.array(p_pol_gt)
+            s_pol_gt = np.array(s_pol_gt)
+            assert len(p_picks_gt) == len(p_pol_gt), f"p_picks_gt and p_pol_gt have different length in {event_id} {sta_id}"
+            assert len(s_picks_gt) == len(s_pol_gt), f"s_picks_gt and s_pol_gt have different length in {event_id} {sta_id}"
             pick_metric.num_p_picks_label+=len(p_picks_gt)
             pick_metric.num_s_picks_label+=len(s_picks_gt)
             pick_metric_thld.num_p_picks_label += len(p_picks_gt) if num_stations>=station_threshold else 0
             pick_metric_thld.num_s_picks_label += len(s_picks_gt) if num_stations>=station_threshold else 0
             if sta_id not in df["station_id"].values:
                 continue
+            if len(p_picks_gt) == 0 or len(s_picks_gt) == 0:
+                continue
             
             df_sta = df[df["station_id"] == sta_id]
+            if args.main_event_only:
+                duration = np.stack([p_picks_gt-100, p_picks_gt+3*(s_picks_gt-p_picks_gt)], axis=1)
+                duration = np.clip(duration, 0, 12000) #NOTE hard code the duration
+                mask = np.zeros(len(df_sta), dtype=bool)
+                for i, (p, s) in enumerate(duration):
+                    mask = np.logical_or(mask, np.logical_and(df_sta["phase_index"]>=p, df_sta["phase_index"]<=s))
+                df_sta = df_sta[mask]
             df_sta_p = df_sta[df_sta["phase_type"] == "P"]
             df_sta_s = df_sta[df_sta["phase_type"] == "S"]
             pick_metric.num_p_picks += len(df_sta_p)
@@ -331,8 +451,12 @@ with h5py.File(h5_file, "r") as fp:
             pick_metric_thld.num_p_picks += len(df_sta_p) if num_stations>=station_threshold else 0
             pick_metric_thld.num_s_picks += len(df_sta_s) if num_stations>=station_threshold else 0
             if len(df_sta_p) == 0:
-                min_res_p = [np.inf]
-                min_scores_p = [np.inf]
+                min_res_p = [np.inf] * len(p_picks_gt)
+                min_scores_p = [np.inf] * len(p_picks_gt)
+                min_polarity_score_p = [0] * len(p_picks_gt)
+                min_polarity_pred_p = ['N'] * len(p_picks_gt)
+                min_polarity_manual_p = list(p_pol_gt)
+                fn_p_trace.append(f"{event_id}/{sta_id}")
             else:
                 diff_p = df_sta_p["phase_index"].values[:, None] - p_picks_gt[None, :]
                 index_p = np.argmin(np.abs(diff_p), axis=0)
@@ -340,10 +464,24 @@ with h5py.File(h5_file, "r") as fp:
                 #if len(np.unique(index_p)) != len(index_p):
                 #    print(f"duplicated matched p picks in {event_id} {sta_id} {phase_type_gt} {len(df_sta_p)} {index_p}")
                 min_res_p = list(diff_p[index_p, np.arange(len(index_p))])
+                if len(index_p[np.abs(min_res_p)<50]) != len(set(index_p[np.abs(min_res_p)<50])):
+                    print(f"duplicated matched p picks in {event_id} {sta_id} {phase_type_gt} {p_picks_gt} {df_sta_p['phase_index'].values}")
                 min_scores_p = list(df_sta_p["phase_score"].values[index_p])
+                min_polarity_score_p = list(df_sta_p["phase_polarity"].values[index_p])
+                min_polarity_pred_p = list(df_sta_p["phase_polarity_pred"].values[index_p])
+                assert len(index_p) == len(p_pol_gt), f"index_p and p_picks_gt have different length in {event_id} {sta_id}"
+                min_polarity_manual_p = list(p_pol_gt)
+                
+                #if np.abs(min_res_p[list(set(e_ids)).index(event_id)]) > dt_bar:
+                if np.abs(min_res_p).max() > dt_bar:
+                    fn_p_trace.append(f"{event_id}/{sta_id}")
             if len(df_sta_s) == 0:
-                min_res_s = [np.inf]
-                min_scores_s = [np.inf]
+                min_res_s = [np.inf] * len(s_picks_gt)
+                min_scores_s = [np.inf] * len(s_picks_gt)
+                min_polarity_score_s = [0] * len(s_picks_gt)
+                min_polarity_pred_s = ['N'] * len(s_picks_gt)
+                min_polarity_manual_s = list(s_pol_gt)
+                fn_s_trace.append(f"{event_id}/{sta_id}")
             else:
                 diff_s = df_sta_s["phase_index"].values[:, None] - s_picks_gt[None, :]
                 index_s = np.argmin(np.abs(diff_s), axis=0)
@@ -352,6 +490,13 @@ with h5py.File(h5_file, "r") as fp:
                 #    print(f"duplicated matched s picks in {event_id} {sta_id} {phase_type_gt} {len(df_sta_s)} {index_s}")
                 min_res_s = list(diff_s[index_s, np.arange(len(index_s))])
                 min_scores_s = list(df_sta_s["phase_score"].values[index_s])
+                min_polarity_score_s = list(df_sta_s["phase_polarity"].values[index_s])
+                min_polarity_pred_s = list(df_sta_s["phase_polarity_pred"].values[index_s])
+                assert len(index_s) == len(s_pol_gt), f"index_s and s_picks_gt have different length in {event_id} {sta_id}"
+                min_polarity_manual_s = list(s_pol_gt)
+                #if np.abs(min_res_s[list(set(e_ids)).index(event_id)]) > dt_bar:
+                if np.abs(min_res_s).max() > dt_bar:
+                    fn_s_trace.append(f"{event_id}/{sta_id}")
                 
             snr_sta = event[sta_id].attrs["snr"]
             snr_sta = snr_sta[snr_sta > 0]
@@ -359,12 +504,14 @@ with h5py.File(h5_file, "r") as fp:
                 snr_sta = snr_sta.mean()
             else:
                 snr_sta = 0
-            pick_metric.update_matched_picks(min_res_p, min_res_s, min_scores_p, min_scores_s, [event.attrs["magnitude"]], [event[sta_id].attrs["distance_km"]], [snr_sta])
+            pick_metric.update_matched_picks(min_res_p, min_res_s, min_scores_p, min_scores_s, [event.attrs["magnitude"]], [event[sta_id].attrs["distance_km"]], [snr_sta], min_polarity_score_p, min_polarity_score_s, min_polarity_pred_p, min_polarity_pred_s, min_polarity_manual_p, min_polarity_manual_s)
             if num_stations>=station_threshold:
-                pick_metric_thld.update_matched_picks(min_res_p, min_res_s, min_scores_p, min_scores_s, [event.attrs["magnitude"]], [event[sta_id].attrs["distance_km"]], [snr_sta])
+                pick_metric_thld.update_matched_picks(min_res_p, min_res_s, min_scores_p, min_scores_s, [event.attrs["magnitude"]], [event[sta_id].attrs["distance_km"]], [snr_sta], min_polarity_score_p, min_polarity_score_s, min_polarity_pred_p, min_polarity_pred_s, min_polarity_manual_p, min_polarity_manual_s)
 
 pick_metric.list2numpy()
 pick_metric_thld.list2numpy()
+pick_metric.fn_p_trace = fn_p_trace
+pick_metric.fn_s_trace = fn_s_trace
 
 print(f"whole dataset empty files: {pick_metric.empty_files}")
 print(f"num_station >= {station_threshold} subset empty files: {pick_metric_thld.empty_files}")
@@ -379,13 +526,18 @@ if args.save_path is not None:
         pickle.dump(pick_metric, f)
     with open(f"{args.save_path}/pick_metric_score_thld{args.score_threshold}_thld{station_threshold}{suffix}.pkl", "wb") as f:
         pickle.dump(pick_metric_thld, f)
-else:
-    print("\nWhole dataset:\n")
-    pick_metric.plot_residual(save_path=f"./metrics/phase_picking{suffix}.png")
-    print(f"\nnum_station >= {station_threshold} subset:\n")
-    pick_metric_thld.plot_residual(save_path=f"./metrics/phase_picking_threshold{station_threshold}{suffix}.png")
-    print("\n")
 
+print("\nWhole dataset:\n")
+pick_metric.plot_residual(save_path=f"./metrics/phase_picking{suffix}.png", info_only=(args.save_path is not None))
+if args.save_path is None:
+    pick_metric.plot_polarity(save_path=f"./metrics/phase_polarity{suffix}.png")
+print(f"\nnum_station >= {station_threshold} subset:\n")
+pick_metric_thld.plot_residual(save_path=f"./metrics/phase_picking_threshold{station_threshold}{suffix}.png", info_only=(args.save_path is not None))
+if args.save_path is None:
+    pick_metric_thld.plot_polarity(save_path=f"./metrics/phase_polarity_threshold{station_threshold}{suffix}.png")
+print("\n")
+
+print(f"true_pick_files: {true_pick_files}")
 # %% [markdown]
 # ### Event detection
 
@@ -517,12 +669,14 @@ class EventMetric:
         
         return
     
-    def plot_residual(self, save_path=None):
+    def plot_residual(self, save_path=None, info_only=False):
         print(f"picks: {self.num_event_picks}, picks_label: {self.num_event_picks_label}")
         print(f"TP: {self.metric_dict['true_positives']}, FP: {self.metric_dict['false_positives']}, FN: {self.metric_dict['false_negatives']}")
         print(f"precision: {self.metric_dict['precision']:.4f}, recall: {self.metric_dict['recall']:.4f}, f1: {self.metric_dict['f1']:.4f}")
         print(f"miu_t: {self.metric_dict['miu_t']:.4f}, miu_x: {self.metric_dict['miu_x']:.4f}, miu_y: {self.metric_dict['miu_y']:.4f}, miu_z: {self.metric_dict['miu_z']:.4f}, miu_m: {self.metric_dict['miu_m']:.4f}, miu_dist: {self.metric_dict['miu_dist']:.4f}, miu_azi: {self.metric_dict['miu_azi']:.4f}")
         print(f"sigma_t: {self.metric_dict['sigma_t']:.4f}, sigma_x: {self.metric_dict['sigma_x']:.4f}, sigma_y: {self.metric_dict['sigma_y']:.4f}, sigma_z: {self.metric_dict['sigma_z']:.4f}, sigma_m: {self.metric_dict['sigma_m']:.4f}, sigma_dist: {self.metric_dict['sigma_dist']:.4f}, sigma_azi: {self.metric_dict['sigma_azi']:.4f}")
+        if info_only:
+            return
 
         fig, ax = plt.subplots(2, 4, figsize=(20, 10))
         ax[0, 0].hist(self.tp_picks, bins=31, range=(-3, 3))
@@ -571,6 +725,7 @@ def average_location(locations):
 # %%
 event_metric = EventMetric()
 event_metric_thld = EventMetric()
+fn_event_ids = []
 
 #dbscan = DBSCAN(eps=dbscan_epsilon, min_samples=1)
 dbscan = DBSCAN(eps=dbscan_epsilon, min_samples=3)
@@ -581,6 +736,10 @@ with h5py.File(h5_file, "r") as fp:
             event_id = re.sub(r'\.csv$', '', os.path.basename(pick))
         elif args.model == "phasenet_plus":
             event_id = pick.split('/')[-1]
+            
+        if len(filter_events) > 0:
+            if (event_id in filter_events.keys()) != args.include_events:
+                continue
 
         event = fp[event_id]
         num_stations = len(list(event.keys()))
@@ -599,6 +758,38 @@ with h5py.File(h5_file, "r") as fp:
                 [pd.read_csv(os.path.join(pick, f)) for f in os.listdir(pick) if f.endswith(".csv")]
             )
         df = df[df["phase_score"] >= args.score_threshold]
+        #if args.main_event_only:
+        #    new_df = []
+        #    for sta_id in df["station_id"].unique():
+        #        phase_type_gt = event[sta_id].attrs["phase_type"]
+        #        phase_index_gt = event[sta_id].attrs["phase_index"]
+        #        try:
+        #            if len(phase_type_gt)==1 or event[sta_id].attrs["phase_status"]=='automatic':
+        #                new_df.append(df[df["station_id"]==sta_id])
+        #                continue
+        #        except:
+        #            pass
+        #        
+        #        p_picks_gt, s_picks_gt = [], []
+        #        e_ids = event[sta_id].attrs["event_id"]
+        #        for e_id in set(e_ids): # exclude single p event in more than one event case
+        #            if len(set(event[sta_id].attrs["phase_type"][e_ids==e_id])) < 2:
+        #                continue
+        #            p_picks_gt.append(phase_index_gt[np.logical_and(e_ids==e_id, phase_type_gt=='P')][0])
+        #            s_picks_gt.append(phase_index_gt[np.logical_and(e_ids==e_id, phase_type_gt=='S')][0])
+        #        p_picks_gt = np.array(p_picks_gt)
+        #        s_picks_gt = np.array(s_picks_gt)
+        #        
+        #        df_sta = df[df["station_id"] == sta_id]
+        #        duration = np.stack([p_picks_gt-100, p_picks_gt+3*(s_picks_gt-p_picks_gt)], axis=1)
+        #        duration = np.clip(duration, 0, 12000) #NOTE hard code the duration
+        #        mask = np.zeros(len(df_sta), dtype=bool)
+        #        for i, (p, s) in enumerate(duration):
+        #            mask = np.logical_or(mask, np.logical_and(df_sta["phase_index"]>=p, df_sta["phase_index"]<=s))
+        #        df_sta = df_sta[mask]
+        #        new_df.append(df_sta)
+        #    df = pd.concat(new_df)
+                
         if len(df) == 0:
             event_metric.empty_files += 1
             event_metric_thld.empty_files +=1 if num_stations>=station_threshold else 0
@@ -673,6 +864,8 @@ with h5py.File(h5_file, "r") as fp:
                 azi_diff[azi_diff>180] = azi_diff[azi_diff>180] - 360
                 magnitude_pr = np.median(cluster_picks[:,8])
                 min_time_diff = time_diff
+        if abs(min_time_diff) > event_dt_bar:
+            fn_event_ids.append(event_id)
         #print(f"{event_id}: {min_time_diff:.2f}s, {avg_center}, {label_x:.2f}, {label_y:.2f}, {label_z:.2f}, {x_pred:.2f}, {y_pred:.2f}, {z_pred:.2f}, {x_diff:.2f}, {y_diff:.2f}, {z_diff:.2f}, {magnitude_pr:.2f}")
         event_metric.update_matched_picks([min_time_diff], [x_diff], [y_diff], [z_diff], [x_pred], [y_pred], [z_pred], [event.attrs["magnitude"]], [magnitude_pr], [cluster_picks[:,6]], [dist_diff], [azi_diff])
         if num_stations>=station_threshold:
@@ -680,6 +873,7 @@ with h5py.File(h5_file, "r") as fp:
         
 event_metric.list2numpy()
 event_metric_thld.list2numpy()
+event_metric.fn_event_ids = fn_event_ids
 
 print(f"whole dataset empty files: {event_metric.empty_files}")
 print(f"whole dataset no match files: {event_metric.no_match_files}")
@@ -697,10 +891,10 @@ if args.save_path is not None:
         pickle.dump(event_metric, f)
     with open(f"{args.save_path}/event_metric_score_thld{args.score_threshold}_thld{station_threshold}{suffix}.pkl", "wb") as f:
         pickle.dump(event_metric_thld, f)
-else:
-    print("\nWhole dataset:\n")
-    event_metric.plot_residual(f"./metrics/event_residual{suffix}.png")
-    print(f"azimuth residual: len: {len(event_metric.azimuth_res.flatten())}, abs medium: {np.median(np.abs(event_metric.azimuth_res.flatten()))}, max: {event_metric.azimuth_res.flatten()[np.argmax(np.abs(event_metric.azimuth_res.flatten()))]}, min: {event_metric.azimuth_res.flatten()[np.argmin(np.abs(event_metric.azimuth_res.flatten()))]}")
-    print(f"\nnum_station >= {station_threshold} subset:\n")
-    event_metric_thld.plot_residual(f"./metrics/event_residual_threshold{station_threshold}{suffix}.png")
-    print(f"azimuth residual: len: {len(event_metric_thld.azimuth_res.flatten())}, abs medium: {np.median(np.abs(event_metric_thld.azimuth_res.flatten()))}, max: {event_metric_thld.azimuth_res.flatten()[np.argmax(np.abs(event_metric_thld.azimuth_res.flatten()))]}, min: {event_metric_thld.azimuth_res.flatten()[np.argmin(np.abs(event_metric_thld.azimuth_res.flatten()))]}")
+
+print("\nWhole dataset:\n")
+event_metric.plot_residual(f"./metrics/event_residual{suffix}.png", info_only=(args.save_path is not None))
+print(f"azimuth residual: len: {len(event_metric.azimuth_res.flatten())}, abs medium: {np.median(np.abs(event_metric.azimuth_res.flatten()))}, max: {event_metric.azimuth_res.flatten()[np.argmax(np.abs(event_metric.azimuth_res.flatten()))]}, min: {event_metric.azimuth_res.flatten()[np.argmin(np.abs(event_metric.azimuth_res.flatten()))]}")
+print(f"\nnum_station >= {station_threshold} subset:\n")
+event_metric_thld.plot_residual(f"./metrics/event_residual_threshold{station_threshold}{suffix}.png", info_only=(args.save_path is not None))
+print(f"azimuth residual: len: {len(event_metric_thld.azimuth_res.flatten())}, abs medium: {np.median(np.abs(event_metric_thld.azimuth_res.flatten()))}, max: {event_metric_thld.azimuth_res.flatten()[np.argmax(np.abs(event_metric_thld.azimuth_res.flatten()))]}, min: {event_metric_thld.azimuth_res.flatten()[np.argmin(np.abs(event_metric_thld.azimuth_res.flatten()))]}")
