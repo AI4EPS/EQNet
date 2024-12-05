@@ -209,6 +209,8 @@ def reorder_keys(example):
     #example["num_stations"] = (example["event_location_mask"].sum(axis=1) > 0).float()
     example["data"] = example["data"].permute(1,2,0).contiguous()
     example["phase_pick"] = example["phase_pick"].permute(1,2,0).contiguous()
+    example["polarity"] = example["polarity"].permute(1,2,0).contiguous()
+    example["polarity_mask"] = example["polarity_mask"].permute(1,0).contiguous()
     example["event_center"] = example["event_center"].permute(1,0).contiguous()
     example["event_location"] = example["event_location"].permute(1,2,0).contiguous()
     example["event_location_mask"] = example["event_location_mask"].permute(1,0).contiguous()

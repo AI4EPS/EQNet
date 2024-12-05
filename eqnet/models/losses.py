@@ -227,7 +227,7 @@ def balanced_l1_reg_loss(output, target, mask, scale, shape, loc, base=1.0, weig
     
     regr_loss = (regr_loss * \
         (torch.abs(torch.log(torch.clamp(ground_truth-loc, min=0.1)) - torch.log(torch.tensor(scale)))/shape \
-            * weight + base).detach()\
+            * weight + base).detach() * mask\
             ).sum() / (num + 1e-4)
     
     return regr_loss
@@ -272,3 +272,43 @@ def bmc_loss_md(pred, target, noise_var):
     loss = loss * (2 * noise_var).detach()  # optional: restore the loss scale, 'detach' when noise is learnable 
     
     return loss
+
+
+class OrdinalRegressionLoss(nn.Module):
+    def __init__(self, num_class, train_cutpoints=False, scale=20.0, logit_scale=1.0):
+        super().__init__()
+        self.num_classes = num_class
+        num_cutpoints = self.num_classes - 1
+        self.cutpoints = torch.arange(num_cutpoints).float()*scale/(num_class-2) - scale / 2
+        if train_cutpoints:
+            self.cutpoints = nn.Parameter(self.cutpoints[None, :, None, None])
+        else:
+            self.cutpoints = self.cutpoints[None, :, None, None].detach()
+        self.logit_scale = logit_scale
+
+    def forward(self, pred, mask, label):
+        sigmoids = torch.sigmoid(self.cutpoints - pred*self.logit_scale)
+        link_mat = sigmoids[:, 1:] - sigmoids[:, :-1]
+        link_mat = torch.cat((
+                sigmoids[:, [0]],
+                link_mat,
+                (1 - sigmoids[:, [-1]])
+            ),
+            dim=1
+        )
+
+        eps = 1e-15
+        likelihoods = torch.clamp(link_mat, eps, 1 - eps)
+        
+        if mask is None:
+            mask = torch.ones_like(sigmoids).float()
+        else:
+            mask = mask.unsqueeze(1).float()
+        num = mask.sum() + 1e-5
+
+        if label is not None:
+            loss = -torch.sum(label.float() * torch.log(likelihoods), dim=1).sum() / num
+        else:
+            loss = None
+            
+        return loss, likelihoods

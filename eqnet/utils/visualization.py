@@ -532,7 +532,7 @@ def plot_phasenet_plus(
         plt.close(fig)
 
 
-def plot_eqnet_train(meta, phase, event, epoch, figure_dir="figures", prefix="", offset=None, hypocenter=None):
+def plot_eqnet_train(meta, phase, event, polarity, epoch, figure_dir="figures", prefix="", offset=None, hypocenter=None):
     degree2km = 111.19
     data = normalize(meta["data"])
     flag=True if (offset is not None) and (hypocenter is not None) else False
@@ -540,15 +540,16 @@ def plot_eqnet_train(meta, phase, event, epoch, figure_dir="figures", prefix="",
         plt.close("all")
         if flag:
             #fig, axes = plt.subplots(5, 1, figsize=(10, 20), dpi=100)
-            fig = plt.figure(figsize=(10, 18), dpi=150)
+            fig = plt.figure(figsize=(10, 21), dpi=300)
             axes=[]
-            axes.append(plt.subplot2grid((6, 4), (0, 0), colspan=4))
-            axes.append(plt.subplot2grid((6, 4), (1, 0), colspan=4))
-            axes.append(plt.subplot2grid((6, 4), (2, 0), colspan=4))
-            axes.append(plt.subplot2grid((6, 4), (3, 0), colspan=3, rowspan=2))
-            axes.append(plt.subplot2grid((6, 4), (5, 0), colspan=3))
-            axes.append(plt.subplot2grid((6, 4), (3, 3), colspan=1, rowspan=2))
-            axes.append(plt.subplot2grid((6, 4), (5, 3), colspan=1))
+            axes.append(plt.subplot2grid((7, 4), (0, 0), colspan=4))
+            axes.append(plt.subplot2grid((7, 4), (1, 0), colspan=4))
+            axes.append(plt.subplot2grid((7, 4), (2, 0), colspan=4))
+            axes.append(plt.subplot2grid((7, 4), (4, 0), colspan=3, rowspan=2))
+            axes.append(plt.subplot2grid((7, 4), (6, 0), colspan=3))
+            axes.append(plt.subplot2grid((7, 4), (4, 3), colspan=1, rowspan=2))
+            axes.append(plt.subplot2grid((7, 4), (6, 3), colspan=1))
+            axes.append(plt.subplot2grid((7, 4), (3, 0), colspan=4))
         else:
             fig, axes = plt.subplots(3, 1, figsize=(10, 10))
         for j in range(phase.shape[-1]):
@@ -562,6 +563,19 @@ def plot_eqnet_train(meta, phase, event, epoch, figure_dir="figures", prefix="",
             if event is not None:
                 axes[2].plot(event[i, :, j] + j, "b")
             axes[2].plot(meta["event_center"][i, :, j] + j, "--C0")
+            
+            polarity_number = 7 if flag else 3
+            if polarity is not None:
+                if polarity.shape[1]==3:
+                    axes[polarity_number].plot((1.0+polarity[i, 1, :, j])/2 + j*1.2, "g", alpha=0.3, linewidth=0.5)
+                    axes[polarity_number].plot((1.0-polarity[i, 2, :, j])/2 + j*1.2, "g", alpha=0.3, linewidth=0.5)
+                    axes[polarity_number].plot((polarity[i, 1, :, j]-polarity[i, 2, :, j] + 1)/2 + j*1.2, "b", alpha=1.0, linewidth=1.0)
+                elif polarity.shape[1]==1:
+                    axes[polarity_number].plot((polarity[i, 0, :, j]) + j*1.2, "b", alpha=1.0, linewidth=0.5)
+                axes[polarity_number].plot((1.0+meta["polarity"][i, 1, :, j])/2 + j*1.2, "--C0", alpha=0.5, linewidth=1.0)
+                axes[polarity_number].plot((1.0-meta["polarity"][i, 2, :, j])/2 + j*1.2, "--C0", alpha=0.5, linewidth=1.0)
+                axes[polarity_number].plot(meta["polarity_mask"][i, :, j] + j*1.2, ":", color="gray", linewidth=1.0)
+            
                 
         # draw t, xy and xz scatter, show the station location, and the event location
         if flag:

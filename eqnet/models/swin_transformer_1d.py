@@ -6,7 +6,6 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import nn, Tensor
-from ._utils import _ovewrite_named_param
 from torch.fx import wrap
 
 # import xformers.components.attention.attention_patterns as attention_patterns

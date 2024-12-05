@@ -5,7 +5,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.modules.loss import _WeightedLoss
 from functools import partial
-from ._utils import _SimpleSegmentationModel
 
 class WeightedLoss(_WeightedLoss):
     def __init__(self, weight=None):

@@ -312,7 +312,7 @@ def pred_eqnet(args, model, data_loader, pick_path, figure_path, event_path=None
                 with ctx:
                     output = model(meta)
             except torch.OutOfMemoryError:
-                print(f"Out of memory during processing {meta['file_name']}")
+                print(f"Out of memory during processing {meta['file_name']}", force=True)
                 try:
                     del meta, output
                 except:
@@ -339,6 +339,24 @@ def pred_eqnet(args, model, data_loader, pick_path, figure_path, event_path=None
             
             if "phase" in output:
                 phase_scores = F.softmax(output["phase"], dim=1)  # [batch, nch, nt, nsta]
+                if ("polarity" in output) and (output["polarity"] is not None):
+                    if output['polarity'].shape[1] > 1:
+                        polarity_scores = torch.softmax(output["polarity"], dim=1)
+                    else:
+                        cutpoints = (torch.arange(3-1).float()*20/(3-2) - 20 / 2)[None, :, None, None].detach()
+                        sigmoids = torch.sigmoid(cutpoints.to(output["polarity"].device) - output["polarity"])
+                        link_mat = sigmoids[:, 1:] - sigmoids[:, :-1]
+                        link_mat = torch.cat((
+                                sigmoids[:, [0]],
+                                link_mat,
+                                (1 - sigmoids[:, [-1]])
+                            ),
+                            dim=1
+                        )
+                        eps = 1e-15
+                        polarity_scores = torch.clamp(link_mat, eps, 1 - eps)[:, [1,2,0]] # DNU -> NUD
+                else:
+                    polarity_scores = None
                 topk_phase_scores, topk_phase_inds = detect_peaks(phase_scores, vmin=args.min_prob, kernel=128)
                 phase_picks_ = extract_picks(
                     topk_phase_inds,
@@ -348,6 +366,7 @@ def pred_eqnet(args, model, data_loader, pick_path, figure_path, event_path=None
                     begin_time=meta["begin_time"] if "begin_time" in meta else None,
                     begin_time_index=meta["begin_time_index"] if "begin_time_index" in meta else None,
                     dt=meta["dt_s"] if "dt_s" in meta else 0.01,
+                    polarity_score=polarity_scores,
                     vmin=args.min_prob,
                     phases=args.phases,
                     waveform=meta["data"],
@@ -422,6 +441,8 @@ def pred_eqnet(args, model, data_loader, pick_path, figure_path, event_path=None
                         pick_dict["event_index"] = event_index
                         pick_dict["p_index"] = p_index
                         pick_dict["s_index"] = s_index
+                        pick_dict["travel_time_s"] = dt
+                        pick_dict["ps_delta_s"] = width*feature_scale*(meta["dt_s"][i].item()) * 2
                         pick_dict["event_original_time"] = (datetime.fromisoformat(pick_dict["phase_time"])
                                                             + timedelta(seconds=(-dt))).isoformat(
                                 timespec="milliseconds"
@@ -464,7 +485,7 @@ def pred_eqnet(args, model, data_loader, pick_path, figure_path, event_path=None
                     figure_dir=figure_path,
                     feature_scale=feature_scale,
                 )
-                print("saving:", meta["file_name"])
+                print("saving:", meta["file_name"], force=True)
                 
             del meta, output
             # if cuda, clear cache

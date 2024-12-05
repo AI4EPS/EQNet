@@ -53,7 +53,7 @@ def extract_picks(
     polarity_score=None,
     waveform=None,
     window_amp=[10, 5],
-    polarity_scale=4,
+    polarity_scale=1,
     scores_mask=None,
     **kwargs,
 ):
@@ -150,10 +150,17 @@ def extract_picks(
                             #assert 0, f"pick_index: {pick_index}, phase_mask: {phase_mask}"
                         
                         if polarity_score is not None:
-                            pick_dict[
-                                "phase_polarity"
-                            ] = f"{polarity_score[i, 0, index.item()//polarity_scale, k].item():.3f}"
-
+                            # pick_dict["phase_polarity"] = (
+                            #     f"{(polarity_score[i, 1, index.item()//polarity_scale, k].item() - polarity_score[i, 2, index.item()//polarity_scale, k].item()):.3f}"
+                            # )
+                            score = polarity_score[i, 1, :, k] - polarity_score[i, 2, :, k]
+                            # score = (polarity_score[i, 0, :, k] - 0.5) * 2.0
+                            score = score[
+                                max(0, index.item() // polarity_scale - 3) : index.item() // polarity_scale + 3
+                            ]
+                            idx = torch.argmax(torch.abs(score))
+                            pick_dict["phase_polarity"] = round(score[idx].item(), 3)
+                            
                         if waveform is not None:
                             j1 = topk_index_ijk[ii]
                             j2 = (

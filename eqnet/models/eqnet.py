@@ -4,11 +4,11 @@ import torch.nn.functional as F
 from torch import nn, Tensor
 from .unet import moving_normalize, moving_normalize_channel
 from .resnet1d import ResNet, BasicBlock, Bottleneck
-from .swin_transformer import SwinTransformer
+from .swin_transformer import SwinTransformer, Permute
 from .swin_transformer_1d import SwinTransformer1D
 from .centernet import CenterNetHead, CenterNetHeadV1
 from .losses import smoothl1_reg_loss, weighted_l1_reg_loss, cross_entropy_loss, focal_loss
-from .uper_head import UPerNeck, EventHead, PhaseHead, EventHead2, PhaseHead2
+from .uper_head import UPerNeck, EventHead, PhaseHead, EventHead2, PhaseHead2, PolarityHead
 
 
 def _log_transform(x):
@@ -376,6 +376,18 @@ class EQNet(nn.Module):
             dilations=[1, 2, 4, 8, 16]
             
         self.neck = UPerNeck(in_channels=[embed_dim * (2**i) for i in range(4)], channels=neck_channels) if "upernet" in head else nn.Sequential()
+        
+        self.polarity_stem = nn.Sequential(
+            nn.Conv2d(3, embed_dim//2, kernel_size=(3, 1), stride=(2, 1), padding=(1, 0)),
+            Permute([0, 2, 3, 1]),
+            nn.LayerNorm(embed_dim//2),
+            Permute([0, 3, 1, 2]),
+            nn.GELU(),
+            nn.Conv2d(embed_dim//2, embed_dim, kernel_size=(3, 1), stride=(2, 1), padding=(1, 0)),
+            Permute([0, 2, 3, 1]),
+            nn.LayerNorm(embed_dim),
+            Permute([0, 3, 1, 2]),
+        )
 
         if head == "simple":
             self.event_detector = EventDetector(channels=channels, bn=True, dilations=dilations)
@@ -395,6 +407,8 @@ class EQNet(nn.Module):
             self.phase_picker = PhaseHead2(channels=neck_channels)
         else:
             self.phase_picker = PhasePicker(channels=channels, bn=True, dilations=dilations)
+        
+        self.polarity_picker = PolarityHead(channels=neck_channels, stem_channels=embed_dim)
 
     @property
     def device(self):
@@ -411,6 +425,8 @@ class EQNet(nn.Module):
             keys.update({'event_detector.' + i for i in self.event_detector.no_weight_decay()})
         if hasattr(self.phase_picker, 'no_weight_decay'):
             keys.update({'phase_picker.' + i for i in self.phase_picker.no_weight_decay()})
+        if hasattr(self.polarity_picker, 'no_weight_decay'):
+            keys.update({'polarity_picker.' + i for i in self.polarity_picker.no_weight_decay()})
         return keys
 
     @torch.jit.ignore
@@ -424,6 +440,8 @@ class EQNet(nn.Module):
             keys.update({i for i in self.event_detector.no_weight_decay_keywords()})
         if hasattr(self.phase_picker, 'no_weight_decay_keywords'):
             keys.update({i for i in self.phase_picker.no_weight_decay_keywords()})
+        if hasattr(self.polarity_picker, 'no_weight_decay_keywords'):
+            keys.update({i for i in self.polarity_picker.no_weight_decay_keywords()})
         return keys
 
     def forward(self, batched_inputs: Tensor) -> Dict[str, Tensor]:
@@ -435,18 +453,22 @@ class EQNet(nn.Module):
 
         if self.training:
             phase_pick = batched_inputs["phase_pick"].to(self.device)
+            polarity = batched_inputs["polarity"].to(self.device)
+            polarity_mask = batched_inputs["polarity_mask"].to(self.device)
             event_center = batched_inputs["event_center"].to(self.device)
             event_location = batched_inputs["event_location"].to(self.device)
             event_location_mask = batched_inputs["event_location_mask"].to(self.device)
             num_stations = torch.any(event_location_mask>0, axis=1).float().to(self.device)
         elif "phase_pick" in batched_inputs.keys(): # validation
             phase_pick = batched_inputs["phase_pick"].to(self.device)
+            polarity = batched_inputs["polarity"].to(self.device)
+            polarity_mask = batched_inputs["polarity_mask"].to(self.device)
             event_center = batched_inputs["event_center"].to(self.device)
             event_location = batched_inputs["event_location"].to(self.device)
             event_location_mask = batched_inputs["event_location_mask"].to(self.device)
             num_stations = torch.any(event_location_mask>0, axis=1).float().to(self.device)
         else:
-            phase_pick, event_center, event_location, event_location_mask, num_stations = None, None, None, None, None
+            phase_pick, polarity, polarity_mask, event_center, event_location, event_location_mask, num_stations = None, None, None, None, None, None, None
 
         if "swin" in self.backbone_name:
             station_location = batched_inputs["station_location"].to(self.device)
@@ -459,19 +481,20 @@ class EQNet(nn.Module):
 
         output_phase, loss_phase = self.phase_picker(features, phase_pick, num_stations)
         outputs_event, losses_event = self.event_detector(features, amplitude, event_center, event_location, event_location_mask)
+        output_polarity, loss_polarity = self.polarity_picker(features, self.polarity_stem(data), polarity, polarity_mask)
 
         if self.training:
-            loss = loss_phase + losses_event["loss"]
+            loss = loss_phase['loss_phase'] + losses_event["loss"] + loss_polarity["loss_polarity"]
             del losses_event["loss"]
-            return {"loss": loss, "loss_phase": loss_phase, **losses_event}
+            return {"loss": loss, **loss_phase, **losses_event, **loss_polarity}
         elif phase_pick is not None: # validation
             #output_event = outputs_event["event"]
-            loss = loss_phase + losses_event["loss"]
+            loss = loss_phase['loss_phase'] + losses_event["loss"] + loss_polarity["loss_polarity"]
             del losses_event["loss"]
-            return {"phase": output_phase, "loss": loss, "loss_phase": loss_phase, **outputs_event, **losses_event}
+            return {**output_phase, **outputs_event, **output_polarity, "loss": loss, **loss_phase, **losses_event, **loss_polarity}
         else:
             #output_event = outputs_event["event"]
-            return {"phase": output_phase, **outputs_event}
+            return {**output_phase, **outputs_event, **output_polarity}
 
 
 def build_model(backbone="resnet50", head="simple", use_station_location=True, **kwargs) -> EQNet:

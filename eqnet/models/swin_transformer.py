@@ -1,3 +1,4 @@
+import math
 from functools import partial
 from typing import Any, Callable, List, Optional, Dict, Union, Tuple
 from collections import OrderedDict
@@ -172,6 +173,37 @@ class PatchMerging(nn.Module):
         x = self.norm(x)
 
         return {"x": x, "loc": loc}
+    
+
+class PatchReduction(nn.Module):
+    """Patch Reduction Layer.
+    Args:
+        dim (int): Number of input channels.
+        norm_layer (nn.Module): Normalization layer. Default: nn.LayerNorm.
+    """
+
+    def __init__(self, dim: int, norm_layer: Callable[..., nn.Module] = nn.LayerNorm, 
+                 k=(7, 1), s=(2, 1)):
+        super().__init__()
+        self.dim = dim
+        self.reduction = nn.Conv2d(dim, 2*dim, kernel_size=k, stride=s, 
+                                   padding=(math.ceil((k[0] - s[0]) / 2), math.ceil((k[1] - s[1]) / 2)), bias=False)
+        self.norm = norm_layer(2 * dim)
+        
+        nn.init.trunc_normal_(self.reduction.weight, std=.02)
+
+    def forward(self, meta: Dict):
+        """
+        Args:
+            x (Tensor): input tensor with expected layout of [..., H, W, C]
+        Returns:
+            Tensor with layout of [..., H/2, W, 2*C]
+        """
+        x, loc = meta["x"], meta["loc"]
+        x = self.reduction(x.permute(0, 3, 1, 2).contiguous()).permute(0, 2, 3, 1).contiguous()
+        x = self.norm(x)
+
+        return {"x": x, "loc": loc}
 
 
 @torch.fx.wrap
@@ -312,6 +344,7 @@ def shifted_window_attention(
     if sum(shift_size) > 0:
         # generate attention mask
         attn_mask = x.new_zeros((pad_H, pad_W))
+        #NOTE: it is easy to change the shift direction from upper left to lower right by changing below 2 lines
         h_slices = ((0, -window_size[0]), (-window_size[0], -shift_size[0]), (-shift_size[0], None))
         w_slices = ((0, -window_size[1]), (-window_size[1], -shift_size[1]), (-shift_size[1], None))
         count = 0
@@ -1284,13 +1317,14 @@ class SwinTransformer(nn.Module):
         depths: List[int],
         num_heads: List[int],
         window_size: List[int],
+        patchify_kernel: Optional[List[int]] = [31, 1],
         mlp_ratio: float = 4.0,
         dropout: float = 0.0,
         attention_dropout: float = 0.0,
         stochastic_depth_prob: float = 0.0,
         norm_layer: Optional[Callable[..., nn.Module]] = None,
         block_name: Optional[str] = None,
-        downsample_layer: Callable[..., nn.Module] = PatchMerging,
+        downsample_layer: Callable[..., nn.Module] = PatchReduction,#PatchMerging,
         out_indices=(0, 1, 2, 3),
         use_station_location: bool = True,
         use_relative_position_bias: bool = True,
@@ -1311,12 +1345,26 @@ class SwinTransformer(nn.Module):
 
         if norm_layer is None:
             norm_layer = partial(nn.LayerNorm, eps=1e-5)
-
+            
+        if patchify_kernel is None:
+            patchify_kernel = patch_size.copy()
+        if use_station_location:
+            assert (math.ceil((patchify_kernel[1] - patch_size[1]) / 2)==0) & patchify_kernel[1]==1 & patch_size[1]==1, f"no downsample in station dimension, but got {patchify_kernel[1]} and {patch_size[1]}"
         # split image into non-overlapping patches
         self.split_patch = nn.Sequential(
                 nn.Conv2d(
-                    3, embed_dim, kernel_size=(patch_size[0], patch_size[1]), stride=(patch_size[0], patch_size[1])
+                    3, embed_dim, kernel_size=(patchify_kernel[0], patchify_kernel[1]), stride=(patch_size[0], patch_size[1]), padding=(math.ceil((patchify_kernel[0] - patch_size[0]) / 2), math.ceil((patchify_kernel[1] - patch_size[1]) / 2))
                 ),
+                #nn.Conv2d(
+                #    3, embed_dim//2, kernel_size=(3, patchify_kernel[1]), stride=(patch_size[0]//2, patch_size[1]), padding=(1, math.ceil((patchify_kernel[1] - patch_size[1]) / 2))
+                #),
+                #Permute([0, 2, 3, 1]),
+                #norm_layer(embed_dim//2),
+                #Permute([0, 3, 1, 2]),
+                #nn.GELU(),
+                #nn.Conv2d(
+                #    embed_dim//2, embed_dim, kernel_size=(3, patchify_kernel[1]), stride=(patch_size[0]//2, patch_size[1]), padding=(1, math.ceil((patchify_kernel[1] - patch_size[1]) / 2))
+                #),
                 Permute([0, 2, 3, 1]),
                 norm_layer(embed_dim),
             )
@@ -1364,6 +1412,11 @@ class SwinTransformer(nn.Module):
 
         for m in self.modules():
             if isinstance(m, nn.Linear):
+                nn.init.trunc_normal_(m.weight, std=0.02)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+        for m in self.split_patch.modules():
+            if isinstance(m, nn.Conv2d):
                 nn.init.trunc_normal_(m.weight, std=0.02)
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)

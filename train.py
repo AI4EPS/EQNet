@@ -123,6 +123,7 @@ def train_one_epoch(
         metric_logger.add_meter("loss_y", utils.SmoothedValue(window_size=1, fmt="{value}"))
         metric_logger.add_meter("loss_depth", utils.SmoothedValue(window_size=1, fmt="{value}"))
         metric_logger.add_meter("loss_magnitude", utils.SmoothedValue(window_size=1, fmt="{value}"))
+        metric_logger.add_meter("loss_polarity", utils.SmoothedValue(window_size=1, fmt="{value}"))
         
     header = f"Epoch: [{epoch}]"
     
@@ -277,8 +278,10 @@ def plot_results(meta, model, output, args, epoch, prefix=""):
             phase = F.softmax(output["phase"], dim=1).cpu().float()
             try:
                 event = torch.sigmoid(output["event"]).cpu().float()
+                polarity = torch.softmax(output["polarity"], dim=1).cpu().float() if output["polarity"].shape[1] == 3 else torch.sigmoid(output["polarity"]).cpu().float()
             except:
                 event = None
+                polarity = None
             try:
                 offset = output["offset"].cpu().float()
                 hypocenter = output["hypocenter"].cpu().float()
@@ -286,8 +289,8 @@ def plot_results(meta, model, output, args, epoch, prefix=""):
                 offset = None
                 hypocenter = None
             print("Plotting...")
-            eqnet.utils.plot_eqnet_train(meta, phase, event, epoch=epoch, figure_dir=args.figure_dir, prefix=prefix, offset=offset, hypocenter=hypocenter)
-            del output, phase, event, offset, hypocenter
+            eqnet.utils.plot_eqnet_train(meta, phase, event, polarity, epoch=epoch, figure_dir=args.figure_dir, prefix=prefix, offset=offset, hypocenter=hypocenter)
+            del output, phase, event, polarity, offset, hypocenter
 
 
 def main(args):
@@ -654,9 +657,9 @@ def main(args):
         if args.mtl == "dwa" or args.mtl == "dwa_inverse":
             if args.model == "eqnet":
                 #tasks = ["loss_phase", "loss_event", "loss_offset", "loss_hypocenter"]
-                tasks = ["loss_phase", "loss_event", "loss_offset", "loss_origin_time", "loss_x", "loss_y", "loss_depth", "loss_magnitude"]
+                tasks = ["loss_phase", "loss_event", "loss_offset", "loss_origin_time", "loss_x", "loss_y", "loss_depth", "loss_magnitude", "loss_polarity"]
                 # pre_weight = args.pre_weight
-                pre_weight = model.phase_picker.weights+model.event_detector.weights
+                pre_weight = model.phase_picker.weights+model.event_detector.weights+model.polarity_picker.weights
                 print(f"{args.model}: {args.mtl} pre_weight: ", end="\t")
                 for i, k in enumerate(tasks):
                     print(f"{k}: {pre_weight[i]:.4f}", end="\t")

@@ -106,7 +106,7 @@ class UPerNeck(nn.Module, metaclass=ABCMeta):
                  in_index=[0, 1, 2, 3],
                  input_transform="multiple_select",
                  align_corners=False,
-                 kernel_size=5,
+                 kernel_size=7,
                  ):
         super().__init__()
         self._init_inputs(in_channels, in_index, input_transform)
@@ -344,7 +344,7 @@ class EventHead(nn.Module):
                 kernel_size=kernel_size,
                 dilation=dilations[2],
                 padding=((kernel_size - 1) * dilations[2] + 1) // 2,
-                padding_mode="reflect",
+                #padding_mode="reflect",
                 bias=False,
             ),
             nn.BatchNorm1d(hidden_channels[2]),
@@ -353,10 +353,7 @@ class EventHead(nn.Module):
             nn.Conv1d(
                 hidden_channels[2],
                 1,
-                kernel_size=kernel_size,
-                dilation=dilations[1],
-                padding=((kernel_size - 1) * dilations[1] + 1) // 2,
-                padding_mode="reflect",
+                kernel_size=1,
             )
         )
         self.heatmap[-1].bias.data.fill_(-2.19) # if use the initial value, the loss from 200 to 5 (v2)
@@ -369,7 +366,7 @@ class EventHead(nn.Module):
                 kernel_size=kernel_size,
                 dilation=dilations[3],
                 padding=((kernel_size - 1) * dilations[3] + 1) // 2,
-                padding_mode="reflect",
+                #padding_mode="reflect",
                 bias=False,
             ),
             nn.BatchNorm1d(hidden_channels[2]),
@@ -378,10 +375,7 @@ class EventHead(nn.Module):
             nn.Conv1d(
                 hidden_channels[2],
                 2,
-                kernel_size=kernel_size,
-                dilation=dilations[1],
-                padding=((kernel_size - 1) * dilations[1] + 1) // 2,
-                padding_mode="reflect",
+                kernel_size=1,
             )
         )
         
@@ -393,7 +387,7 @@ class EventHead(nn.Module):
                 kernel_size=kernel_size,
                 dilation=dilations[2],
                 padding=((kernel_size - 1) * dilations[2] + 1) // 2,
-                padding_mode="reflect",
+                #padding_mode="reflect",
                 bias=False,
             ),
             nn.BatchNorm1d(hidden_channels[1]),
@@ -407,7 +401,7 @@ class EventHead(nn.Module):
                 kernel_size=kernel_size,
                 dilation=dilations[2],
                 padding=((kernel_size - 1) * dilations[2] + 1) // 2,
-                padding_mode="reflect",
+                #padding_mode="reflect",
                 bias=False,
             ),
             nn.BatchNorm1d(hidden_channels[3]),
@@ -418,7 +412,7 @@ class EventHead(nn.Module):
                 kernel_size=kernel_size,
                 dilation=dilations[1],
                 padding=((kernel_size - 1) * dilations[1] + 1) // 2,
-                padding_mode="reflect",
+                #padding_mode="reflect",
                 bias=False,
             ),
             nn.BatchNorm1d(hidden_channels[2]),
@@ -432,7 +426,7 @@ class EventHead(nn.Module):
                 kernel_size=kernel_size,
                 dilation=dilations[2],
                 padding=((kernel_size - 1) * dilations[2] + 1) // 2,
-                padding_mode="reflect",
+                #padding_mode="reflect",
                 bias=False,
             ),
             nn.BatchNorm1d(hidden_channels[3]),
@@ -443,7 +437,7 @@ class EventHead(nn.Module):
                 kernel_size=kernel_size,
                 dilation=dilations[1],
                 padding=((kernel_size - 1) * dilations[1] + 1) // 2,
-                padding_mode="reflect",
+                #padding_mode="reflect",
                 bias=False,
             ),
             nn.BatchNorm1d(hidden_channels[2]),
@@ -457,7 +451,7 @@ class EventHead(nn.Module):
                 kernel_size=kernel_size,
                 dilation=dilations[2],
                 padding=((kernel_size - 1) * dilations[2] + 1) // 2,
-                padding_mode="reflect",
+                #padding_mode="reflect",
                 bias=False,
             ),
             nn.BatchNorm1d(hidden_channels[1]),
@@ -471,7 +465,7 @@ class EventHead(nn.Module):
                 kernel_size=kernel_size,
                 dilation=dilations[1],
                 padding=((kernel_size - 1) * dilations[1] + 1) // 2,
-                padding_mode="reflect",
+                #padding_mode="reflect",
                 bias=False,
             ),
             nn.BatchNorm1d(hidden_channels[3]),
@@ -479,10 +473,7 @@ class EventHead(nn.Module):
             nn.Conv1d(
                 hidden_channels[3],
                 1,
-                kernel_size=kernel_size,
-                dilation=dilations[0],
-                padding=((kernel_size - 1) * dilations[0] + 1) // 2,
-                padding_mode="reflect",
+                kernel_size=1,
             ),
             #nn.LeakyReLU(inplace=True), # the origin time and the distance should be positive
         )
@@ -493,7 +484,7 @@ class EventHead(nn.Module):
                 kernel_size=kernel_size,
                 dilation=dilations[1],
                 padding=((kernel_size - 1) * dilations[1] + 1) // 2,
-                padding_mode="reflect",
+                #padding_mode="reflect",
                 bias=False,
             ),
             nn.BatchNorm1d(hidden_channels[3]),
@@ -501,10 +492,7 @@ class EventHead(nn.Module):
             nn.Conv1d(
                 hidden_channels[3],
                 1,
-                kernel_size=kernel_size,
-                dilation=dilations[0],
-                padding=((kernel_size - 1) * dilations[0] + 1) // 2,
-                padding_mode="reflect",
+                kernel_size=1,
             ),
             #nn.LeakyReLU(inplace=True), # the origin time and the distance should be positive
         )
@@ -515,7 +503,7 @@ class EventHead(nn.Module):
                 kernel_size=kernel_size,
                 dilation=dilations[3],
                 padding=((kernel_size - 1) * dilations[3] + 1) // 2,
-                padding_mode="reflect",
+                #padding_mode="reflect",
                 bias=False,
             ),
             nn.BatchNorm1d(hidden_channels[3]),
@@ -523,10 +511,7 @@ class EventHead(nn.Module):
             nn.Conv1d(
                 hidden_channels[3],
                 self.angle_dims,
-                kernel_size=kernel_size,
-                dilation=dilations[1],
-                padding=((kernel_size - 1) * dilations[1] + 1) // 2,
-                padding_mode="reflect",
+                kernel_size=1,
             ),
             Sine(),
         )
@@ -541,7 +526,7 @@ class EventHead(nn.Module):
                 kernel_size=kernel_size,
                 dilation=dilations[3],
                 padding=((kernel_size - 1) * dilations[3] + 1) // 2,
-                padding_mode="reflect",
+                #padding_mode="reflect",
                 bias=False,
             ),
             nn.BatchNorm1d(hidden_channels[3]),
@@ -549,10 +534,7 @@ class EventHead(nn.Module):
             nn.Conv1d(
                 hidden_channels[3],
                 1,
-                kernel_size=kernel_size,
-                dilation=dilations[1],
-                padding=((kernel_size - 1) * dilations[1] + 1) // 2,
-                padding_mode="reflect",
+                kernel_size=1,
             ),
         )
         
@@ -563,7 +545,7 @@ class EventHead(nn.Module):
                 kernel_size=kernel_size,
                 dilation=dilations[3],
                 padding=((kernel_size - 1) * dilations[3] + 1) // 2,
-                padding_mode="reflect",
+                #padding_mode="reflect",
                 bias=False,
             ),
             nn.BatchNorm1d(hidden_channels[2]),
@@ -577,7 +559,7 @@ class EventHead(nn.Module):
                 kernel_size=kernel_size,
                 dilation=dilations[2],
                 padding=((kernel_size - 1) * dilations[2] + 1) // 2,
-                padding_mode="reflect",
+                #padding_mode="reflect",
                 bias=False,
             ),
             nn.BatchNorm1d(hidden_channels[4]),
@@ -585,10 +567,7 @@ class EventHead(nn.Module):
             nn.Conv1d(
                 hidden_channels[4],
                 1,
-                kernel_size=kernel_size,
-                dilation=dilations[1],
-                padding=((kernel_size - 1) * dilations[1] + 1) // 2,
-                padding_mode="reflect",
+                kernel_size=1,
             )
         )
 
@@ -740,7 +719,7 @@ class EventHead2(nn.Module):
                  loss_dict: dict = {"hm_loss": "focal", "hw_loss": "wl1", "travel_time_loss": "sl1", "dist_loss": "sl1", "angle_loss": "sl1", "depth_loss": "bl1", "mag_loss": "bl1"},
                  weights=[1.45, 0.018, 0.055],
                  offset_weight=[1, 1], 
-                 reg_weight=[0.8,2,20,1.0, 0.8],
+                 reg_weight=[0.8,2,20,1.0, 0.5],
                  angle_coder="trigono",
                  depth_center=8.0,
                  mag_center=1.5,
@@ -773,7 +752,7 @@ class EventHead2(nn.Module):
                 kernel_size=kernel_size,
                 dilation=dilations[2],
                 padding=((kernel_size - 1) * dilations[2] + 1) // 2,
-                padding_mode="reflect",
+                #padding_mode="reflect",
                 bias=False,
             ),
             nn.BatchNorm1d(hidden_channels[2]),
@@ -782,10 +761,7 @@ class EventHead2(nn.Module):
             nn.Conv1d(
                 hidden_channels[2],
                 1,
-                kernel_size=kernel_size,
-                dilation=dilations[1],
-                padding=((kernel_size - 1) * dilations[1] + 1) // 2,
-                padding_mode="reflect",
+                kernel_size=1,
             )
         )
         self.heatmap[-1].bias.data.fill_(-2.19) # if use the initial value, the loss from 200 to 5 (v2)
@@ -798,7 +774,7 @@ class EventHead2(nn.Module):
                 kernel_size=kernel_size,
                 dilation=dilations[3],
                 padding=((kernel_size - 1) * dilations[3] + 1) // 2,
-                padding_mode="reflect",
+                #padding_mode="reflect",
                 bias=False,
             ),
             nn.BatchNorm1d(hidden_channels[2]),
@@ -807,10 +783,7 @@ class EventHead2(nn.Module):
             nn.Conv1d(
                 hidden_channels[2],
                 2,
-                kernel_size=kernel_size,
-                dilation=dilations[1],
-                padding=((kernel_size - 1) * dilations[1] + 1) // 2,
-                padding_mode="reflect",
+                kernel_size=1,
             )
         )
         
@@ -822,7 +795,7 @@ class EventHead2(nn.Module):
                 kernel_size=kernel_size,
                 dilation=dilations[2],
                 padding=((kernel_size - 1) * dilations[2] + 1) // 2,
-                padding_mode="reflect",
+                #padding_mode="reflect",
                 bias=False,
             ),
             nn.BatchNorm1d(hidden_channels[1]),
@@ -837,7 +810,7 @@ class EventHead2(nn.Module):
                 kernel_size=kernel_size,
                 dilation=dilations[2],
                 padding=((kernel_size - 1) * dilations[2] + 1) // 2,
-                padding_mode="reflect",
+                #padding_mode="reflect",
                 bias=False,
             ),
             nn.BatchNorm1d(hidden_channels[3]),
@@ -848,7 +821,7 @@ class EventHead2(nn.Module):
                 kernel_size=kernel_size,
                 dilation=dilations[1],
                 padding=((kernel_size - 1) * dilations[1] + 1) // 2,
-                padding_mode="reflect",
+                #padding_mode="reflect",
                 bias=False,
             ),
             nn.BatchNorm1d(hidden_channels[2]),
@@ -862,7 +835,7 @@ class EventHead2(nn.Module):
                 kernel_size=kernel_size,
                 dilation=dilations[2],
                 padding=((kernel_size - 1) * dilations[2] + 1) // 2,
-                padding_mode="reflect",
+                #padding_mode="reflect",
                 bias=False,
             ),
             nn.BatchNorm1d(hidden_channels[3]),
@@ -873,7 +846,7 @@ class EventHead2(nn.Module):
                 kernel_size=kernel_size,
                 dilation=dilations[1],
                 padding=((kernel_size - 1) * dilations[1] + 1) // 2,
-                padding_mode="reflect",
+                #padding_mode="reflect",
                 bias=False,
             ),
             nn.BatchNorm1d(hidden_channels[2]),
@@ -887,7 +860,7 @@ class EventHead2(nn.Module):
                 kernel_size=kernel_size,
                 dilation=dilations[2],
                 padding=((kernel_size - 1) * dilations[2] + 1) // 2,
-                padding_mode="reflect",
+                #padding_mode="reflect",
                 bias=False,
             ),
             nn.BatchNorm1d(hidden_channels[1]),
@@ -901,7 +874,7 @@ class EventHead2(nn.Module):
                 kernel_size=kernel_size,
                 dilation=dilations[1],
                 padding=((kernel_size - 1) * dilations[1] + 1) // 2,
-                padding_mode="reflect",
+                #padding_mode="reflect",
                 bias=False,
             ),
             nn.BatchNorm1d(hidden_channels[3]),
@@ -909,10 +882,7 @@ class EventHead2(nn.Module):
             nn.Conv1d(
                 hidden_channels[3],
                 1,
-                kernel_size=kernel_size,
-                dilation=dilations[0],
-                padding=((kernel_size - 1) * dilations[0] + 1) // 2,
-                padding_mode="reflect",
+                kernel_size=1,
             ),
             #nn.LeakyReLU(inplace=True), # the origin time and the distance should be positive
         )
@@ -923,7 +893,7 @@ class EventHead2(nn.Module):
                 kernel_size=kernel_size,
                 dilation=dilations[1],
                 padding=((kernel_size - 1) * dilations[1] + 1) // 2,
-                padding_mode="reflect",
+                #padding_mode="reflect",
                 bias=False,
             ),
             nn.BatchNorm1d(hidden_channels[3]),
@@ -931,10 +901,7 @@ class EventHead2(nn.Module):
             nn.Conv1d(
                 hidden_channels[3],
                 1,
-                kernel_size=kernel_size,
-                dilation=dilations[0],
-                padding=((kernel_size - 1) * dilations[0] + 1) // 2,
-                padding_mode="reflect",
+                kernel_size=1,
             ),
             #nn.LeakyReLU(inplace=True), # the origin time and the distance should be positive
         )
@@ -945,7 +912,7 @@ class EventHead2(nn.Module):
                 kernel_size=kernel_size,
                 dilation=dilations[3],
                 padding=((kernel_size - 1) * dilations[3] + 1) // 2,
-                padding_mode="reflect",
+                #padding_mode="reflect",
                 bias=False,
             ),
             nn.BatchNorm1d(hidden_channels[3]),
@@ -953,10 +920,7 @@ class EventHead2(nn.Module):
             nn.Conv1d(
                 hidden_channels[3],
                 self.angle_dims,
-                kernel_size=kernel_size,
-                dilation=dilations[1],
-                padding=((kernel_size - 1) * dilations[1] + 1) // 2,
-                padding_mode="reflect",
+                kernel_size=1,
             ),
             Sine(),
         )
@@ -971,7 +935,7 @@ class EventHead2(nn.Module):
                 kernel_size=kernel_size,
                 dilation=dilations[3],
                 padding=((kernel_size - 1) * dilations[3] + 1) // 2,
-                padding_mode="reflect",
+                #padding_mode="reflect",
                 bias=False,
             ),
             nn.BatchNorm1d(hidden_channels[3]),
@@ -979,10 +943,7 @@ class EventHead2(nn.Module):
             nn.Conv1d(
                 hidden_channels[3],
                 1,
-                kernel_size=kernel_size,
-                dilation=dilations[1],
-                padding=((kernel_size - 1) * dilations[1] + 1) // 2,
-                padding_mode="reflect",
+                kernel_size=1,
             ),
         )
         
@@ -993,7 +954,7 @@ class EventHead2(nn.Module):
                 kernel_size=kernel_size,
                 dilation=dilations[3],
                 padding=((kernel_size - 1) * dilations[3] + 1) // 2,
-                padding_mode="reflect",
+                #padding_mode="reflect",
                 bias=False,
             ),
             nn.BatchNorm1d(hidden_channels[2]),
@@ -1008,7 +969,7 @@ class EventHead2(nn.Module):
                 kernel_size=kernel_size,
                 dilation=dilations[2],
                 padding=((kernel_size - 1) * dilations[2] + 1) // 2,
-                padding_mode="reflect",
+                #padding_mode="reflect",
                 bias=False,
             ),
             nn.BatchNorm1d(hidden_channels[4]),
@@ -1016,10 +977,7 @@ class EventHead2(nn.Module):
             nn.Conv1d(
                 hidden_channels[4],
                 1,
-                kernel_size=kernel_size,
-                dilation=dilations[1],
-                padding=((kernel_size - 1) * dilations[1] + 1) // 2,
-                padding_mode="reflect",
+                kernel_size=1,
             )
         )
 
@@ -1150,8 +1108,8 @@ class EventHead2(nn.Module):
                                         #torch.cat([torch.sin(event_location[:, 2:3, :, :]), torch.cos(event_location[:, 2:3, :, :]),], dim=1),
                                         self.angle_coder.encode(event_location[:, 2:3, :, :]),
                                         event_location_mask)
-        depth_loss = self.depth_loss(outputs["hypocenter"][:, (2+self.angle_dims):(2+self.angle_dims+1), :, :], event_location[:, 3:4, :, :], event_location_mask, scale=10.80, shape=0.47, loc=-3.90, base=0.5, weight=1.3)
-        mag_loss = self.mag_loss(outputs["hypocenter"][:, (2+self.angle_dims+1):(2+self.angle_dims+2), :, :], event_location[:, 4:5, :, :], event_location_mask, scale=2.29, shape=0.30, loc=-1.32, base=0.3, weight=2.3)
+        depth_loss = self.depth_loss(outputs["hypocenter"][:, (2+self.angle_dims):(2+self.angle_dims+1), :, :], event_location[:, 3:4, :, :], event_location_mask, scale=10.80, shape=0.47, loc=-3.98, base=0.2, weight=1.4) #TODO: large scale
+        mag_loss = self.mag_loss(outputs["hypocenter"][:, (2+self.angle_dims+1):(2+self.angle_dims+2), :, :], event_location[:, 4:5, :, :], event_location_mask, scale=2.4, shape=0.29, loc=-0.68, base=0.2, weight=2.0)
         
         loss = hm_loss * self.weights[0] + hw_loss * self.weights[1] \
             + travel_time_loss * self.weights[2] \
@@ -1162,6 +1120,311 @@ class EventHead2(nn.Module):
         # print(f"loss {loss}, hm_loss {hm_loss}, hw_loss {hw_loss}, reg_loss {reg_loss}", force=True)
         # return {"loss": loss, "loss_event": hm_loss, "loss_offset": hw_loss, "loss_hypocenter": reg_loss}
         return {"loss": loss, "loss_event": hm_loss, "loss_offset": hw_loss, "loss_origin_time": travel_time_loss, "loss_x": dist_loss, "loss_y": angle_loss, "loss_depth": depth_loss, "loss_magnitude": mag_loss}
+
+
+class EventHead3(nn.Module):
+    def __init__(self, 
+                 channels=512,
+                 hidden_channels=[256, 128, 64, 32, 16],
+                 dilations=[1, 4, 8, 16],
+                 kernel_size=7,
+                 loss_dict: dict = {"hm_loss": "focal", "hw_loss": "wl1", "travel_time_loss": "sl1", "dist_loss": "sl1", "angle_loss": "sl1", "depth_loss": "bl1"},
+                 weights=[1.45, 0.018, 0.055],
+                 offset_weight=[1, 1], 
+                 reg_weight=[0.8,2,20,1.0],
+                 angle_coder="trigono",
+                 depth_center=8.0,
+                 act_layer='gelu'
+                 ):
+        super().__init__()
+        
+        self.channels = channels
+        reg_weight = [reg_w * weights[-1] for reg_w in reg_weight]
+        weights = weights[:-1]+reg_weight
+        self.weights = weights
+        self.offset_weight = offset_weight
+        self.reg_weight = reg_weight
+        self.depth_center = depth_center
+        
+        if angle_coder == "csl":
+            self.omega = 5
+            self.angle_dims = 360 // self.omega
+            self.angle_coder = CSLCoder(self.omega)
+        elif angle_coder == "trigono":
+            self.angle_dims = 2
+            self.angle_coder = TrigonoCoder()
+        
+        #TODO: subhead layers? dilation?
+        self.heatmap = nn.Sequential(
+            nn.Conv1d(
+                self.channels,
+                hidden_channels[2],
+                kernel_size=kernel_size,
+                dilation=dilations[2],
+                padding=((kernel_size - 1) * dilations[2] + 1) // 2,
+                #padding_mode="reflect",
+                bias=False,
+            ),
+            nn.BatchNorm1d(hidden_channels[2]),
+            nn.ReLU(inplace=True),
+            Sample(scale_factor=0.5, mode='linear', align_corners=False),
+            nn.Conv1d(
+                hidden_channels[2],
+                1,
+                kernel_size=kernel_size,
+                dilation=dilations[1],
+                padding=((kernel_size - 1) * dilations[1] + 1) // 2,
+                #padding_mode="reflect",
+            )
+        )
+        self.heatmap[-1].bias.data.fill_(-2.19) # if use the initial value, the loss from 200 to 5 (v2)
+        
+        
+        self.offset = nn.Sequential(
+            nn.Conv1d(
+                self.channels,
+                hidden_channels[2],
+                kernel_size=kernel_size,
+                dilation=dilations[3],
+                padding=((kernel_size - 1) * dilations[3] + 1) // 2,
+                #padding_mode="reflect",
+                bias=False,
+            ),
+            nn.BatchNorm1d(hidden_channels[2]),
+            nn.GELU(),
+            Sample(scale_factor=0.5, mode='linear', align_corners=False),
+            nn.Conv1d(
+                hidden_channels[2],
+                2,
+                kernel_size=kernel_size,
+                dilation=dilations[1],
+                padding=((kernel_size - 1) * dilations[1] + 1) // 2,
+                #padding_mode="reflect",
+            )
+        )
+        
+        self.hypocenter = nn.Sequential(
+            nn.Conv1d(
+                self.channels,
+                hidden_channels[1],
+                kernel_size=kernel_size,
+                dilation=dilations[2],
+                padding=((kernel_size - 1) * dilations[2] + 1) // 2,
+                #padding_mode="reflect",
+                bias=False,
+            ),
+            nn.BatchNorm1d(hidden_channels[1]),
+            nn.GELU(),
+            Sample(scale_factor=0.5, mode='linear', align_corners=False),
+            nn.Conv1d(
+                hidden_channels[1],
+                hidden_channels[2],
+                kernel_size=kernel_size,
+                dilation=dilations[2],
+                padding=((kernel_size - 1) * dilations[2] + 1) // 2,
+                #padding_mode="reflect",
+                bias=False,
+            ),
+            nn.BatchNorm1d(hidden_channels[2]),
+            nn.GELU(),
+        )
+        
+        self.travel_time = nn.Sequential(
+            nn.Conv1d(
+                hidden_channels[2],
+                hidden_channels[3],
+                kernel_size=kernel_size,
+                dilation=dilations[1],
+                padding=((kernel_size - 1) * dilations[1] + 1) // 2,
+                #padding_mode="reflect",
+                bias=False,
+            ),
+            nn.BatchNorm1d(hidden_channels[3]),
+            nn.GELU(),
+            nn.Conv1d(
+                hidden_channels[3],
+                1,
+                kernel_size=kernel_size,
+                dilation=dilations[0],
+                padding=((kernel_size - 1) * dilations[0] + 1) // 2,
+                #padding_mode="reflect",
+            ),
+            #nn.LeakyReLU(inplace=True), # the origin time and the distance should be positive
+        )
+        self.distance = nn.Sequential(
+            nn.Conv1d(
+                hidden_channels[2],
+                hidden_channels[3],
+                kernel_size=kernel_size,
+                dilation=dilations[1],
+                padding=((kernel_size - 1) * dilations[1] + 1) // 2,
+                #padding_mode="reflect",
+                bias=False,
+            ),
+            nn.BatchNorm1d(hidden_channels[3]),
+            nn.GELU(),
+            nn.Conv1d(
+                hidden_channels[3],
+                1,
+                kernel_size=kernel_size,
+                dilation=dilations[0],
+                padding=((kernel_size - 1) * dilations[0] + 1) // 2,
+                #padding_mode="reflect",
+            ),
+            #nn.LeakyReLU(inplace=True), # the origin time and the distance should be positive
+        )
+        self.azimuth = nn.Sequential(
+            nn.Conv1d(
+                hidden_channels[2],
+                hidden_channels[3],
+                kernel_size=kernel_size,
+                dilation=dilations[3],
+                padding=((kernel_size - 1) * dilations[3] + 1) // 2,
+                #padding_mode="reflect",
+                bias=False,
+            ),
+            nn.BatchNorm1d(hidden_channels[3]),
+            nn.GELU(),
+            nn.Conv1d(
+                hidden_channels[3],
+                self.angle_dims,
+                kernel_size=kernel_size,
+                dilation=dilations[1],
+                padding=((kernel_size - 1) * dilations[1] + 1) // 2,
+                #padding_mode="reflect",
+            ),
+            Sine(),
+        )
+        # first channel is sin, second channel is cos
+        # so the initial bias should be 0 and pi/2
+        #self.angle[-2].bias.data[::2].fill_(0)
+        #self.angle[-2].bias.data[1::2].fill_(1.5708)
+        self.depth = nn.Sequential(
+            nn.Conv1d(
+                hidden_channels[2],
+                hidden_channels[3],
+                kernel_size=kernel_size,
+                dilation=dilations[3],
+                padding=((kernel_size - 1) * dilations[3] + 1) // 2,
+                #padding_mode="reflect",
+                bias=False,
+            ),
+            nn.BatchNorm1d(hidden_channels[3]),
+            nn.GELU(),
+            nn.Conv1d(
+                hidden_channels[3],
+                1,
+                kernel_size=kernel_size,
+                dilation=dilations[1],
+                padding=((kernel_size - 1) * dilations[1] + 1) // 2,
+                #padding_mode="reflect",
+            ),
+        )
+
+
+        loss_factory = {"mse": F.mse_loss, "focal": focal_loss, "sfocal": smooth_focal_loss, \
+            "l1": l1_reg_loss, "sl1": smoothl1_reg_loss, "wl1": weighted_l1_reg_loss, \
+            "vl1": vector_l1_reg_loss, "ml1": modulus_l1_reg_loss, \
+            "bl1": balanced_l1_reg_loss, "cross_entropy": cross_entropy_loss}
+        self.weights = weights
+        self.hm_loss = loss_factory[loss_dict["hm_loss"]]
+        self.hw_loss = loss_factory[loss_dict["hw_loss"]]
+        self.travel_time_loss = loss_factory[loss_dict["travel_time_loss"]]
+        self.dist_loss = loss_factory[loss_dict["dist_loss"]]
+        self.angle_loss = loss_factory[loss_dict["angle_loss"]]
+        self.depth_loss = loss_factory[loss_dict["depth_loss"]]
+        
+    def forward(self, features, event_center, event_location, event_location_mask):
+        """
+        Forward pass of the EventHead module.
+
+        Args:
+            features (dict): Dictionary of input features.
+            amplitude (torch.Tensor): Tensor of amplitude values.
+            event_center (torch.Tensor): Tensor of event center labels.
+            event_location (torch.Tensor): Tensor of event location labels.
+            event_location_mask (torch.Tensor): Tensor of event location masks.
+
+        Returns:
+            tuple: Tuple containing the predicted outputs and the loss values (if in training mode).
+        """
+        x = features['fusion']
+        bt, st, ch, nt = x.shape
+        x = x.view(bt*st, ch, nt)
+        # downsample feature 2x
+        x = F.interpolate(x, scale_factor=0.5, mode='linear', align_corners=False)
+        
+        # offset
+        offset = self.offset(x)
+        offset = offset.view(bt, st, offset.shape[1], offset.shape[2])
+        offset = offset.permute(0, 2, 3, 1) # bt, ch, nt, sta
+        
+        # heatmap
+        heatmap = self.heatmap(x)
+        heatmap = heatmap.view(bt, st, heatmap.shape[2])  # chn = 1
+        heatmap = heatmap.permute(0, 2, 1)
+        
+        # hypocenter
+        hypocenter = self.hypocenter(x)
+        travel_time = self.travel_time(hypocenter)
+        distance = self.distance(hypocenter)
+        azimuth = self.azimuth(hypocenter)
+        depth = self.depth(hypocenter)
+        
+        #print(f"amplitude scale: avg {amplitude.mean()}, abs avg {torch.abs(amplitude).mean()}, std {amplitude.std()}", force=True)
+        #print(f"amplitude scale: min {amplitude.min()}, max {amplitude.max()}", force=True)
+        #print(f"feature scale: avg {x.mean()}, abs avg {torch.abs(x).mean()}, std {x.std()}", force=True)
+        #print(f"feature scale: min {x.min()}, max {x.max()}", force=True)
+        
+        hypocenter = torch.cat([travel_time, distance, azimuth, depth], dim=1)
+        hypocenter = hypocenter.view(bt, st, hypocenter.shape[1], hypocenter.shape[2])
+        hypocenter = hypocenter.permute(0, 2, 3, 1)
+        
+        if self.training:
+            return None, self.losses({"event": heatmap, "offset": offset, "hypocenter": hypocenter}, event_center, event_location, event_location_mask)
+        else:
+            loss = {}
+            if event_center is not None:
+                loss = self.losses({"event": heatmap, "offset": offset, "hypocenter": hypocenter}, event_center, event_location, event_location_mask)
+            hypocenter = torch.cat([hypocenter[:, :2, :, :], self.angle_coder.decode(hypocenter[:, 2:(2+self.angle_dims), :, :]),
+                                    hypocenter[:, (2+self.angle_dims):, :, :]], dim=1)
+            return {"event": heatmap, "offset": offset, "hypocenter": hypocenter}, loss
+    
+    def losses(self, outputs, event_center, event_location, event_location_mask):
+        """
+        Compute the loss values for the predicted outputs.
+
+        Args:
+            outputs (dict): Dictionary of predicted outputs.
+            event_center (torch.Tensor): Tensor of event center labels.
+            event_location (torch.Tensor): Tensor of event location labels.
+            event_location_mask (torch.Tensor): Tensor of event location masks.
+
+        Returns:
+            dict: Dictionary containing the loss values.
+        """
+        #hm_loss = cross_entropy_loss(outputs["event"], event_center)
+        #hm_loss = self.hm_loss(outputs["event"], event_center)
+        station_mask = (event_location_mask.sum(axis=1) > 0).float().unsqueeze(1)
+        hm_loss = self.hm_loss(outputs["event"], event_center, station_mask)
+        hw_loss = self.hw_loss(outputs["offset"], event_location[:, 5:, :, :], event_location_mask, weights=self.offset_weight)
+        
+        travel_time_loss = self.travel_time_loss(outputs["hypocenter"][:, :1, :, :], event_location[:, :1, :, :], event_location_mask)
+        dist_loss = self.dist_loss(outputs["hypocenter"][:, 1:2, :, :], event_location[:, 1:2, :, :], event_location_mask)
+        angle_loss = self.angle_loss(outputs["hypocenter"][:, 2:(2+self.angle_dims), :, :],# torch.cat([torch.sin(outputs["hypocenter"][:, 2:3, :, :]), torch.cos(outputs["hypocenter"][:, 2:3, :, :]),], dim=1),
+                                        #torch.cat([torch.sin(event_location[:, 2:3, :, :]), torch.cos(event_location[:, 2:3, :, :]),], dim=1),
+                                        self.angle_coder.encode(event_location[:, 2:3, :, :]),
+                                        event_location_mask)
+        depth_loss = self.depth_loss(outputs["hypocenter"][:, (2+self.angle_dims):(2+self.angle_dims+1), :, :], event_location[:, 3:4, :, :], event_location_mask, scale=10.80, shape=0.47, loc=-3.90, base=0.5, weight=1.3)
+        
+        loss = hm_loss * self.weights[0] + hw_loss * self.weights[1] \
+            + travel_time_loss * self.weights[2] \
+            + dist_loss * self.weights[3] \
+            + angle_loss * self.weights[4] \
+            + depth_loss * self.weights[5]
+        # print(f"loss {loss}, hm_loss {hm_loss}, hw_loss {hw_loss}, reg_loss {reg_loss}", force=True)
+        # return {"loss": loss, "loss_event": hm_loss, "loss_offset": hw_loss, "loss_hypocenter": reg_loss}
+        return {"loss": loss, "loss_event": hm_loss, "loss_offset": hw_loss, "loss_origin_time": travel_time_loss, "loss_x": dist_loss, "loss_y": angle_loss, "loss_depth": depth_loss}
 
     
 class PhaseHead(nn.Module):
@@ -1184,7 +1447,7 @@ class PhaseHead(nn.Module):
                 kernel_size=kernel_size,
                 dilation=dilations[1],
                 padding=((kernel_size - 1) * dilations[1] + 1) // 2,
-                padding_mode="reflect",
+                #padding_mode="reflect",
                 bias=False,
             ),
             nn.BatchNorm1d(hidden_channels[1]),
@@ -1198,7 +1461,7 @@ class PhaseHead(nn.Module):
                 kernel_size=kernel_size,
                 dilation=dilations[2],
                 padding=((kernel_size - 1) * dilations[2] + 1) // 2,
-                padding_mode="reflect",
+                #padding_mode="reflect",
                 bias=False,
             ),
             nn.BatchNorm1d(hidden_channels[3]),
@@ -1208,10 +1471,7 @@ class PhaseHead(nn.Module):
         self.conv_out = nn.Conv1d(
             hidden_channels[3],
             3,
-            kernel_size=kernel_size,
-            dilation=dilations[3],
-            padding=((kernel_size - 1) * dilations[3] + 1) // 2,
-            padding_mode="reflect",
+            kernel_size=1,
         )
         
     def forward(self, features, targets=None, num_stations=None):
@@ -1234,9 +1494,9 @@ class PhaseHead(nn.Module):
         if self.training:
             return None, self.losses(x, targets, num_stations)
         elif targets is not None:
-            return x, self.losses(x, targets, num_stations)
+            return {"phase": x}, self.losses(x, targets, num_stations)
         else:
-            return x, {}
+            return {"phase": x}, {}
 
     def losses(self, inputs, targets, num_stations):
         inputs = inputs.float()  # https://github.com/pytorch/pytorch/issues/48163
@@ -1244,7 +1504,7 @@ class PhaseHead(nn.Module):
         #mask = num_stations.unsqueeze(1).unsqueeze(1)
         loss = torch.sum(-targets * F.log_softmax(inputs, dim=1) * num_stations.unsqueeze(1).unsqueeze(1))/(num*targets.shape[2])
 
-        return loss
+        return {"loss_phase": loss}
 
 
 class PhaseHead2(nn.Module):
@@ -1253,7 +1513,7 @@ class PhaseHead2(nn.Module):
                  hidden_channels=[256, 128, 64, 32, 16],
                  dilations=[1, 8, 16, 32],
                  kernel_size=7,
-                 weights=[0.8,],
+                 weights=[0.6,],
                  ):
         super().__init__()
         
@@ -1267,7 +1527,7 @@ class PhaseHead2(nn.Module):
                 kernel_size=kernel_size,
                 dilation=dilations[1],
                 padding=((kernel_size - 1) * dilations[1] + 1) // 2,
-                padding_mode="reflect",
+                #padding_mode="reflect",
                 bias=False,
             ),
             nn.BatchNorm1d(hidden_channels[2]),
@@ -1281,7 +1541,7 @@ class PhaseHead2(nn.Module):
                 kernel_size=kernel_size,
                 dilation=dilations[2],
                 padding=((kernel_size - 1) * dilations[2] + 1) // 2,
-                padding_mode="reflect",
+                #padding_mode="reflect",
                 bias=False,
             ),
             nn.BatchNorm1d(hidden_channels[3]),
@@ -1295,7 +1555,7 @@ class PhaseHead2(nn.Module):
                 kernel_size=kernel_size,
                 dilation=dilations[2],
                 padding=((kernel_size - 1) * dilations[2] + 1) // 2,
-                padding_mode="reflect",
+                #padding_mode="reflect",
                 bias=False,
             ),
             nn.BatchNorm1d(hidden_channels[4]),
@@ -1305,10 +1565,7 @@ class PhaseHead2(nn.Module):
         self.conv_out = nn.Conv1d(
             hidden_channels[4],
             3,
-            kernel_size=kernel_size,
-            dilation=dilations[3],
-            padding=((kernel_size - 1) * dilations[3] + 1) // 2,
-            padding_mode="reflect",
+            kernel_size=1,
         )
         
     def forward(self, features, targets=None, num_stations=None):
@@ -1331,15 +1588,140 @@ class PhaseHead2(nn.Module):
         if self.training:
             return None, self.losses(x, targets, num_stations)
         elif targets is not None:
-            return x, self.losses(x, targets, num_stations)
+            return {"phase": x}, self.losses(x, targets, num_stations)
         else:
-            return x, {}
+            return {"phase": x}, {}
 
     def losses(self, inputs, targets, num_stations):
         inputs = inputs.float()  # https://github.com/pytorch/pytorch/issues/48163
         num=num_stations.sum()
-        ps_weights = torch.tensor([1.0, 1.0, 1.1], device=inputs.device)[None, :, None, None].detach()
+        #ps_weights = torch.tensor([1.0, 1.0, 1.1], device=inputs.device)[None, :, None, None].detach()
         #mask = num_stations.unsqueeze(1).unsqueeze(1)
-        loss = torch.sum(-targets * F.log_softmax(inputs, dim=1) * num_stations.unsqueeze(1).unsqueeze(1)*ps_weights)/(num*targets.shape[2])
+        #loss = torch.sum(-targets * F.log_softmax(inputs, dim=1) * num_stations.unsqueeze(1).unsqueeze(1)*ps_weights)/(num*targets.shape[2])
+        loss = torch.sum(-targets * F.log_softmax(inputs, dim=1) * num_stations.unsqueeze(1).unsqueeze(1))/(num*targets.shape[2])
 
-        return loss
+        return {"loss_phase": loss}
+
+
+class PolarityHead(nn.Module):
+    def __init__(self, 
+                 channels=512,
+                 hidden_channels=[256, 128, 64, 32],
+                 dilations=[1, 8, 16, 32],
+                 kernel_size=7,
+                 weights=[0.2],
+                 stem_channels=64,
+                 ordinal_regression=True,
+                 num_class=3, 
+                 train_cutpoints=False, 
+                 scale=20.0, 
+                 logit_scale=2.0
+                ):
+        super().__init__()
+        
+        self.channels = channels
+        self.weights = weights
+        
+        self.polarity_1 = nn.Sequential(
+            nn.Conv1d(
+                self.channels,
+                hidden_channels[2],
+                kernel_size=kernel_size,
+                dilation=dilations[1],
+                padding=((kernel_size - 1) * dilations[1] + 1) // 2,
+                #padding_mode="reflect",
+                bias=False,
+            ),
+            nn.BatchNorm1d(hidden_channels[2]),
+            nn.ReLU(inplace=True),
+        )
+        
+        self.polarity_2 = nn.Sequential(
+            nn.Conv1d(
+                hidden_channels[2]+stem_channels,
+                hidden_channels[3],
+                kernel_size=kernel_size,
+                dilation=dilations[1],
+                padding=((kernel_size - 1) * dilations[1] + 1) // 2,
+                #padding_mode="reflect",
+                bias=False,
+            ),
+            nn.BatchNorm1d(hidden_channels[3]),
+            nn.ReLU(inplace=True),
+        )
+        
+        self.polarity_out = nn.Conv1d(
+            hidden_channels[3],
+            1 if ordinal_regression else num_class,
+            kernel_size=1,
+        )
+        if ordinal_regression:
+            self.num_classes = num_class
+            num_cutpoints = self.num_classes - 1
+            self.cutpoints = torch.arange(num_cutpoints).float()*scale/(num_class-2) - scale / 2
+            if train_cutpoints:
+                self.cutpoints = nn.Parameter(self.cutpoints[None, :, None, None])
+            else:
+                self.cutpoints = self.cutpoints[None, :, None, None].detach()
+            self.logit_scale = logit_scale
+            self.losses = self.losses_ordinal
+        else:
+            self.logit_scale = 1.0
+            self.losses = self.losses_softmax
+        
+    def forward(self, features, polarity_stem, polarity_pick=None, polarity_mask=None):
+        """input shape [batch, in_channels, time_steps]
+        output shape [batch, time_steps]"""
+        x = features["fusion"]
+        bt, st, ch, nt = x.shape  # batch, station, channel, time
+        x = x.view(bt * st, ch, nt)
+        
+        x = self.polarity_1(x)
+        x = F.interpolate(torch.cat([x, polarity_stem.permute(0, 3, 1, 2).contiguous().view(bt*st, -1, nt)], dim=1), 
+                          scale_factor=2, mode="linear", align_corners=False)
+        x = self.polarity_2(x)
+        x = F.interpolate(x, scale_factor=2, mode="linear", align_corners=False)
+        x = self.polarity_out(x)
+        x = x.view(bt, st, x.shape[1], x.shape[2])
+        x = x.permute(0, 2, 3, 1) * self.logit_scale
+
+        if self.training:
+            return None, self.losses(x, polarity_pick, polarity_mask)
+        elif polarity_pick is not None:
+            return {"polarity": x}, self.losses(x, polarity_pick, polarity_mask)
+        else:
+            return {"polarity": x}, {}
+
+    def losses_ordinal(self, inputs, polarity_pick, mask):
+        inputs = inputs.float()  # https://github.com/pytorch/pytorch/issues/48163
+        polarity_pick = polarity_pick[:, [2,0,1]].float().contiguous() # NUD -> DNU
+        sigmoids = torch.sigmoid(self.cutpoints.to(inputs.device) - inputs)
+        link_mat = sigmoids[:, 1:] - sigmoids[:, :-1]
+        link_mat = torch.cat((
+                sigmoids[:, [0]],
+                link_mat,
+                (1 - sigmoids[:, [-1]])
+            ),
+            dim=1
+        )
+        eps = 1e-15
+        likelihoods = torch.clamp(link_mat, eps, 1 - eps)
+        
+        if mask is None:
+            mask = torch.ones_like(sigmoids).float()
+        else:
+            mask = mask.unsqueeze(1).float()
+        num = mask.sum() + 1e-5
+
+        loss = -torch.sum(polarity_pick * torch.log(likelihoods)*mask) / num
+            
+        return {"loss_polarity": loss}
+    
+    def losses_softmax(self, inputs, polarity_pick, mask):
+        inputs = inputs.float()  # https://github.com/pytorch/pytorch/issues/48163
+        polarity_pick = polarity_pick.float()
+        mask = mask.unsqueeze(1).float()
+        num = mask.sum() + 1e-5
+        loss = torch.sum(-polarity_pick * F.log_softmax(inputs, dim=1) * mask)/num
+    
+        return {"loss_polarity": loss}
