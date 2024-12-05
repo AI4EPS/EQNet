@@ -14,7 +14,7 @@ import json
 import logging
 import torch
 from torch.utils.data import Dataset, IterableDataset
-from collections import defaultdict
+from collections import defaultdict, Counter
 from datetime import timedelta, datetime
 from scipy.sparse.csgraph import minimum_spanning_tree
 from scipy.sparse.csgraph import breadth_first_order
@@ -33,6 +33,8 @@ def mapping_phase_type(phase):
         return phase
 
 def generate_label(phase_list, label_width=[150, 150], nt=8192):
+    if len(label_width) == 1:
+        label_width = label_width * len(phase_list)
     target = np.zeros([len(phase_list) + 1, nt], dtype=np.float32)
 
     for i, (picks, w) in enumerate(zip(phase_list, label_width)):
@@ -46,39 +48,70 @@ def generate_label(phase_list, label_width=[150, 150], nt=8192):
 
     return target
 
+def generate_phase_label(
+    phase_list,  # [[P1, P2, ...], [S1, S2, ...]]
+    label_width=[150],
+    nt=8192,
+    mask_width=None,
+):
+    target = np.zeros([len(phase_list) + 1, nt], dtype=np.float32)
+    mask = np.zeros([nt], dtype=np.float32)
+
+    if len(label_width) == 1:
+        label_width = label_width * len(phase_list)
+    if mask_width is None:
+        mask_width = [int(x * 1.5) for x in label_width]
+    else:
+        # mask_width = [min(int(x * 1.5), mask_width) for x in label_width]
+        mask_width = [mask_width] * len(label_width)
+
+    for i, (picks, w, m) in enumerate(zip(phase_list, label_width, mask_width)):
+        for phase_time in picks:
+            t = np.arange(nt) - phase_time
+            gaussian = np.exp(-(t**2) / (2 * (w / 6) ** 2))
+            gaussian[gaussian < 0.05] = 0.0
+            target[i + 1, :] += gaussian
+            mask[int(phase_time) - m : int(phase_time) + m] = 1.0
+
+    target[0:1, :] = np.maximum(0, 1 - np.sum(target[1:, :], axis=0, keepdims=True))
+
+    return target, mask
+
 def generate_event_label(
     reference_center,
-    event_param,
+    #event_param,
     label_width=[100],
     nt=8192,
     mask_width=None,
 ):
     target_center = np.zeros(nt, dtype=np.float32)
-    target_param = np.zeros([len(event_param[0]), nt], dtype=np.float32)
-    mask = np.zeros(nt, dtype=np.float32)
+    #target_param = np.zeros([len(event_param[0]), nt], dtype=np.float32)
+    mask = np.zeros(nt, dtype=bool)
 
     if len(label_width) == 1:
         label_width = label_width * len(reference_center)
     if mask_width is None:
-        mask_width = [int(x * 1.5) for x in label_width]
+        mask_width = [int(x * 1.2)//2 for x in label_width] # or 1.5?
     else:
-        mask_width = [min(int(x * 1.5), label_width) for x in label_width]
+        mask_width = [min(int(x * 1.2), label_width)//2 for x in label_width]
 
-    for i, (c0, t0, w, m) in enumerate(zip(reference_center, event_param, label_width, mask_width)):
+    #for i, (c0, t0, w, m) in enumerate(zip(reference_center, event_param, label_width, mask_width)):
+    for i, (c0, w, m) in enumerate(zip(reference_center, label_width, mask_width)):
         t = np.arange(nt) - c0
         gaussian = np.exp(-(t**2) / (2 * (w / 6) ** 2))
         gaussian[gaussian < 0.05] = 0.0
         target_center += gaussian
-        mask[max(0, int(c0) - m) : min(nt, int(c0) + m)] = 1.0
-        t = np.arange(nt) - t0
-        target_param[max(0, int(c0) - m) : min(nt, int(c0) + m)] = t[max(0, int(c0) - m) : min(nt, int(c0) + m)]
+        mask[max(0, int(c0) - m) : min(nt, int(c0) + m)] = True
+        #t = np.arange(nt) - t0
+        #target_param[max(0, int(c0) - m) : min(nt, int(c0) + m)] = t[max(0, int(c0) - m) : min(nt, int(c0) + m)]
 
-    return target_center, target_param, mask
+    #return target_center, target_param, mask
+    return target_center, mask
 
-def cut_data(meta, nt=8192, nt0=2560, feature_scale=16, if_reverse_roll=False):
+def cut_data(meta, nt=8192, nt0=2560, feature_scale=16, base_phase_points=80, if_reverse_roll=False):
 
     tries = 0
-    max_tries = 100
+    max_tries = 10
     phase_mask = meta["phase_pick"].copy().sum(axis=0)
     event_mask = meta["event_location_mask"].copy().sum(axis=0)
     p_start = np.nonzero(phase_mask[1, :])[0].min() // feature_scale
@@ -88,24 +121,29 @@ def cut_data(meta, nt=8192, nt0=2560, feature_scale=16, if_reverse_roll=False):
     else:
         s_end = np.nonzero(phase_mask[2, :])[0].max() // feature_scale
         event_end = np.nonzero(event_mask[:])[0].max()
-        rand_lower = -max(100, nt//feature_scale-10-max(s_end, event_end))
+        rand_lower = -max(nt0//feature_scale, nt//feature_scale-10-max(s_end, event_end))
     rand_upper = max(1, min(nt0//feature_scale, min(p_start, event_start)-5))
     raw_rand_upper = max(1, nt0//feature_scale)
-    it = np.random.randint(rand_lower, raw_rand_upper)
     
-    p_points = np.nonzero(phase_mask[1, :nt])[0].shape[0]
-    s_points = np.nonzero(phase_mask[2, :nt])[0].shape[0]
-    event_points = np.nonzero(event_mask[:nt//feature_scale])[0].shape[0]
-    tmp_phase = np.roll(phase_mask, -it*feature_scale, axis=-1)
-    tmp_event = np.roll(event_mask, -it, axis=-1)
-    tmp_p_points = np.nonzero(tmp_phase[1, :nt])[0].shape[0]
-    tmp_s_points = np.nonzero(tmp_phase[2, :nt])[0].shape[0]
-    tmp_event_points = np.nonzero(tmp_event[:nt//feature_scale])[0].shape[0]
+    for _ in range(max_tries):
+        it = np.random.randint(rand_lower, raw_rand_upper)
     
-    if not all([tmp_p_points>=5, tmp_s_points>=5, tmp_event_points>=5]):
+        p_points = np.nonzero(phase_mask[1, :nt])[0].shape[0]
+        s_points = np.nonzero(phase_mask[2, :nt])[0].shape[0]
+        event_points = np.nonzero(event_mask[:nt//feature_scale])[0].shape[0]
+        tmp_phase = np.roll(phase_mask, -it*feature_scale, axis=-1)
+        tmp_event = np.roll(event_mask, -it, axis=-1)
+        tmp_p_points = np.nonzero(tmp_phase[1, :nt])[0].shape[0]
+        tmp_s_points = np.nonzero(tmp_phase[2, :nt])[0].shape[0]
+        tmp_event_points = np.nonzero(tmp_event[:nt//feature_scale])[0].shape[0]
+        if all([tmp_p_points>=base_phase_points, tmp_s_points>=base_phase_points, tmp_event_points>=base_phase_points//feature_scale]):
+            break
+    
+    if not all([tmp_p_points>=base_phase_points, tmp_s_points>=base_phase_points, tmp_event_points>=base_phase_points//feature_scale]):
+        rand_lower = 0 if not if_reverse_roll else rand_lower // 2
         print(f"using smaller rand_upper={rand_upper}")
     
-        while any([tmp_p_points < p_points, tmp_s_points < s_points, tmp_event_points < event_points]):
+        while any([tmp_p_points < p_points//2, tmp_s_points < s_points//2, tmp_event_points < event_points//2]):
             it = np.random.randint(rand_lower, rand_upper)
             tmp_phase = np.roll(phase_mask, -it*feature_scale, axis=-1)
             tmp_event = np.roll(event_mask, -it, axis=-1)
@@ -121,6 +159,9 @@ def cut_data(meta, nt=8192, nt0=2560, feature_scale=16, if_reverse_roll=False):
     waveforms = np.roll(meta["waveforms"], -it*feature_scale, axis=-1)[:, :, :nt]
     amplitude = np.roll(meta["amplitude"], -it*feature_scale, axis=-1)[:, :, :nt]
     phase_pick = np.roll(meta["phase_pick"], -it*feature_scale, axis=-1)[:, :, :nt]
+    phase_mask_ = np.roll(meta["phase_mask"], -it*feature_scale, axis=-1)[:, :nt]
+    polarity = np.roll(meta["polarity"], -it*feature_scale, axis=-1)[:, :, :nt]
+    polarity_mask = np.roll(meta["polarity_mask"], -it*feature_scale, axis=-1)[:, :nt]
     event_center = np.roll(meta["event_center"], -it, axis=-1)[:, :nt//feature_scale]
     event_location = np.roll(meta["event_location"], -it, axis=-1)[:, :, :nt//feature_scale]
     event_location_mask = np.roll(meta["event_location_mask"], -it, axis=-1)[:, :nt//feature_scale]
@@ -129,6 +170,9 @@ def cut_data(meta, nt=8192, nt0=2560, feature_scale=16, if_reverse_roll=False):
         "waveforms": waveforms,
         "amplitude": amplitude,
         "phase_pick": phase_pick,
+        "phase_mask": phase_mask_,
+        "polarity": polarity,
+        "polarity_mask": polarity_mask,
         "event_center": event_center,
         "event_location": event_location,
         "event_location_mask": event_location_mask,
@@ -160,38 +204,95 @@ def sample_by_distance(distances, num_stations, num_manual_stations, critical_di
         
         return np.concatenate([np.arange(num_manual_stations), idxs_auto])
 
-def sample_event_for_stacking(event_id0, e2sta_dict, sta2e_dict, events_dict, min_shared_sta=2, magnitude_range=1.0, snr_bar=3.0, returns=3, max_tries=30):
+def find_events_with_shared_stations(e2sta, sta2e, min_shared=2, discard_ineligible=True):
+    """
+    Find events that share at least n stations with each other
+    
+    Args:
+        event_to_stations: dict, event_id -> list[station_id]
+        min_shared: int, minimum shared stations
+        discard_ineligible: bool, whether to discard events that have less than n stations
+        
+    Returns:
+        dict: event_id -> list[event_id]
+    """
+    result = {}
+    for event_id, stations in e2sta.items():
+        thld = min_shared
+        if len(stations) < min_shared:
+            if discard_ineligible:
+                result[event_id] = []
+                continue
+            else:
+                thld = len(stations)
+        # the candidate events is the union of all events that share at least one station with the current event
+        if thld > 2:
+            candidate_events = Counter()
+            for station in stations:
+                candidate_events.update(sta2e[station])
+
+            shared_events = set([event for event, count in candidate_events.items() if count >= thld])
+            result[event_id] = list(shared_events - {event_id})
+        elif thld == 1:
+            candidate_events = set()
+            for station in stations:
+                candidate_events.update(sta2e[station])
+            result[event_id] = list(candidate_events - {event_id})
+        else: # min_shared == 2
+            candidate_events = set()
+            shared_events = set()
+            for station in stations:
+                # 交集说明至少有两个台站共享，所以交集满足条件，同时更新并集
+                shared_events.update(candidate_events.intersection(sta2e[station]))
+                candidate_events.update(sta2e[station])
+            result[event_id] = list(shared_events - {event_id})
+        
+    return result
+
+def sample_event_for_stacking(event_ids, e2sta_dict, sta2e_dict, events_dict, e2e_dict=None, min_shared_sta=2, magnitude_range=1.0, snr_bar=2.5, returns=3, max_tries=30):
+    if not isinstance(event_ids, list):
+        event_ids = [event_ids]
+    event_id0 = event_ids[0]
+    #other_event_ids = event_ids[1:]
     event_attrs0 = events_dict[event_id0]
     sta_ids0 = e2sta_dict[event_id0]
     mag0 = event_attrs0['magnitude']
     snr_median0 = event_attrs0['snr_median']
     year0 = event_attrs0['year']
-    min_shared_sta = min(len(sta_ids0), 2) if len(sta_ids0)<min_shared_sta else min_shared_sta
+    min_shared_sta = min(len(sta_ids0), min_shared_sta)
+    candidate_events = find_events_with_shared_stations({event_id0: sta_ids0}, sta2e_dict, min_shared=min_shared_sta, discard_ineligible=False)[event_id0] if e2e_dict is None else e2e_dict[event_id0]
+    for e_id in event_ids:
+        if e_id in candidate_events and random.random() < 0.5:
+            candidate_events.remove(e_id)
+    if not candidate_events:
+        return []
     
     results = []
     for i in range(max_tries):
-        sta_id = np.random.choice(sta_ids0)
-        event_id = np.random.choice(sta2e_dict[sta_id])
+        if not candidate_events:
+            break
+        #sta_id = np.random.choice(sta_ids0)
+        #event_id = np.random.choice(sta2e_dict[sta_id])
+        event_id = random.choice(candidate_events)
+        #for _ in range(10):
+        #    #if (event_id in event_ids or (len(sta_ids_2)==1 and len(sta_ids0)>1)) or \
+        #    if (i<=max_tries//2 and abs(year0-events_dict[event_id]['year'])>2):
+        #        event_id = random.choice(candidate_events)
+        #    else:
+        #        break
+        candidate_events.remove(event_id)
         sta_ids_2 = e2sta_dict[event_id]
-        
-        for _ in range(30):
-            if (event_id == event_id0 or len(sta_ids_2)==1) \
-                or (i<=max_tries//2 and abs(year0-events_dict[event_id]['year'])>1):
-                event_id = np.random.choice(sta2e_dict[sta_id])
-            else:
-                break
-        if event_id == event_id0 or len(sta_ids_2)==1:
-            continue
-        
         # prefer events in the close years
         # TODO: better solution needed
-        if i<=max_tries//2 and abs(year0-events_dict[event_id]['year'])>1:
-            continue
+        # if i<=max_tries//2 and abs(year0-events_dict[event_id]['year'])>1:
+        #     continue
         # check if at least given number stations are shared
         if len(set(sta_ids0).intersection(set(sta_ids_2)))<min_shared_sta:
+            #print(f"shared sta too few")
             continue
         # check if the magnitude is in the range
-        if abs(events_dict[event_id]['magnitude']-mag0)>magnitude_range:
+        if magnitude_range is not None and abs(events_dict[event_id]['magnitude']-mag0)>magnitude_range:
+            #print(f"magnitude too different")
             continue
         # check if the snrs are compatible
         if not (snr_median0>snr_bar and events_dict[event_id]['snr_median']>snr_bar):
@@ -208,15 +309,21 @@ def stack_event(
     meta2,
     max_shift=64 * 4,
     feature_scale=16,
+    is_extra=False,
 ):
+    prefix = "extra_" if is_extra else ""
     waveform1 = meta1["waveforms"].copy()
     waveform2 = meta2["waveforms"].copy()
     amplitude1 = meta1["amplitude"].copy()
     amplitude2 = meta2["amplitude"].copy()
     phase_pick1 = meta1["phase_pick"].copy()
     phase_pick2 = meta2["phase_pick"].copy()
-    phase_mask1 = (np.sum(phase_pick1[:,1:], axis=1)!=0).astype(np.float32)#meta1["phase_mask"].copy()
-    phase_mask2 = (np.sum(phase_pick2[:,1:], axis=1)!=0).astype(np.float32)#meta2["phase_mask"].copy()
+    phase_mask1 = meta1["phase_mask"].copy()
+    phase_mask2 = meta2["phase_mask"].copy()
+    polarity1 = meta1["polarity"].copy()
+    polarity2 = meta2["polarity"].copy()
+    polarity_mask1 = meta1["polarity_mask"].copy()
+    polarity_mask2 = meta2["polarity_mask"].copy()
     event_center1 = meta1["event_center"].copy()
     event_center2 = meta2["event_center"].copy()
     event_mask1 = meta1["event_location_mask"].copy()
@@ -225,11 +332,6 @@ def stack_event(
     event_location2 = meta2["event_location"].copy()
     station_ids1 = meta1["station_ids"].copy()
     station_ids2 = meta2["station_ids"].copy()
-    
-    #polarity1 = meta1["polarity"].copy()
-    #polarity2 = meta2["polarity"].copy()
-    #polarity_mask1 = meta1["polarity_mask"].copy()
-    #polarity_mask2 = meta2["polarity_mask"].copy()
 
     first_arrival1 = meta1["first_arrival"].copy()
     first_arrival2 = meta2["first_arrival"].copy()
@@ -252,11 +354,18 @@ def stack_event(
     
     waveform2 = waveform2[shared_sta_idx]
     waveform2[other_sta_idx] = 0
+    #waveform2[other_sta_idx] = waveform1[other_sta_idx].copy() # to recover the original waveform1 on the other stations
     amplitude2 = amplitude2[shared_sta_idx]
     amplitude2[other_sta_idx] = 0
+    #amplitude2[other_sta_idx] = amplitude1[other_sta_idx].copy()
     phase_pick2 = phase_pick2[shared_sta_idx]
     phase_pick2[other_sta_idx] = 0
-    phase_mask2 = (np.sum(phase_pick2[:,1:], axis=1)!=0).astype(np.float32)
+    phase_mask2 = phase_mask2[shared_sta_idx]
+    phase_mask2[other_sta_idx] = 0
+    polarity2 = polarity2[shared_sta_idx]
+    polarity2[other_sta_idx] = 0
+    polarity_mask2 = polarity_mask2[shared_sta_idx]
+    polarity_mask2[other_sta_idx] = 0
     event_center2 = event_center2[shared_sta_idx]
     event_center2[other_sta_idx] = 0
     event_mask2 = event_mask2[shared_sta_idx]
@@ -266,32 +375,38 @@ def stack_event(
     station_ids2 = [station_ids2[i] for i in shared_sta_idx]
     duration2 = meta2["duration"].copy()
     duration2 = [duration2[i] for i in shared_sta_idx]
-    #polarity2 = polarity2[shared_sta_idx]
-    #polarity2[other_sta_idx] = 0
-    #polarity_mask2 = polarity_mask2[shared_sta_idx]
-    #polarity_mask2[other_sta_idx] = 0
 
     nx, nch, nt, = waveform1.shape  # nx, nch, nt
     duration_mask1 = np.zeros([nx, nt])
     duration_mask2 = np.zeros([nx, nt])
-    #ns, ne, nd = meta1["duration"].shape  # stations, events, (t0, t1)
-    for i, duration_sta in enumerate(meta1["duration"]):
-        if len(duration_sta)==0:
-            continue
-        for j, duration in enumerate(duration_sta):
-            t0, t1 = duration
-            duration_mask1[i, t0:t1] = 1
-    #ns, ne, nd = meta2["duration"].shape  # stations, events, (t0, t1)
-    for i, duration_sta in enumerate(duration2):
-        if len(duration_sta)==0 or i in other_sta_idx:
-            continue
-        for j, duration in enumerate(duration_sta):
-            t0, t1 = duration
-            duration_mask2[i, t0:t1] = 1
+    # deal with multi-stacking
+    if "duration_mask" in meta1.keys():
+        duration_mask1 = meta1["duration_mask"].copy()
+    else:
+        #ns, ne, nd = meta1["duration"].shape  # stations, events, (t0, t1)
+        for i, duration_sta in enumerate(meta1["duration"]):
+            if len(duration_sta)==0:
+                continue
+            for j, duration in enumerate(duration_sta):
+                t0, t1 = duration
+                duration_mask1[i, t0:t1] = 1
+
+    if "duration_mask" in meta2.keys():
+        duration_mask2 = meta2["duration_mask"].copy()
+    else:
+        #ns, ne, nd = meta2["duration"].shape  # stations, events, (t0, t1)
+        for i, duration_sta in enumerate(duration2):
+            if len(duration_sta)==0 or i in other_sta_idx:
+                continue
+            for j, duration in enumerate(duration_sta):
+                t0, t1 = duration
+                duration_mask2[i, t0:t1] = 1
 
     max_tries = 30
     # while random.random() < 0.5:
-    for i in range(random.randint(1, 10)):
+    failed = True
+    for i in range(1 if random.random() < 0.8 else 2 if random.random() < 0.5 else 3):
+    #for i in range(1):
         tries = 0
         while tries < max_tries:
             #min_ratio2 = np.log10(amp_noise1 * 2 / amp_signal2)
@@ -322,14 +437,22 @@ def stack_event(
             event_location2_ = np.roll(event_location2, shift, axis=-1)
             event_center2_ = np.roll(event_center2, shift, axis=-1)
             event_mask2_ = np.roll(event_mask2, shift, axis=-1)
-            #polarity2_ = np.roll(polarity2, long_shift, axis=-1)
-            #polarity_mask2_ = np.roll(polarity_mask2, long_shift, axis=-1)
+            polarity2_ = np.roll(polarity2, long_shift, axis=-1)
+            polarity_mask2_ = np.roll(polarity_mask2, long_shift, axis=-1)
             duration_mask2_ = np.roll(duration_mask2, long_shift, axis=-1)
 
             #ratio2 = 10 ** (random.uniform(max(-3, min_ratio2), min(3, max_ratio2)))
             #flip = random.choice([-1.0, 1.0])  ## flip waveform2 polarity
-            waveform1 = waveform1 + waveform2_ #* ratio2 * flip
-            amplitude1 = amplitude1 + amplitude2_
+            #ratio_alpha = random.uniform(0.1, 0.9)
+            #waveform1 = waveform1*ratio_alpha + waveform2_*(1-ratio_alpha) #* ratio2 * flip
+            #amplitude1 = amplitude1*ratio_alpha + amplitude2_*(1-ratio_alpha) #* ratio2
+            ratio2 = 10 ** (random.uniform(-2.0, 2.0))
+            #FIXME: correct the magnitude?
+            event_location2_[:, 4, :] = (event_location2_[:, 4, :] + np.log10(ratio2)) * event_mask2_
+            waveform1 = waveform1 + waveform2_ * ratio2
+            amplitude1 = amplitude1 + amplitude2_ * ratio2
+            #waveform1 = waveform1 + waveform2_
+            #amplitude1 = amplitude1 + amplitude2_
             #amp_noise1 = amp_noise1 + amp_noise2 * ratio2
             #amp_signal1 = min(amp_signal1, amp_signal2 * ratio2)
 
@@ -350,10 +473,18 @@ def stack_event(
             assert np.all(event_center1 <= 1.0), f"{np.max(event_center1) = }"
             event_mask1 = np.minimum(1.0, event_mask1 + event_mask2_)
             #polarity1 = ((polarity1 - 0.5) + (polarity2_ - 0.5) * flip) + 0.5
-            #polarity_mask1 = np.minimum(1.0, polarity_mask1 + polarity_mask2_)
+            polarity = np.zeros_like(polarity1)
+            polarity[:, 1:, :] = polarity1[:, 1:, :] + polarity2_[:, 1:, :]
+            assert np.all(polarity[:, 1:, :] <= 1.0), f"{np.max(polarity[:, 1:, :]) = }"
+            polarity[:, 0, :] = np.maximum(0, 1.0 - np.sum(polarity[:, 1:, :], axis=1))
+            polarity1 = polarity
+            polarity_mask1 = np.minimum(1.0, polarity_mask1 + polarity_mask2_)
             duration_mask1 = np.minimum(1.0, duration_mask1 + duration_mask2_)
+            failed = False
             break
-
+        
+        #if failed:
+        #    print(f"{prefix}stack {i}-th event fails after {max_tries} tries")
         # if tries == max_tries:
         #     print(f"stack {i}-th event fails after {max_tries} tries")
 
@@ -361,16 +492,21 @@ def stack_event(
         "waveforms": waveform1,
         "amplitude": amplitude1,
         "phase_pick": phase_pick1,
-        #"phase_mask": phase_mask1,
+        "phase_mask": phase_mask1,
         "event_center": event_center1,
         "event_location": event_location1,
         "event_location_mask": event_mask1,
-        #"polarity": polarity1,
-        #"polarity_mask": polarity_mask1,
+        "polarity": polarity1,
+        "polarity_mask": polarity_mask1,
         "station_location": meta1["station_location"],
         "num_stations": meta1["num_stations"],
         "num_manual_stations": meta1["num_manual_stations"],
-    }
+        "event_id": meta1["event_id"],
+        "station_ids": meta1["station_ids"],
+        "duration": meta1["duration"],
+        "duration_mask": duration_mask1,
+        "first_arrival": np.min([meta1["first_arrival"], meta2["first_arrival"]]) if not failed else meta1["first_arrival"],
+    }, failed
 
 class SeismicNetworkIterableDataset(IterableDataset):
     degree2km = 111.32
@@ -396,12 +532,16 @@ class SeismicNetworkIterableDataset(IterableDataset):
         sample_by_distance=False,
         stack_event=False,
         drop_channel=False,
+        ## for training
+        phase_width=[100],
+        polarity_width=[20],
+        event_width=[10],
         ## for prediction
         is_pad=False,
         sampling_rate=100,
         response_path=None,
         response_xml=None,
-        highpass_filter=False,
+        highpass_filter=0.0,
         rank=0,
         world_size=1,
         cut_patch=False,
@@ -464,6 +604,9 @@ class SeismicNetworkIterableDataset(IterableDataset):
 
         ## training
         self.training = training
+        self.phase_width = phase_width
+        self.polarity_width = polarity_width
+        self.event_width = event_width
         self.stack_event = stack_event
         self.drop_channel = drop_channel
         self.sample_by_magnitude = sample_by_magnitude
@@ -481,7 +624,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
             self.picks_dict = pd.read_csv(os.path.join(self.base_dir, "picks_train.csv"), usecols=['event_id', 'station_id', 'snr', 'phase_status'])
             self.events_dict = pd.read_csv(os.path.join(self.base_dir, "events_train.csv"), usecols=['event_id', 'magnitude', 'event_time', 'depth_km'])
             self.events_dict['year'] = self.events_dict['event_time'].apply(lambda x: int(x[:4]))
-            self.picks_dict['snr'] = self.picks_dict['snr'].apply(lambda x: np.array([float(number) for number in x.split()[1:-1]]))
+            self.picks_dict['snr'] = self.picks_dict['snr'].apply(lambda x: np.array([float(number) for number in x[1:-1].split()]))
             temp = self.picks_dict.groupby('event_id')['snr'].apply(lambda x: np.concatenate(x.values)).reset_index()
             temp['snr_mean'] = temp['snr'].apply(lambda x: np.mean(x[x!=0] if len(x[x!=0]) > 0 else 0))
             temp['snr_median'] = temp['snr'].apply(lambda x: np.median(x[x!=0] if len(x[x!=0]) > 0 else 0))
@@ -644,6 +787,9 @@ class SeismicNetworkIterableDataset(IterableDataset):
         waveforms = np.zeros([len(station_ids), 3, self.raw_nt], dtype="float32")
         amplitude = np.zeros_like(waveforms)
         phase_pick = np.zeros_like(waveforms)
+        phase_mask = np.zeros([len(station_ids), self.raw_nt])
+        polarity = np.zeros_like(waveforms)
+        polarity_mask = np.zeros([len(station_ids), self.raw_nt])
         event_center = np.zeros([len(station_ids), self.raw_feature_nt])
         event_location = np.zeros([len(station_ids), 7, self.raw_feature_nt])
         event_location_mask = np.zeros([len(station_ids), self.raw_feature_nt])
@@ -698,9 +844,14 @@ class SeismicNetworkIterableDataset(IterableDataset):
             manual_event_ids = []
             p_pick_stas = []
             s_pick_stas = []
+            up_pick_stas = []
+            dn_pick_stas = []
             duration_sta = []   
 
             event_time0 = datetime.fromisoformat(event_attrs["event_time"])
+            e_ids = sorted(np.unique(attrs["event_id"]))
+            if event_id in e_ids:
+                e_ids = [event_id] + list(set(e_ids)-{event_id}) # put the current event at the first
             for e_id in sorted(np.unique(attrs["event_id"])):
                 try: # skip the event_id not in the dataset
                     e_attrs = hdf5_fp[e_id].attrs
@@ -711,6 +862,11 @@ class SeismicNetworkIterableDataset(IterableDataset):
                 
                 p_picks = attrs["phase_index"][np.logical_and(sta_phase_type == "P", attrs["event_id"] == e_id)]
                 s_picks = attrs["phase_index"][np.logical_and(sta_phase_type == "S", attrs["event_id"] == e_id)]
+                if "phase_polarity" in attrs:
+                    up = attrs["phase_index"][np.logical_and(attrs["phase_polarity"] == "U", attrs["event_id"] == e_id)]
+                    dn = attrs["phase_index"][np.logical_and(attrs["phase_polarity"] == "D", attrs["event_id"] == e_id)]
+                else:
+                    up, dn = [], []
                 if p_picks.min()>self.nt or s_picks.min()>self.nt:
                     continue # phases too late
                 if len(p_pick_stas)!=0 and np.abs(p_picks-np.array(p_pick_stas)).min() < 30:
@@ -776,33 +932,29 @@ class SeismicNetworkIterableDataset(IterableDataset):
                 )
                 t0 = e_attrs["event_time_index"] + begin_time_index_shift
             
-                event_center_eid = generate_label(
-                    [
-                        # [c0 / self.feature_scale],
-                        c0_int,
-                    ],
+                event_center_eid, mask = generate_event_label(
+                    # [c0 / self.feature_scale],
+                    c0_int,
                     # label_width=[
                     #     c0_width,
                     # ],
-                    label_width=[
-                        10,
-                    ],
+                    label_width=self.event_width,
                     nt=self.raw_feature_nt,
                     # nt=self.nt,
-                )[1, :]
+                )
                 #mask = event_center_eid >= 0.5
-                mask = np.zeros_like(event_center_eid, dtype=bool)
-                mask[max(0, c0_int[0]-4):min(self.raw_feature_nt, c0_int[0]+4)] = True
+                #mask = np.zeros_like(event_center_eid, dtype=bool)
+                #mask[max(0, c0_int[0]-self.event_width[0]//2):min(self.raw_feature_nt, c0_int[0]+self.event_width[0]//2)] = True
                 #print(f"{event_id}/{sta_id}: {e_id} c0:{c0}, c0_int:{c0_int}, mask:{np.sum(mask)}")
-                assert np.max(event_center[i, :])<=1, f"{event_id}/{sta_id} event_center overlap when {e_id}:{event_center[i, :]}"
+                assert np.max(event_center[i, :]+event_center_eid)<=1, f"{event_id}/{sta_id} event_center overlap when {e_id}:{event_center[i, :]+event_center_eid}"
                 if not np.all(event_location[i, :, mask]==0):
                     print(f"\n{event_id}/{sta_id} event_location overlap when {e_id}: previous {np.nonzero(event_location_mask[i, :])}, current {np.nonzero(mask)}")
                     #continue
                 
                 event_center[i, :] += event_center_eid
-                event_location[i, 0, max(0, c0_int[0]-4):min(self.raw_feature_nt, c0_int[0]+4)] = ((
+                event_location[i, 0][mask] = ((
                     self.feature_scale * np.arange(self.raw_feature_nt) - t0
-                )/self.sampling_rate * mask.astype(np.float32))[max(0, c0_int[0]-4):min(self.raw_feature_nt, c0_int[0]+4)]
+                )/self.sampling_rate)[mask]
                 # print(event_location[i, 1:, mask].shape, event_location.shape, event_location[i][1:, mask].shape)
                 event_location[i][1:, mask] += np.array([dist, azimuth, dz, magnitude, (c0-c0_int)[0], c0_width])[:, np.newaxis]
                 event_location_mask[i, :] = np.logical_or(event_location_mask[i, :], mask)
@@ -810,18 +962,25 @@ class SeismicNetworkIterableDataset(IterableDataset):
                 manual_event_ids.append(e_id)
                 p_pick_stas.append(p_picks)
                 s_pick_stas.append(s_picks)
+                up_pick_stas.append(up)
+                dn_pick_stas.append(dn)
             duration.append(duration_sta)
 
             if len(manual_event_ids) == 0:
                 auto_stas.append(i)
                 phase_pick[i, 1:, :] = 0
                 phase_pick[i, 0, :] = 1
+                phase_mask[i, :] = 0
+                polarity[i, 1:, :] = 0
+                polarity[i, 0, :] = 1
+                polarity_mask[i, :] = 0
                 event_center[i, :] = 0
                 event_location[i, :, :] = 0
                 event_location_mask[i, :] = 0
             else:
                 manual_stas.append(i)
-                phase_pick[i, :, :] = generate_label([np.concatenate(p_pick_stas), np.concatenate(s_pick_stas)], nt=self.raw_nt)
+                phase_pick[i, :, :], phase_mask[i, :] = generate_phase_label([np.concatenate(p_pick_stas), np.concatenate(s_pick_stas)], label_width=self.phase_width, nt=self.raw_nt, mask_width=int(self.phase_width[0]*0.6))
+                polarity[i, :, :], polarity_mask[i, :] = generate_phase_label([np.concatenate(up_pick_stas), np.concatenate(dn_pick_stas)], label_width=self.polarity_width, nt=self.raw_nt)
 
         # std = np.std(waveforms, axis=-1, keepdims=True)
         # std[std == 0] = 1.0
@@ -837,6 +996,9 @@ class SeismicNetworkIterableDataset(IterableDataset):
         waveforms = waveforms[manual_cluster_index]
         amplitude = amplitude[manual_cluster_index]
         phase_pick = phase_pick[manual_cluster_index]
+        phase_mask = phase_mask[manual_cluster_index]
+        polarity = polarity[manual_cluster_index]
+        polarity_mask = polarity_mask[manual_cluster_index]
         event_center = event_center[manual_cluster_index]
         event_location = event_location[manual_cluster_index]
         event_location_mask = event_location_mask[manual_cluster_index]
@@ -849,6 +1011,9 @@ class SeismicNetworkIterableDataset(IterableDataset):
         meta = {
             "waveforms": waveforms,
             "phase_pick": phase_pick,
+            "phase_mask": phase_mask,
+            "polarity": polarity,
+            "polarity_mask": polarity_mask,
             "event_center": event_center,
             "event_location": event_location,
             "event_location_mask": event_location_mask,
@@ -861,7 +1026,6 @@ class SeismicNetworkIterableDataset(IterableDataset):
             "duration": duration,
             "first_arrival": first_arrival,
             "distance": np.array([event[sta_id].attrs["distance_km"] for sta_id in sta_ids])
-            # "reference_point": torch.from_numpy(reference_point).float(),
         }
         
         return meta
@@ -900,6 +1064,9 @@ class SeismicNetworkIterableDataset(IterableDataset):
                 meta = {
                     "waveforms": meta['waveforms'][idx],
                     "phase_pick": meta['phase_pick'][idx],
+                    "phase_mask": meta['phase_mask'][idx],
+                    "polarity": meta['polarity'][idx],
+                    "polarity_mask": meta['polarity_mask'][idx],
                     "event_center": meta['event_center'][idx],
                     "event_location": meta['event_location'][idx],
                     "event_location_mask": meta['event_location_mask'][idx],
@@ -916,6 +1083,9 @@ class SeismicNetworkIterableDataset(IterableDataset):
                 meta = {
                     "waveforms": meta['waveforms'][:self.num_stations],
                     "phase_pick": meta['phase_pick'][:self.num_stations],
+                    "phase_mask": meta['phase_mask'][:self.num_stations],
+                    "polarity": meta['polarity'][:self.num_stations],
+                    "polarity_mask": meta['polarity_mask'][:self.num_stations],
                     "event_center": meta['event_center'][:self.num_stations],
                     "event_location": meta['event_location'][:self.num_stations],
                     "event_location_mask": meta['event_location_mask'][:self.num_stations],
@@ -929,50 +1099,41 @@ class SeismicNetworkIterableDataset(IterableDataset):
                     "first_arrival": meta['first_arrival'],
                 }
             
-            if self.stack_event:# and random.random() < 0.9:
+            if self.stack_event and random.random() < 0.9:
                 try:
                     #if random.random() < 0.4:
                     #    # copy the meta into meta2
                     #    meta2 = copy.deepcopy(meta)
                     #else:
                     selected_event_ids = sample_event_for_stacking(
-                        event_id0 = event_id,
+                        event_ids = event_id,
                         e2sta_dict = self.e2sta_dict,
                         sta2e_dict = self.sta2e_dict,
                         events_dict = self.events_dict,
                         min_shared_sta=3,
-                        magnitude_range=0.7,
-                        returns=5,
+                        magnitude_range=None,
+                        returns=7,
                     )
                     meta2 = None
+                    stack_times = 0
+                    max_stack_times = np.random.choice([1, 2, 3, 4], p=[0.2, 0.4, 0.3, 0.1])
                     for e_id in selected_event_ids:
                         meta2 = self._read_training_h5(e_id)
                         if meta2 is not None:
-                            break
-                    if meta2 is not None:
-                        meta = stack_event(meta, meta2, max_shift=64*4, feature_scale=self.feature_scale)
-                    # try to stack more events
-                    # if random.random() < 0.3:
-                    #     selected_event_ids = sample_event_for_stacking(
-                    #         event_id0 = event_id,
-                    #         e2sta_dict = self.e2sta_dict,
-                    #         sta2e_dict = self.sta2e_dict,
-                    #         events_dict = self.events_dict,
-                    #         min_shared_sta=3,
-                    #         magnitude_range=0.7,
-                    #         returns=5,
-                    #     )
-                    #     meta2 = None
-                    #     for e_id in selected_event_ids:
-                    #         meta2 = self._read_training_h5(e_id)
-                    #         if meta2 is not None:
-                    #             break
-                    #     if meta2 is not None:
-                    #         meta = stack_event(meta, meta2, max_shift=64*4, feature_scale=self.feature_scale)
+                            meta, is_failed = stack_event(meta, meta2, max_shift=64*4, feature_scale=self.feature_scale, is_extra=stack_times>0)
+                            stack_times += 1 if not is_failed else 0
+                            if stack_times >= max_stack_times:
+                                break
+                            #print(f"event {event_id} succeed")
+                    #else:
+                    #    print(f"event {event_id} no valid meta2")
                 except Exception as e:
                     print(f"Error stacking {event_id}:\n{e}")
+            else:
+                stack_times = 0
+            #    print(f"event {event_id} not stacked")
             
-            meta_cutted, it = cut_data(meta, nt=self.nt, feature_scale=self.feature_scale, if_reverse_roll=False)
+            meta_cutted, it = cut_data(meta, nt=self.nt, feature_scale=self.feature_scale, if_reverse_roll=True, base_phase_points=int(64*(1+stack_times/4))) #TODO: allow reverse roll?
 
             if self.sort:
                 D = np.sqrt(((meta["station_location"][:, np.newaxis, :2] -  meta["station_location"][np.newaxis, :, :2])**2).sum(axis=-1))
@@ -987,6 +1148,9 @@ class SeismicNetworkIterableDataset(IterableDataset):
                 "data": torch.from_numpy(meta_cutted["waveforms"]).float(),
                 "amplitude": torch.from_numpy(meta_cutted["amplitude"]).float(),
                 "phase_pick": torch.from_numpy(meta_cutted["phase_pick"]).float(),
+                #"phase_mask": torch.from_numpy(meta_cutted["phase_mask"]).float(),
+                "polarity": torch.from_numpy(meta_cutted["polarity"]).float(),
+                "polarity_mask": torch.from_numpy(meta_cutted["polarity_mask"]).float(),
                 "event_center": torch.from_numpy(meta_cutted["event_center"]).float(),
                 "event_location": torch.from_numpy(meta_cutted["event_location"]).float(),
                 "event_location_mask": torch.from_numpy(meta_cutted["event_location_mask"]).float(),
@@ -999,7 +1163,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
             yield meta
             
     
-    def read_mseed(self, fname, response_path=None, response_xml=None, highpass_filter=False, sampling_rate=100):
+    def read_mseed(self, fname, response_path=None, response_xml=None, highpass_filter=0.0, sampling_rate=100):
         try:
             stream = obspy.Stream()
             for tmp in fname.split(","):
@@ -1039,9 +1203,8 @@ class SeismicNetworkIterableDataset(IterableDataset):
             #     logging.error(f"Error: spline detrend failed at file {fname}")
             #     trace = trace.detrend("demean")
 
-            ## highpass filtering > 1Hz
-            if highpass_filter:
-                trace = trace.filter("highpass", freq=1.0)
+            if highpass_filter > 0:
+                trace = trace.filter("highpass", freq=highpass_filter)
 
             tmp_stream.append(trace)
 
@@ -1083,14 +1246,12 @@ class SeismicNetworkIterableDataset(IterableDataset):
 
                 trace = stream.select(id=sta + c)[0]
 
-                tmp = trace.data.astype("float32")
                 ## accerleration to velocity
                 if sta[-1] == "N":
-                    amp = trace.integrate().filter("highpass", freq=1.0).data.astype("float32") #TODO: why 1.0hz highpass?
-                else:
-                    amp = tmp
+                    trace = trace.integrate().filter("highpass", freq=1.0) #TODO: why 1.0hz highpass?
+                tmp = trace.data.astype("float32")
                 data[j, : len(tmp), i] = tmp[:nt]
-                amplitude[j, : len(tmp), i] = amp[:nt]
+                amplitude[j, : len(tmp), i] = tmp[:nt] * 1e6 # unit from m/s to 10e-6 m/s
         
         if self.sort and len(station_keys) > 5:
             D = np.sqrt(((station_location[:, np.newaxis, :2] -  station_location[np.newaxis, :, :2])**2).sum(axis=-1))
