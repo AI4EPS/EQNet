@@ -133,43 +133,39 @@ def extract_picks(
 
                 # for ii, (index, score) in enumerate(zip(topk_index[i, j, k], topk_score[i, j, k])):
                 for ii, (index, score) in enumerate(zip(topk_index_ijk, topk_score_ijk)):
-                    if score > vmin:
-                        pick_index = index.item() + begin_time_index[i]
-                        pick_time = (begin_i + timedelta(seconds=index.item() * dt[i])).isoformat(
-                            timespec="milliseconds"
+                    # if score > vmin:
+                    pick_index = index.item() + begin_time_index[i]
+                    pick_time = (begin_i + timedelta(seconds=index.item() * dt[i])).isoformat(timespec="milliseconds")
+                    pick_dict = {
+                        # "file_name": file_i,
+                        "station_id": station_i,
+                        "phase_index": pick_index,
+                        "phase_time": pick_time,
+                        "phase_score": f"{score.item():.3f}",
+                        "phase_type": phases[j],
+                        "dt_s": dt[i],
+                    }
+
+                    if polarity_score is not None:
+                        # pick_dict["phase_polarity"] = (
+                        #     f"{(polarity_score[i, 1, index.item()//polarity_scale, k].item() - polarity_score[i, 2, index.item()//polarity_scale, k].item()):.3f}"
+                        # )
+                        score = polarity_score[i, 1, :, k] - polarity_score[i, 2, :, k]
+                        # score = (polarity_score[i, 0, :, k] - 0.5) * 2.0
+                        score = score[max(0, index.item() // polarity_scale - 3) : index.item() // polarity_scale + 3]
+                        idx = torch.argmax(torch.abs(score))
+                        pick_dict["phase_polarity"] = round(score[idx].item(), 3)
+
+                    if waveform is not None:
+                        j1 = topk_index_ijk[ii]
+                        j2 = (
+                            min(j1 + window_amp_i, topk_index_ijk[ii + 1])
+                            if ii < len(topk_index_ijk) - 1
+                            else j1 + window_amp_i
                         )
-                        pick_dict = {
-                            # "file_name": file_i,
-                            "station_id": station_i,
-                            "phase_index": pick_index,
-                            "phase_time": pick_time,
-                            "phase_score": f"{score.item():.3f}",
-                            "phase_type": phases[j],
-                            "dt_s": dt[i],
-                        }
+                        pick_dict["phase_amplitude"] = f"{torch.max(waveform_amp[i, j1:j2, k]).item():.3e}"
 
-                        if polarity_score is not None:
-                            # pick_dict["phase_polarity"] = (
-                            #     f"{(polarity_score[i, 1, index.item()//polarity_scale, k].item() - polarity_score[i, 2, index.item()//polarity_scale, k].item()):.3f}"
-                            # )
-                            score = polarity_score[i, 1, :, k] - polarity_score[i, 2, :, k]
-                            # score = (polarity_score[i, 0, :, k] - 0.5) * 2.0
-                            score = score[
-                                max(0, index.item() // polarity_scale - 3) : index.item() // polarity_scale + 3
-                            ]
-                            idx = torch.argmax(torch.abs(score))
-                            pick_dict["phase_polarity"] = round(score[idx].item(), 3)
-
-                        if waveform is not None:
-                            j1 = topk_index_ijk[ii]
-                            j2 = (
-                                min(j1 + window_amp_i, topk_index_ijk[ii + 1])
-                                if ii < len(topk_index_ijk) - 1
-                                else j1 + window_amp_i
-                            )
-                            pick_dict["phase_amplitude"] = f"{torch.max(waveform_amp[i, j1:j2, k]).item():.3e}"
-
-                        picks_per_file.append(pick_dict)
+                    picks_per_file.append(pick_dict)
 
         picks.append(picks_per_file)
     return picks
