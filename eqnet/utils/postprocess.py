@@ -18,13 +18,14 @@ def detect_peaks(scores, vmin=0.3, kernel=101, stride=1, K=0, dt=0.01):
     nb, nc, nt, nx = scores.shape
     pad = kernel // 2
     smax = F.max_pool2d(scores, (kernel, 1), stride=(stride, 1), padding=(pad, 0))[:, :, :nt, :]
-    sdiff = torch.zeros_like(scores)
-    sdiff[:, :, 1:, :] = scores[:, :, 1:, :] - scores[:, :, :-1, :]
-    keep = (smax == scores) & (sdiff != 0.0)
-    scores = scores * keep.float()
+    scores = scores * (smax == scores)
+    # sdiff = torch.zeros_like(scores)
+    # sdiff[:, :, 1:, :] = scores[:, :, 1:, :] - scores[:, :, :-1, :]
+    # keep = (smax == scores) & (sdiff != 0.0)
+    # scores = scores * keep.float()
 
     batch, chn, nt, ns = scores.size()
-    scores = torch.transpose(scores, 2, 3)
+    scores = torch.transpose(scores, 2, 3)  # [nb, nc, nt, nx] -> [nb, nc, nx, nt]
     if K == 0:
         K = max(round(nt / (30.0 / dt) * 10.0), 3)  # maximum 10 picks per 30 seconds
     if chn == 1:
@@ -33,7 +34,18 @@ def detect_peaks(scores, vmin=0.3, kernel=101, stride=1, K=0, dt=0.01):
         topk_scores, topk_inds = torch.topk(scores[:, 1:, :, :].view(batch, chn - 1, ns, -1), K)
     # topk_inds = topk_inds % nt
 
-    return topk_scores.detach().cpu(), topk_inds.detach().cpu()
+    topk_scores = topk_scores.detach().cpu()
+    topk_inds = topk_inds.detach().cpu()
+
+    ## filtering close picks with the same scores
+    topk_inds, idx = torch.sort(topk_inds, dim=-1)
+    topk_scores = topk_scores.gather(-1, idx)
+    topk_diff = topk_inds[..., 1:] - topk_inds[..., :-1]
+    mask = torch.ones_like(topk_inds)
+    mask[..., 1:] = (topk_diff > (kernel / stride / 2)).float()
+    topk_scores = topk_scores * mask
+
+    return topk_scores, topk_inds
 
 
 def extract_picks(
@@ -114,6 +126,10 @@ def extract_picks(
 
                 topk_index_ijk, ii = torch.sort(topk_index[i, j, k])
                 topk_score_ijk = topk_score[i, j, k][ii]
+
+                idx = topk_score_ijk > vmin
+                topk_index_ijk = topk_index_ijk[idx]
+                topk_score_ijk = topk_score_ijk[idx]
 
                 # for ii, (index, score) in enumerate(zip(topk_index[i, j, k], topk_score[i, j, k])):
                 for ii, (index, score) in enumerate(zip(topk_index_ijk, topk_score_ijk)):
@@ -249,6 +265,8 @@ def extract_events(
                             t0 = center_time - timedelta(seconds=event_time[i, 0, index.item(), k].item() * dt[i])
                             event_dict["event_time"] = t0.strftime("%Y-%m-%dT%H:%M:%S.%f")
                             event_dict["travel_time"] = event_time[i, 0, index.item(), k].item() * dt[i]
+                            if event_dict["travel_time"] <= 0:
+                                continue
 
                         if waveform is not None:
                             ## calculate PS ratio
