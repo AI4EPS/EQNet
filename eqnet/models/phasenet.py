@@ -6,6 +6,7 @@ from torch.nn import functional as F
 
 from .resnet1d import BasicBlock, Bottleneck, ResNet
 from .unet import UNet
+from .x_unet import XUnet
 
 default_cfg = {
     "backbone": "unet",
@@ -350,10 +351,22 @@ class PhaseNet(nn.Module):
                 add_polarity=add_polarity,
                 add_event=add_event,
             )
+        elif backbone == "xunet":
+            self.backbone = XUnet(
+                channels = 3,
+                dim = init_features,
+                out_dim = init_features,
+                use_convnext = True,
+                weight_standardize = True,
+                num_self_attn_per_stage = (0, 0, 1, 1),
+                dim_mults = (1, 2, 4, 8),
+                nested_unet_depths = (7, 4, 2, 1),     # nested unet depths, from unet-squared paper
+                consolidate_upsample_fmaps = True,     # whether to consolidate outputs from all upsample blocks, used in unet-squared paper
+            )
         else:
             raise ValueError("backbone only supports resnet18, resnet50, or unet")
 
-        if backbone == "unet":
+        if backbone in ["unet", "xunet"]:
             kernel_size = (7, 1)
             padding = (3, 0)
             self.phase_picker = UNetHead(
@@ -398,7 +411,6 @@ class PhaseNet(nn.Module):
             features = self.backbone(data, station_location)
         else:
             features = self.backbone(data)
-        # features: (batch, station, channel, time)
 
         output = {"loss": 0.0}
         output_phase, loss_phase = self.phase_picker(features, phase_pick)
