@@ -297,17 +297,17 @@ def plot_phasenet_plus_train(
         t = torch.arange(nt_polarity) * dt_polarity
 
         # 1 channel for polarity
-        # axes[k + 1].plot(t, polarity[i, 0, :, 0], "b")
-        # axes[k + 1].plot(t, meta["polarity"][i, 0, :, 0], "--C0")
-        # axes[k + 1].plot(t, meta["polarity_mask"][i, 0, :, 0], ":", color="gray")
-
-        # 3 channels for polarity
-        axes[k + 1].plot(t, (1.0 + polarity[i, 1, :, 0]) / 2.0, "g", alpha=0.3, linewidth=0.5)
-        axes[k + 1].plot(t, (1.0 - polarity[i, 2, :, 0]) / 2.0, "g", alpha=0.3, linewidth=0.5)
-        axes[k + 1].plot(t, ((polarity[i, 1, :, 0] - polarity[i, 2, :, 0]) + 1.0) / 2.0, "b", alpha=1.0, linewidth=1.0)
-        axes[k + 1].plot(t, (1.0 + meta["polarity"][i, 1, :, 0]) / 2.0, "--C0", alpha=0.5, linewidth=1.0)
-        axes[k + 1].plot(t, (1.0 - meta["polarity"][i, 2, :, 0]) / 2.0, "--C0", alpha=0.5, linewidth=1.0)
+        axes[k + 1].plot(t, polarity[i, 0, :, 0], "b")
+        axes[k + 1].plot(t, meta["polarity"][i, 0, :, 0], "--C0")
         axes[k + 1].plot(t, meta["polarity_mask"][i, 0, :, 0], ":", color="gray")
+
+        # # 3 channels for polarity
+        # axes[k + 1].plot(t, (1.0 + polarity[i, 1, :, 0]) / 2.0, "g", alpha=0.3, linewidth=0.5)
+        # axes[k + 1].plot(t, (1.0 - polarity[i, 2, :, 0]) / 2.0, "g", alpha=0.3, linewidth=0.5)
+        # axes[k + 1].plot(t, ((polarity[i, 1, :, 0] - polarity[i, 2, :, 0]) + 1.0) / 2.0, "b", alpha=1.0, linewidth=1.0)
+        # axes[k + 1].plot(t, (1.0 + meta["polarity"][i, 1, :, 0]) / 2.0, "--C0", alpha=0.5, linewidth=1.0)
+        # axes[k + 1].plot(t, (1.0 - meta["polarity"][i, 2, :, 0]) / 2.0, "--C0", alpha=0.5, linewidth=1.0)
+        # axes[k + 1].plot(t, meta["polarity_mask"][i, 0, :, 0], ":", color="gray")
 
         axes[k + 1].set_xlim(t[0], t[-1])
         axes[k + 1].set_ylim(-0.05, 1.05)

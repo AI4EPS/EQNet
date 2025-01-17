@@ -224,12 +224,15 @@ class UNetHead(nn.Module):
         targets: (batch, channel, time, station) or (batch, 1, time, station)
         """
         inputs = inputs.float()
+        log_targets = torch.nan_to_num(torch.log(targets))
 
         if mask is None:
             if self.out_channels == 1:
-                loss = F.binary_cross_entropy_with_logits(inputs, targets)
+                min_loss = -torch.mean(targets * log_targets + (1 - targets) * torch.nan_to_num(torch.log(1 - targets)))
+                loss = F.binary_cross_entropy_with_logits(inputs, targets) - min_loss
             else:
-                loss = F.cross_entropy(inputs, targets)
+                min_loss = -torch.mean(targets * log_targets)
+                loss = F.cross_entropy(inputs, targets) - min_loss
 
                 # focal loss
                 # ce_loss = F.cross_entropy(inputs, targets, reduction="none")
@@ -242,13 +245,18 @@ class UNetHead(nn.Module):
             if mask_sum == 0.0:
                 mask_sum = 1.0
             if self.out_channels == 1:
+                min_loss = -(targets * log_targets + (1 - targets) * torch.nan_to_num(torch.log(1 - targets)))
                 loss = (
-                    torch.sum(F.binary_cross_entropy_with_logits(inputs, targets, reduction="none") * mask) / mask_sum
+                    torch.sum((F.binary_cross_entropy_with_logits(inputs, targets, reduction="none") - min_loss) * mask)
+                    / mask_sum
                 )
+
             else:
+                min_loss = -targets * log_targets
                 # loss = torch.sum(-targets.float() * F.log_softmax(inputs, dim=1) * mask) / mask_sum
                 loss = (
-                    torch.sum(F.cross_entropy(inputs, targets, reduction="none") * mask.squeeze(1)) / mask_sum
+                    torch.sum((F.cross_entropy(inputs, targets, reduction="none") - min_loss) * mask.squeeze(1))
+                    / mask_sum
                 )  # cross_entropy sum over dim=1/channel
 
                 # focal loss
@@ -353,15 +361,15 @@ class PhaseNet(nn.Module):
             )
         elif backbone == "xunet":
             self.backbone = XUnet(
-                channels = 3,
-                dim = init_features,
-                out_dim = init_features,
-                use_convnext = True,
-                weight_standardize = True,
-                num_self_attn_per_stage = (0, 0, 1, 1),
-                dim_mults = (1, 2, 4, 8),
-                nested_unet_depths = (7, 4, 2, 1),     # nested unet depths, from unet-squared paper
-                consolidate_upsample_fmaps = True,     # whether to consolidate outputs from all upsample blocks, used in unet-squared paper
+                channels=3,
+                dim=init_features,
+                out_dim=init_features,
+                use_convnext=True,
+                weight_standardize=True,
+                num_self_attn_per_stage=(0, 0, 1, 1),
+                dim_mults=(1, 2, 4, 8),
+                nested_unet_depths=(7, 4, 2, 1),  # nested unet depths, from unet-squared paper
+                consolidate_upsample_fmaps=True,  # whether to consolidate outputs from all upsample blocks, used in unet-squared paper
             )
         else:
             raise ValueError("backbone only supports resnet18, resnet50, or unet")
@@ -381,7 +389,7 @@ class PhaseNet(nn.Module):
                 )
             if self.add_polarity:
                 self.polarity_picker = UNetHead(
-                    init_features, 3, kernel_size=kernel_size, padding=padding, feature_names="polarity"
+                    init_features, 1, kernel_size=kernel_size, padding=padding, feature_names="polarity"
                 )
                 # self.polarity_picker = UNetHead(16, 1, feature_names="polarity")
         else:

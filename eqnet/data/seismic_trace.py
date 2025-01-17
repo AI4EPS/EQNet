@@ -206,8 +206,8 @@ def stack_event(
             event_time2_ = np.roll(event_time2, shift, axis=0)
             event_center2_ = np.roll(event_center2, shift, axis=0)
             event_mask2_ = np.roll(event_mask2, shift, axis=0)
-            # polarity2_ = np.roll(polarity2, shift, axis=0)
-            polarity2_ = np.roll(polarity2, shift, axis=1)
+            polarity2_ = np.roll(polarity2, shift, axis=0)
+            # polarity2_ = np.roll(polarity2, shift, axis=1)
             polarity_mask2_ = np.roll(polarity_mask2, shift, axis=0)
             duration_mask2_ = np.roll(duration_mask2, shift, axis=0)
 
@@ -229,14 +229,14 @@ def stack_event(
             event_time1 = tmp_time
             event_center1 = event_center1 + event_center2_
             event_mask1 = np.minimum(1.0, event_mask1 + event_mask2_)
-            # polarity1 = ((polarity1 - 0.5) + (polarity2_ - 0.5) * flip) + 0.5
-            polarity = np.zeros_like(polarity1)
-            if flip > 0:
-                polarity[1:, :] = polarity1[1:, :, :] + polarity2_[1:, :, :]
-            else:
-                polarity[1:, :] = polarity1[1:, :, :] + polarity2_[[0, 2, 1]][1:, :, :]
-            polarity[0, :] = np.maximum(0, 1.0 - np.sum(polarity[1:, :, :], axis=0, keepdims=True))
-            polarity1 = polarity
+            polarity1 = ((polarity1 - 0.5) + (polarity2_ - 0.5) * flip) + 0.5
+            # polarity = np.zeros_like(polarity1)
+            # if flip > 0:
+            #     polarity[1:, :] = polarity1[1:, :, :] + polarity2_[1:, :, :]
+            # else:
+            #     polarity[1:, :] = polarity1[1:, :, :] + polarity2_[[0, 2, 1]][1:, :, :]
+            # polarity[0, :] = np.maximum(0, 1.0 - np.sum(polarity[1:, :, :], axis=0, keepdims=True))
+            # polarity1 = polarity
 
             polarity_mask1 = np.minimum(1.0, polarity_mask1 + polarity_mask2_)
             duration_mask1 = np.minimum(1.0, duration_mask1 + duration_mask2_)
@@ -319,7 +319,8 @@ def cut_data(meta, nt=1024 * 4, min_point=200):
     event_center = np.roll(meta["event_center"], -it, axis=0)[:nt, :]
     event_time = np.roll(meta["event_time"], -it, axis=0)[:nt, :]
     event_mask = np.roll(meta["event_mask"], -it, axis=0)[:nt, :]
-    polarity = np.roll(meta["polarity"], -it, axis=1)[:, :nt, :]
+    # polarity = np.roll(meta["polarity"], -it, axis=1)[:, :nt, :]
+    polarity = np.roll(meta["polarity"], -it, axis=0)[:nt, :]
     polarity_mask = np.roll(meta["polarity_mask"], -it, axis=0)[:nt, :]
 
     return {
@@ -339,9 +340,9 @@ def cut_data(meta, nt=1024 * 4, min_point=200):
 
 def flip_polarity(meta):
     meta["waveform"] *= -1.0
-    # meta["polarity"] = 1.0 - meta["polarity"]
+    meta["polarity"] = 1.0 - meta["polarity"]
     # swap 1 and 2 axis: U and D
-    meta["polarity"] = meta["polarity"][[0, 2, 1], :, :]  # [nch, nt, nsta]
+    # meta["polarity"] = meta["polarity"][[0, 2, 1], :, :]  # [nch, nt, nsta]
     return meta
 
 
@@ -653,6 +654,7 @@ class SeismicTraceIterableDataset(IterableDataset):
             dn = attrs["phase_index"][attrs["phase_polarity"] == "D"]
         else:
             up, dn = [], []
+
         ## using the minimum P-S
         # mask_width = np.min(
         #     attrs["phase_index"][attrs["phase_type"] == "S"][:, np.newaxis]
@@ -660,16 +662,14 @@ class SeismicTraceIterableDataset(IterableDataset):
         # )
         # mask_width = min(500, int(mask_width / 2.0))
         # mask_width = 300
-        # phase_up, mask_up = generate_phase_label([up], nt=nt, label_width=self.polarity_width, mask_width=mask_width)
-        # phase_dn, mask_dn = generate_phase_label([dn], nt=nt, label_width=self.polarity_width, mask_width=mask_width)
-        # # phase_up, mask_up = generate_label([up], nt=nt, label_width=self.polarity_width, return_mask=True)
-        # # phase_dn, mask_dn = generate_label([dn], nt=nt, label_width=self.polarity_width, return_mask=True)
-        # polarity = ((phase_up[1, :] - phase_dn[1, :]) + 1.0) / 2.0
-        # polarity_mask = mask_up + mask_dn
+        phase_up, mask_up = generate_phase_label([up], nt=nt, label_width=self.polarity_width)
+        phase_dn, mask_dn = generate_phase_label([dn], nt=nt, label_width=self.polarity_width)
+        polarity = ((phase_up[1, :] - phase_dn[1, :]) + 1.0) / 2.0
+        polarity_mask = mask_up + mask_dn
 
-        polarity, polarity_mask = generate_phase_label(
-            [up, dn], nt=nt, label_width=self.polarity_width  # , mask_width=mask_width
-        )
+        # polarity, polarity_mask = generate_phase_label(
+        #     [up, dn], nt=nt, label_width=self.polarity_width  # , mask_width=mask_width
+        # )
         # polarity = ((polarity[1:2, :] - polarity[2:, :]) + 1.0) / 2.0
 
         ## P/S center time
@@ -742,7 +742,8 @@ class SeismicTraceIterableDataset(IterableDataset):
             "event_time": event_time[:, np.newaxis],
             "event_mask": event_mask[:, np.newaxis],
             "station_location": station_location[:, np.newaxis],
-            "polarity": polarity[:, :, np.newaxis],
+            "polarity": polarity[:, np.newaxis],
+            # "polarity": polarity[:, :, np.newaxis],
             "polarity_mask": polarity_mask[:, np.newaxis],
             ## used for stack events
             "snr": snr,
@@ -788,7 +789,11 @@ class SeismicTraceIterableDataset(IterableDataset):
             dn = attrs["phase_index"][attrs["phase_polarity"] == "D"]
         else:
             up, dn = [], []
-        polarity, polarity_mask = generate_phase_label([up, dn], nt=nt, label_width=self.polarity_width)
+        # polarity, polarity_mask = generate_phase_label([up, dn], nt=nt, label_width=self.polarity_width)
+        phase_up, mask_up = generate_phase_label([up], nt=nt, label_width=self.polarity_width)
+        phase_dn, mask_dn = generate_phase_label([dn], nt=nt, label_width=self.polarity_width)
+        polarity = ((phase_up[1, :] - phase_dn[1, :]) + 1.0) / 2.0
+        polarity_mask = mask_up + mask_dn
 
         ## P/S center time
         tmp_min = np.min(attrs["phase_index"])
@@ -814,7 +819,7 @@ class SeismicTraceIterableDataset(IterableDataset):
             "event_time": event_time[:, np.newaxis],
             "event_mask": event_mask[:, np.newaxis],
             "station_location": station_location[:, np.newaxis],
-            "polarity": polarity[:, :, np.newaxis],
+            "polarity": polarity[:, np.newaxis],
             "polarity_mask": polarity_mask[:, np.newaxis],
             ## used for stack events
             "snr": snr,
@@ -893,8 +898,8 @@ class SeismicTraceIterableDataset(IterableDataset):
                 # polarity_mask = meta["polarity_mask"][np.newaxis, :: self.polarity_feature_scale]
                 # polarity = meta["polarity"][:, :: self.polarity_feature_scale, :]
                 # polarity_mask = meta["polarity_mask"][:: self.polarity_feature_scale, :]
-                polarity = meta["polarity"][:, :: self.polarity_feature_scale]
-                polarity_mask = meta["polarity_mask"][np.newaxis, ::]
+                polarity = meta["polarity"][np.newaxis, :: self.polarity_feature_scale]
+                polarity_mask = meta["polarity_mask"][np.newaxis, :: self.polarity_feature_scale]
                 event_time = meta["event_time"][np.newaxis, :: self.event_feature_scale]
                 event_mask = meta["event_mask"][np.newaxis, :: self.event_feature_scale]
                 station_location = meta["station_location"]
