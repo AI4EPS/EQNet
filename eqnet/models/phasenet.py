@@ -72,7 +72,7 @@ class FCNHead(nn.Module):
         if self.out_channels == 1:
             loss = F.binary_cross_entropy_with_logits(inputs, targets)
         else:
-            loss = torch.sum(-targets.float() * F.log_softmax(inputs, dim=1), dim=1).mean()
+            loss = -torch.sum(targets.float() * F.log_softmax(inputs, dim=1), dim=1).mean()
 
         return loss
 
@@ -230,9 +230,20 @@ class UNetHead(nn.Module):
             if self.out_channels == 1:
                 min_loss = -torch.mean(targets * log_targets + (1 - targets) * torch.nan_to_num(torch.log(1 - targets)))
                 loss = F.binary_cross_entropy_with_logits(inputs, targets) - min_loss
+
+                # inputs = torch.sigmoid(inputs)
+                # loss = F.kl_div(inputs.log(), targets, reduction="none") + F.kl_div(
+                #     (1 - inputs).log(), 1 - targets, reduction="none"
+                # )
+                # loss = torch.nan_to_num(loss)
+                # loss = loss.mean()
+
             else:
-                min_loss = -torch.mean(targets * log_targets)
+                min_loss = -(targets * log_targets).sum(dim=1).mean()  # cross_entropy sum over dim=1
                 loss = F.cross_entropy(inputs, targets) - min_loss
+
+                # inputs = torch.log_softmax(inputs, dim=1)
+                # loss = F.kl_div(inputs, targets, reduction="none").sum(dim=1).mean()
 
                 # focal loss
                 # ce_loss = F.cross_entropy(inputs, targets, reduction="none")
@@ -251,13 +262,22 @@ class UNetHead(nn.Module):
                     / mask_sum
                 )
 
+                # inputs = torch.sigmoid(inputs)
+                # kl_div = F.kl_div(inputs.log(), targets, reduction="none") + F.kl_div(
+                #     (1 - inputs).log(), 1 - targets, reduction="none"
+                # )
+                # kl_div = torch.nan_to_num(kl_div)
+                # loss = torch.sum(kl_div * mask) / mask_sum
+
             else:
                 min_loss = -targets * log_targets
-                # loss = torch.sum(-targets.float() * F.log_softmax(inputs, dim=1) * mask) / mask_sum
                 loss = (
                     torch.sum((F.cross_entropy(inputs, targets, reduction="none") - min_loss) * mask.squeeze(1))
                     / mask_sum
-                )  # cross_entropy sum over dim=1/channel
+                )  # cross_entropy already sum over dim=1
+
+                # inputs = torch.log_softmax(inputs, dim=1)
+                # loss = torch.sum(F.kl_div(inputs, targets, reduction="none").sum(dim=1) * mask.squeeze(1)) / mask_sum
 
                 # focal loss
                 # ce_loss = F.cross_entropy(inputs, targets, reduction="none")
