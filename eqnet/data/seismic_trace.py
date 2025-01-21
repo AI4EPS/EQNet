@@ -171,18 +171,21 @@ def stack_event(
             t0, t1 = meta2["duration"][i, j]
             duration_mask2[t0:t1, i] = 1
 
-    max_tries = 5
+    max_tries = 10
+    failed = True
     # while random.random() < 0.5:
     for i in range(random.randint(1, 10)):
 
         if (amp_signal1 == 0) or (amp_noise1 == 0) or (amp_signal2 == 0) or (amp_noise2 == 0):
+            #print(f"not stack because of amp_signal1={amp_signal1}, amp_noise1={amp_noise1}, amp_signal2={amp_signal2}, amp_noise2={amp_noise2}")
             break
 
         tries = 0
         while tries < max_tries:
-            min_ratio2 = np.log10(amp_noise1 * 2 / amp_signal2)
-            max_ratio2 = np.log10(amp_signal1 / 2 / amp_noise2)
+            min_ratio2 = np.log10(amp_noise1 / amp_signal2)
+            max_ratio2 = np.log10(amp_signal1 / amp_noise2)
             if min_ratio2 > max_ratio2:
+                #print(f"not stack {meta2['trace_id']} to {meta1['trace_id']} at {i}-th because of snr mismatching min_ratio2 > max_ratio2: {min_ratio2} > {max_ratio2}, {amp_noise1 = }, {amp_signal1 = }, {amp_noise2 = }, {amp_signal2 = }")
                 # print(f"min_ratio2 > max_ratio2: {min_ratio2} > {max_ratio2}, {amp_noise1 = }, {amp_signal1 = }, {amp_noise2 = }, {amp_signal2 = }")
                 break
 
@@ -214,7 +217,8 @@ def stack_event(
             ratio2 = 10 ** (random.uniform(max(-3, min_ratio2), min(3, max_ratio2)))
             flip = random.choice([-1.0, 1.0])  ## flip waveform2 polarity
             waveform1 = waveform1 + waveform2_ * ratio2 * flip
-            amp_noise1 = amp_noise1 + amp_noise2 * ratio2
+            #amp_noise1 = amp_noise1 + amp_noise2 * ratio2
+            amp_noise1 = max(amp_noise1, amp_noise2 * ratio2)
             amp_signal1 = min(amp_signal1, amp_signal2 * ratio2)
 
             phase_pick = np.zeros_like(phase_pick1)
@@ -240,10 +244,13 @@ def stack_event(
 
             polarity_mask1 = np.minimum(1.0, polarity_mask1 + polarity_mask2_)
             duration_mask1 = np.minimum(1.0, duration_mask1 + duration_mask2_)
+            failed = False
             break
 
         # if tries == max_tries:
         #     print(f"stack {i}-th event fails after {max_tries} tries")
+    #if failed:
+    #    print("stack event failed")
 
     return {
         "waveform": waveform1,
@@ -257,7 +264,10 @@ def stack_event(
         "station_location": meta1["station_location"],
         "amp_signal": amp_signal1,
         "amp_noise": amp_noise1,
-    }
+        "first_arrival": np.min([first_arrival1, first_arrival2]) if not failed else first_arrival1,
+        "duration": np.concatenate([meta1["duration"], meta2["duration"]], axis=1) if not failed else meta1["duration"],
+        "trace_id": meta1["trace_id"],
+    }, failed
 
 
 def cut_noise(
@@ -575,10 +585,10 @@ class SeismicTraceIterableDataset(IterableDataset):
         else:
             # return snr[-1], signals[-1], noises[-1]
             # return np.max(snr), np.max(signals), np.max(noises)
-            return np.max(snr).item(), np.std(signals).item(), np.std(noises).item()
+            #return np.max(snr).item(), np.std(signals).item(), np.std(noises).item()
         # else:
-        # idx = np.argmax(snr).item()
-        # return snr[idx], signals[idx], noises[idx]
+            idx = np.argmax(snr).item()
+            return snr[idx], signals[idx], noises[idx]
 
     # def resample_time(self, waveform, picks, factor=1.0):
     #     nch, nt = waveform.shape
@@ -624,6 +634,12 @@ class SeismicTraceIterableDataset(IterableDataset):
 
         ## phase picks
         attrs = dict(hdf5_fp[trace_id].attrs)
+        #idxs = np.argsort(attrs["phase_index"])
+        #attrs["event_id"] = np.array(attrs["event_id"])[idxs]
+        #attrs["phase_index"] = attrs["phase_index"][idxs]
+        #attrs["phase_type"] = np.array(attrs["phase_type"])[idxs]
+        #attrs["phase_score"] = np.array(attrs["phase_score"])[idxs]
+        #attrs["phase_time"] = np.array(attrs["phase_time"])[idxs]
         meta = {}
 
         for phase in self.phases:
@@ -642,6 +658,7 @@ class SeismicTraceIterableDataset(IterableDataset):
         snr, amp_signal, amp_noise = self.calc_snr(waveform, meta["P"])
         if snr == 0:
             return None
+        #print(f"{trace_id}: {snr = }, {amp_signal = }, {amp_noise = }")
         # if snr < self.min_snr:
         #     return None
 
@@ -679,16 +696,29 @@ class SeismicTraceIterableDataset(IterableDataset):
         duration = []
         event_time0 = datetime.fromisoformat(hdf5_fp[event_id].attrs["event_time"])
         for e in event_ids:
+            if len(e.split('_'))>1: # skip non-catalog events
+                duration.append([0,0])
+                continue
+            p_picks = attrs["phase_index"][(attrs["event_id"] == e) & (attrs["phase_type"] == "P")]
+            s_picks = attrs["phase_index"][(attrs["event_id"] == e) & (attrs["phase_type"] == "S")]
+            if len(p_picks) == 0 or len(s_picks) == 0:  # need both P and S
+                continue
+            if not len(p_picks) == len(s_picks): #FIXME: temp
+                print(f"{trace_id} has unmatched P&S pair at {e}: len(p_picks)={len(p_picks)}, len(s_picks)={len(s_picks)}, p_picks={p_picks}, s_picks={s_picks}")
+            p_idx, s_idx = p_picks[0], s_picks[0]
             # duration.append([np.min(attrs["phase_index"][attrs["event_id"] == e]).item(), np.max(attrs["phase_index"][attrs["event_id"] == e]).item()])
             tmp_min = np.min(attrs["phase_index"][attrs["event_id"] == e]).item()
             tmp_max = np.max(attrs["phase_index"][attrs["event_id"] == e]).item()
+            if s_idx <= p_idx:
+                print(f"{trace_id} S arrives earlier than P at {e}: p_idx={p_idx}, s_idx={s_idx}")
             duration.append([tmp_min, max(tmp_min + 3, tmp_max + 2 * (tmp_max - tmp_min))])
 
             if str(e) not in hdf5_fp:
                 continue
             if len(attrs["phase_index"][attrs["event_id"] == e]) <= 1:  # need both P and S
                 continue
-            c0.append(np.mean(attrs["phase_index"][attrs["event_id"] == e]).item())
+            #c0.append(np.mean(attrs["phase_index"][attrs["event_id"] == e]).item())
+            c0.append((p_idx+s_idx)/2)
             shift_t0 = (
                 int(
                     round(
@@ -751,6 +781,7 @@ class SeismicTraceIterableDataset(IterableDataset):
             "amp_noise": amp_noise,
             "first_arrival": np.min(meta["P"]),
             "duration": duration,
+            "trace_id": trace_id,
         }
 
     def read_training_hf(self, trace_id):
@@ -848,6 +879,30 @@ class SeismicTraceIterableDataset(IterableDataset):
                     continue
 
                 # if self.stack_event and (random.random() < 0.6):
+                #stack_count = 0
+                #if self.stack_event:
+                #    stack_times = np.random.choice(([1, 2, 3]), p=[0.3, 0.5, 0.2])
+                #    max_tries = 20
+                #    for itry in range(max_tries):
+                #        # try:
+                #        if (stack_count == 0 and itry>=max_tries//2) or (random.random() < 0.3):
+                #            trace_id2 = trace_id
+                #        else:
+                #            trace_id2 = random.choice(self.data_list)
+                #        if self.format == "h5":
+                #            meta2 = self.read_training_h5(trace_id2, hdf5_fp)
+                #        elif self.format == "hf":
+                #            meta2 = self.read_training_hf(trace_id2)
+                #        # except Exception as e:
+                #        #     print(f"Error reading {trace_id2}:\n{e}")
+                #        if meta2 is not None:
+                #            meta, is_failed = stack_event(meta, meta2)
+                #            if not is_failed:
+                #                stack_count += 1
+                #                if stack_count == stack_times:
+                #                    break
+                #        #else:
+                #        #    print(f"not stack because of None meta2")
                 if self.stack_event:
                     # try:
                     trace_id2 = random.choice(self.data_list)
@@ -857,11 +912,10 @@ class SeismicTraceIterableDataset(IterableDataset):
                         meta2 = self.read_training_hf(trace_id2)
                     # except Exception as e:
                     #     print(f"Error reading {trace_id2}:\n{e}")
-
                     if meta2 is not None:
-                        if meta2 is not None:
-                            meta = stack_event(meta, meta2)
+                        meta, is_failed = stack_event(meta, meta2)
 
+                #meta = cut_data(meta, min_point=self.phase_width[0] * 2 * max(1, (stack_count+1)//2), nt=self.nt)
                 meta = cut_data(meta, min_point=self.phase_width[0] * 2)
 
                 if self.stack_noise:
