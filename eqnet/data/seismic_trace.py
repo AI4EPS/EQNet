@@ -421,7 +421,7 @@ class SeismicTraceIterableDataset(IterableDataset):
         self.rank = rank
         self.world_size = world_size
         if hdf5_file is not None:
-            tmp_hdf5_keys = f"/tmp/{'_'.join(hdf5_file.split('/'))}.txt"
+            tmp_hdf5_keys = f"./{'_'.join(hdf5_file.split('/'))}.txt"
             if not os.path.exists(tmp_hdf5_keys) and (rank == 0):
                 with h5py.File(hdf5_file, "r", libver="latest", swmr=True) as fp:
                     self.data_list = []
