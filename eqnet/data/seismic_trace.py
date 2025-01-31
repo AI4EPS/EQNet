@@ -279,8 +279,7 @@ def cut_noise(
     phase_mask = meta["phase_mask"].copy()  # nt, 1
     idx = np.min(np.argmax(phase_mask, axis=0))
     for _ in range(10):
-        shift = random.randint(-idx + 10, 0)
-        # shift = 0
+        shift = 0 if idx<20 else random.randint(-idx + 10, 0)
         waveform_ = np.roll(waveform, shift, axis=1)
         phase_mask_ = np.roll(phase_mask, shift, axis=0)
         if phase_mask_[-nt:, :].sum() == 0:
@@ -699,6 +698,9 @@ class SeismicTraceIterableDataset(IterableDataset):
             if len(e.split('_'))>1: # skip non-catalog events
                 duration.append([0,0])
                 continue
+            tmp_min = np.min(attrs["phase_index"][attrs["event_id"] == e]).item()
+            tmp_max = np.max(attrs["phase_index"][attrs["event_id"] == e]).item()
+            duration.append([tmp_min, max(tmp_min + 3, tmp_max + 2 * (tmp_max - tmp_min))])
             p_picks = attrs["phase_index"][(attrs["event_id"] == e) & (attrs["phase_type"] == "P")]
             s_picks = attrs["phase_index"][(attrs["event_id"] == e) & (attrs["phase_type"] == "S")]
             if len(p_picks) == 0 or len(s_picks) == 0:  # need both P and S
@@ -707,11 +709,8 @@ class SeismicTraceIterableDataset(IterableDataset):
                 print(f"{trace_id} has unmatched P&S pair at {e}: len(p_picks)={len(p_picks)}, len(s_picks)={len(s_picks)}, p_picks={p_picks}, s_picks={s_picks}")
             p_idx, s_idx = p_picks[0], s_picks[0]
             # duration.append([np.min(attrs["phase_index"][attrs["event_id"] == e]).item(), np.max(attrs["phase_index"][attrs["event_id"] == e]).item()])
-            tmp_min = np.min(attrs["phase_index"][attrs["event_id"] == e]).item()
-            tmp_max = np.max(attrs["phase_index"][attrs["event_id"] == e]).item()
             if s_idx <= p_idx:
                 print(f"{trace_id} S arrives earlier than P at {e}: p_idx={p_idx}, s_idx={s_idx}")
-            duration.append([tmp_min, max(tmp_min + 3, tmp_max + 2 * (tmp_max - tmp_min))])
 
             if str(e) not in hdf5_fp:
                 continue
