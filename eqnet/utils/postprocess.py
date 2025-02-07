@@ -20,9 +20,13 @@ def detect_peaks(scores, vmin=0.3, kernel=101, stride=1, K=0, dt=0.01):
     smax = F.max_pool2d(scores, (kernel, 1), stride=(stride, 1), padding=(pad, 0))[:, :, :nt, :]
     keep = (smax == scores).float()
     scores = scores * keep
+    # if there are multiple peaks with the same score, keep the first one
+    pos = torch.arange(nt, 0, -1, device=scores.device)[None, None, :, None].float()
+    sfirst = F.max_pool2d(keep * pos, (kernel, 1), stride=(stride, 1), padding=(pad, 0))[:, :, :nt, :]
+    scores = scores * (sfirst == pos).float()
 
     batch, chn, nt, ns = scores.size()
-    scores = torch.transpose(scores, 2, 3)
+    scores = torch.transpose(scores, 2, 3)  # [nb, nc, nt, nx] -> [nb, nc, nx, nt]
     if K == 0:
         K = max(round(nt / (30.0 / dt) * 10.0), 3)  # maximum 10 picks per 30 seconds
     if chn == 1:
