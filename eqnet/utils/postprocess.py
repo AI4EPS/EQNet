@@ -18,11 +18,12 @@ def detect_peaks(scores, vmin=0.3, kernel=101, stride=1, K=0, dt=0.01):
     nb, nc, nt, nx = scores.shape
     pad = kernel // 2
     smax = F.max_pool2d(scores, (kernel, 1), stride=(stride, 1), padding=(pad, 0))[:, :, :nt, :]
-    scores = scores * (smax == scores)
-    # sdiff = torch.zeros_like(scores)
-    # sdiff[:, :, 1:, :] = scores[:, :, 1:, :] - scores[:, :, :-1, :]
-    # keep = (smax == scores) & (sdiff != 0.0)
-    # scores = scores * keep.float()
+    keep = (smax == scores).float()
+    scores = scores * keep
+    # if there are multiple peaks with the same score, keep the first one
+    pos = torch.arange(nt, 0, -1, device=scores.device)[None, None, :, None].float()
+    sfirst = F.max_pool2d(keep * pos, (kernel, 1), stride=(stride, 1), padding=(pad, 0))[:, :, :nt, :]
+    scores = scores * (sfirst == pos).float()
 
     batch, chn, nt, ns = scores.size()
     scores = torch.transpose(scores, 2, 3)  # [nb, nc, nt, nx] -> [nb, nc, nx, nt]
@@ -34,18 +35,7 @@ def detect_peaks(scores, vmin=0.3, kernel=101, stride=1, K=0, dt=0.01):
         topk_scores, topk_inds = torch.topk(scores[:, 1:, :, :].view(batch, chn - 1, ns, -1), K)
     # topk_inds = topk_inds % nt
 
-    topk_scores = topk_scores.detach().cpu()
-    topk_inds = topk_inds.detach().cpu()
-
-    ## filtering close picks with the same scores
-    topk_inds, idx = torch.sort(topk_inds, dim=-1)
-    topk_scores = topk_scores.gather(-1, idx)
-    topk_diff = topk_inds[..., 1:] - topk_inds[..., :-1]
-    mask = torch.ones_like(topk_inds)
-    mask[..., 1:] = (topk_diff > (kernel / stride / 2)).float()
-    topk_scores = topk_scores * mask
-
-    return topk_scores, topk_inds
+    return topk_scores.detach().cpu(), topk_inds.detach().cpu()
 
 
 def extract_picks(
