@@ -268,7 +268,10 @@ def extract_events(
                             waveform_cut = waveform[i, :, itp : min(itp + p_window, its), k]
                             p_amp = torch.max(waveform_cut) - torch.min(waveform_cut)
                             waveform_cut = waveform[i, :, its : its + s_window, k]
-                            s_amp = torch.max(waveform_cut) - torch.min(waveform_cut)
+                            if waveform_cut.numel() == 0:
+                                s_amp = torch.tensor(0.0)
+                            else:
+                                s_amp = torch.max(waveform_cut) - torch.min(waveform_cut)
                             event_dict["sp_ratio"] = s_amp.item() / p_amp.item()
 
                             ## calculate event amplitude
