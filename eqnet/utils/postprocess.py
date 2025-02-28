@@ -106,7 +106,7 @@ def extract_picks(
 
         for j in range(nch):
             if waveform is not None:
-                window_amp_i = int(window_amp[j] / dt[i])
+                window_amp_i = int(window_amp[j] / dt[i])  ## index of window
 
             for k in range(nst):
                 if station_id is None:
@@ -117,45 +117,45 @@ def extract_picks(
                 topk_index_ijk, ii = torch.sort(topk_index[i, j, k])
                 topk_score_ijk = topk_score[i, j, k][ii]
 
+                idx = topk_score_ijk > vmin
+                topk_index_ijk = topk_index_ijk[idx]
+                topk_score_ijk = topk_score_ijk[idx]
+
                 # for ii, (index, score) in enumerate(zip(topk_index[i, j, k], topk_score[i, j, k])):
                 for ii, (index, score) in enumerate(zip(topk_index_ijk, topk_score_ijk)):
-                    if score > vmin:
-                        pick_index = index.item() + begin_time_index[i]
-                        pick_time = (begin_i + timedelta(seconds=index.item() * dt[i])).isoformat(
-                            timespec="milliseconds"
+                    # if score > vmin:
+                    pick_index = index.item() + begin_time_index[i]
+                    pick_time = (begin_i + timedelta(seconds=index.item() * dt[i])).isoformat(timespec="milliseconds")
+                    pick_dict = {
+                        # "file_name": file_i,
+                        "station_id": station_i,
+                        "phase_index": pick_index,
+                        "phase_time": pick_time,
+                        "phase_score": f"{score.item():.3f}",
+                        "phase_type": phases[j],
+                        "dt_s": dt[i],
+                    }
+
+                    if polarity_score is not None:
+                        # pick_dict["phase_polarity"] = (
+                        #     f"{(polarity_score[i, 1, index.item()//polarity_scale, k].item() - polarity_score[i, 2, index.item()//polarity_scale, k].item()):.3f}"
+                        # )
+                        # score = polarity_score[i, 1, :, k] - polarity_score[i, 2, :, k]
+                        score = (polarity_score[i, 0, :, k] - 0.5) * 2.0
+                        score = score[max(0, index.item() // polarity_scale - 3) : index.item() // polarity_scale + 3]
+                        idx = torch.argmax(torch.abs(score))
+                        pick_dict["phase_polarity"] = round(score[idx].item(), 3)
+
+                    if waveform is not None:
+                        j1 = topk_index_ijk[ii]
+                        j2 = (
+                            min(j1 + window_amp_i, topk_index_ijk[ii + 1])
+                            if ii < len(topk_index_ijk) - 1
+                            else j1 + window_amp_i
                         )
-                        pick_dict = {
-                            # "file_name": file_i,
-                            "station_id": station_i,
-                            "phase_index": pick_index,
-                            "phase_time": pick_time,
-                            "phase_score": f"{score.item():.3f}",
-                            "phase_type": phases[j],
-                            "dt_s": dt[i],
-                        }
+                        pick_dict["phase_amplitude"] = f"{torch.max(waveform_amp[i, j1:j2, k]).item():.3e}"
 
-                        if polarity_score is not None:
-                            # pick_dict["phase_polarity"] = (
-                            #     f"{(polarity_score[i, 1, index.item()//polarity_scale, k].item() - polarity_score[i, 2, index.item()//polarity_scale, k].item()):.3f}"
-                            # )
-                            # score = polarity_score[i, 1, :, k] - polarity_score[i, 2, :, k]
-                            score = (polarity_score[i, 0, :, k] - 0.5) * 2.0
-                            score = score[
-                                max(0, index.item() // polarity_scale - 3) : index.item() // polarity_scale + 3
-                            ]
-                            idx = torch.argmax(torch.abs(score))
-                            pick_dict["phase_polarity"] = round(score[idx].item(), 3)
-
-                        if waveform is not None:
-                            j1 = topk_index_ijk[ii]
-                            j2 = (
-                                min(j1 + window_amp_i, topk_index_ijk[ii + 1])
-                                if ii < len(topk_index_ijk) - 1
-                                else j1 + window_amp_i
-                            )
-                            pick_dict["phase_amplitude"] = f"{torch.max(waveform_amp[i, j1:j2, k]).item():.3e}"
-
-                        picks_per_file.append(pick_dict)
+                    picks_per_file.append(pick_dict)
 
         picks.append(picks_per_file)
     return picks
@@ -171,6 +171,9 @@ def extract_events(
     dt=0.01,
     event_scale=16,
     event_time=None,
+    waveform=None,
+    window_amp=[2, 2],
+    VPVS_RATIO=1.73,
     **kwargs,
 ):
     """Extract picks from prediction results.
@@ -217,6 +220,9 @@ def extract_events(
                 begin_i = "1970-01-01T00:00:00.000"
         begin_i = datetime.fromisoformat(begin_i.rstrip("Z"))
 
+        p_window = int(window_amp[0] / dt[i])  ## index of window
+        s_window = int(window_amp[1] / dt[i])  ## index of window
+
         for j in range(nch):
             for k in range(nst):
                 if station_id is None:
@@ -244,7 +250,35 @@ def extract_events(
                         if event_time is not None:
                             t0 = center_time - timedelta(seconds=event_time[i, 0, index.item(), k].item() * dt[i])
                             event_dict["event_time"] = t0.strftime("%Y-%m-%dT%H:%M:%S.%f")
-                            event_dict["travel_time_s"] = event_time[i, 0, index.item(), k].item() * dt[i]
+                            event_dict["travel_time"] = event_time[i, 0, index.item(), k].item() * dt[i]
+                            if event_dict["travel_time"] <= 0:
+                                continue
+
+                        if waveform is not None:
+                            ## calculate PS ratio
+                            ps_delta = max(
+                                2,
+                                event_time[i, 0, index.item(), k].item() * 2.0 * (VPVS_RATIO - 1) / (VPVS_RATIO + 1),
+                            )  # 2 is to prevent error of torch.max()
+                            itp = max(0, index.item() * event_scale - int(ps_delta * 0.5)) # waveform is not downsampled
+                            its = max(0, index.item() * event_scale + int(ps_delta * 0.5))
+
+                            # p_amp = torch.max(torch.abs(waveform[i, :, itp : min(itp + p_window, its), k]))
+                            # s_amp = torch.max(torch.abs(waveform[i, :, its : its + s_window, k]))
+                            waveform_cut = waveform[i, :, itp : min(itp + p_window, its), k]
+                            p_amp = torch.max(waveform_cut) - torch.min(waveform_cut)
+                            waveform_cut = waveform[i, :, its : its + s_window, k]
+                            if waveform_cut.numel() == 0:
+                                s_amp = torch.tensor(0.0)
+                            else:
+                                s_amp = torch.max(waveform_cut) - torch.min(waveform_cut)
+                            event_dict["sp_ratio"] = s_amp.item() / p_amp.item()
+
+                            ## calculate event amplitude
+                            # event_amp = torch.max(torch.abs(waveform[i, :, itp : its + (its - itp), k]))
+                            waveform_cut = waveform[i, :, itp : its + (its - itp), k]
+                            event_amp = (torch.max(torch.abs(waveform_cut)) - torch.min(torch.abs(waveform_cut))) / 2.0
+                            event_dict["event_amplitude"] = event_amp.item()
 
                         events_per_file.append(event_dict)
 
