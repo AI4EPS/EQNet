@@ -201,7 +201,7 @@ def extract_events(
     else:
         begin_channel_index = [0 for i in range(batch)]
     if ("begin_time_index" in kwargs) and (kwargs["begin_time_index"] is not None):
-        begin_time_index = [x.item() for x in kwargs["begin_time_index"]]
+        begin_time_index = [x.item()/event_scale for x in kwargs["begin_time_index"]]
     else:
         begin_time_index = [0 for i in range(batch)]
 
