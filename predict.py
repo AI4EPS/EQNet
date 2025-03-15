@@ -72,8 +72,8 @@ def pred_phasenet(args, model, data_loader, pick_path, event_path, figure_path):
             if "phase" in output:
                 phase_scores = torch.softmax(output["phase"], dim=1)  # [batch, nch, nt, nsta]
                 if "polarity" in output:
-                    # polarity_scores = torch.sigmoid(output["polarity"])
-                    polarity_scores = torch.softmax(output["polarity"], dim=1)
+                    polarity_scores = torch.sigmoid(output["polarity"])
+                    # polarity_scores = torch.softmax(output["polarity"], dim=1)
                 else:
                     polarity_scores = None
                 topk_phase_scores, topk_phase_inds = detect_peaks(
