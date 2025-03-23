@@ -90,15 +90,21 @@ class PickMetric:
         self.num_s_picks = 0
         self.num_p_picks_label = 0
         self.num_s_picks_label = 0
+        self.p_trace_stat = []
+        self.s_trace_stat = []
+        self.p_trace_stat_label = []
+        self.s_trace_stat_label = []
 
         self.time_res_p = []
         self.time_res_s = []
         self.magnitude_p = []
         self.snr_p = []
         self.epicenter_distance_p = []
+        self.azimuth_p = []
         self.magnitude_s = []
         self.snr_s = []
         self.epicenter_distance_s = []
+        self.azimuth_s = []
         self.scores_p = []
         self.scores_s = []
         self.polarity_score_p = []
@@ -118,9 +124,11 @@ class PickMetric:
         self.magnitude_p = np.array(self.magnitude_p)
         self.snr_p = np.array(self.snr_p)
         self.epicenter_distance_p =  np.array(self.epicenter_distance_p)
+        self.azimuth_p = np.array(self.azimuth_p)
         self.magnitude_s = np.array(self.magnitude_s)
         self.snr_s = np.array(self.snr_s)
         self.epicenter_distance_s = np.array(self.epicenter_distance_s)
+        self.azimuth_s = np.array(self.azimuth_s)
         self.scores_p = np.array(self.scores_p)
         self.scores_s = np.array(self.scores_s)
         self.polarity_score_p = np.array(self.polarity_score_p)
@@ -129,10 +137,15 @@ class PickMetric:
         self.polarity_pred_s = np.array(self.polarity_pred_s)
         self.polarity_manual_p = np.array(self.polarity_manual_p)
         self.polarity_manual_s = np.array(self.polarity_manual_s)
+        assert all([len(self.p_trace_stat)==self.num_p_picks, len(self.s_trace_stat)==self.num_s_picks, len(self.p_trace_stat_label)==self.num_p_picks_label, len(self.s_trace_stat_label)==self.num_s_picks_label]), f"trace stat length not match, {len(self.p_trace_stat) = }, {self.num_p_picks = }, {len(self.s_trace_stat) = }, {self.num_s_picks = }, {len(self.p_trace_stat_label) = }, {self.num_p_picks_label = }, {len(self.s_trace_stat_label) = }, {self.num_s_picks_label = }"
+        self.p_trace_stat = pd.DataFrame(self.p_trace_stat, columns=["trace_id", "snr", "magnitude", "distance", "azimuth"])
+        self.s_trace_stat = pd.DataFrame(self.s_trace_stat, columns=["trace_id", "snr", "magnitude", "distance", "azimuth"])
+        self.p_trace_stat_label = pd.DataFrame(self.p_trace_stat_label, columns=["trace_id", "snr", "magnitude", "distance", "azimuth"])
+        self.s_trace_stat_label = pd.DataFrame(self.s_trace_stat_label, columns=["trace_id", "snr", "magnitude", "distance", "azimuth"])
         
         return
         
-    def update_matched_picks(self, min_res_p, min_res_s, min_scores_p, min_scores_s, magnitude, distance_km, snr_sta, polarity_score_p=None, polarity_score_s=None, polarity_pred_p=None, polarity_pred_s=None, polarity_manual_p=None, polarity_manual_s=None):
+    def update_matched_picks(self, min_res_p, min_res_s, min_scores_p, min_scores_s, magnitude, distance_km, snr_sta, azimuth, polarity_score_p=None, polarity_score_s=None, polarity_pred_p=None, polarity_pred_s=None, polarity_manual_p=None, polarity_manual_s=None):
         self.time_res_p+=min_res_p
         self.time_res_s+=min_res_s
         self.scores_p+=min_scores_p
@@ -141,6 +154,8 @@ class PickMetric:
         self.magnitude_s+=magnitude*len(min_res_s)
         self.epicenter_distance_p+=distance_km*len(min_res_p)
         self.epicenter_distance_s+=distance_km*len(min_res_s)
+        self.azimuth_p+=azimuth*len(min_res_p)
+        self.azimuth_s+=azimuth*len(min_res_s)
         self.snr_p+=snr_sta*len(min_res_p)
         self.snr_s+=snr_sta*len(min_res_s)
         self.polarity_score_p+=polarity_score_p if polarity_score_p is not None else [0]*len(min_res_p)
@@ -161,6 +176,8 @@ class PickMetric:
         self.tp_s_magnitude = self.magnitude_s[index_s]
         self.tp_p_distance = self.epicenter_distance_p[index_p]
         self.tp_s_distance = self.epicenter_distance_s[index_s]
+        self.tp_p_azimuth = self.azimuth_p[index_p]
+        self.tp_s_azimuth = self.azimuth_s[index_s]
         self.tp_p_snr = self.snr_p[index_p]
         self.tp_s_snr = self.snr_s[index_s]
         self.tp_p_scores = self.scores_p[index_p]
@@ -279,7 +296,7 @@ class PickMetric:
         conf_matrix_s = confusion_matrix(self.polarity_manual_s, self.polarity_pred_s, labels=["D", "N", "U"])[::-1]
 
         # 创建热力图
-        fig, axes = plt.subplots(1, 2, figsize=(11, 5))
+        fig, axes = plt.subplots(1, 2, figsize=(11, 5), dpi=300)
         axes[0].set_title("P phase")
         sns.heatmap(
             conf_matrix_p, annot=True, fmt="d", cmap="Blues", linewidths=1.0,# linecolor="gray",
@@ -312,6 +329,82 @@ class PickMetric:
         else:
             plt.show()
         plt.close()
+        
+    def calc_metric_vs_params(self, param, bins=None, save_path=None):
+        #plot residual vs params, p&s picks residual, polarity confusion matrix if (has_polarity)
+        num_p_picks_bin = np.histogram(self.p_trace_stat[param], bins=bins)[0]
+        num_s_picks_bin = np.histogram(self.s_trace_stat[param], bins=bins)[0]
+        num_p_picks_label_bin = np.histogram(self.p_trace_stat_label[param], bins=bins)[0]
+        num_s_picks_label_bin = np.histogram(self.s_trace_stat_label[param], bins=bins)[0]
+        tp_p_bin, tp_s_bin, fp_p_bin, fp_s_bin, fn_p_bin, fn_s_bin = [], [], [], [], [], []
+        precision_p_bin, precision_s_bin, recall_p_bin, recall_s_bin, f1_p_bin, f1_s_bin = [], [], [], [], [], []
+        
+        for i, (l, r) in enumerate(zip(bins[:-1], bins[1:])):
+            tp_p_picks = self.tp_p_picks[np.logical_and(eval(f"self.tp_p_{param}") >= l, eval(f"self.tp_p_{param}") < r)]
+            tp_s_picks = self.tp_s_picks[np.logical_and(eval(f"self.tp_s_{param}") >= l, eval(f"self.tp_s_{param}") < r)]
+            tp_p_params = eval(f"self.tp_p_{param}")[np.logical_and(eval(f"self.tp_p_{param}") >= l, eval(f"self.tp_p_{param}") < r)]
+            tp_s_params = eval(f"self.tp_s_{param}")[np.logical_and(eval(f"self.tp_s_{param}") >= l, eval(f"self.tp_s_{param}") < r)]
+            
+            tp_p_per_bin, tp_s_per_bin = len(tp_p_picks), len(tp_s_picks)
+            fp_p_per_bin, fp_s_per_bin = num_p_picks_bin[i] - tp_p_per_bin, num_s_picks_bin[i] - tp_s_per_bin
+            fn_p_per_bin, fn_s_per_bin = num_p_picks_label_bin[i] - tp_p_per_bin, num_s_picks_label_bin[i] - tp_s_per_bin
+            
+            precision_p_per_bin = tp_p_per_bin / (tp_p_per_bin + fp_p_per_bin) if tp_p_per_bin + fp_p_per_bin > 0 else 0
+            precision_s_per_bin = tp_s_per_bin / (tp_s_per_bin + fp_s_per_bin) if tp_s_per_bin + fp_s_per_bin > 0 else 0
+            recall_p_per_bin = tp_p_per_bin / (tp_p_per_bin + fn_p_per_bin) if tp_p_per_bin + fn_p_per_bin > 0 else 0
+            recall_s_per_bin = tp_s_per_bin / (tp_s_per_bin + fn_s_per_bin) if tp_s_per_bin + fn_s_per_bin > 0 else 0
+            f1_p_per_bin = 2 * precision_p_per_bin * recall_p_per_bin / (precision_p_per_bin + recall_p_per_bin) if precision_p_per_bin + recall_p_per_bin > 0 else 0
+            f1_s_per_bin = 2 * precision_s_per_bin * recall_s_per_bin / (precision_s_per_bin + recall_s_per_bin) if precision_s_per_bin + recall_s_per_bin > 0 else 0
+
+            tp_p_bin.append(tp_p_per_bin); tp_s_bin.append(tp_s_per_bin)
+            fp_p_bin.append(fp_p_per_bin); fp_s_bin.append(fp_s_per_bin)
+            fn_p_bin.append(fn_p_per_bin); fn_s_bin.append(fn_s_per_bin)
+            precision_p_bin.append(precision_p_per_bin); precision_s_bin.append(precision_s_per_bin)
+            recall_p_bin.append(recall_p_per_bin); recall_s_bin.append(recall_s_per_bin)
+            f1_p_bin.append(f1_p_per_bin); f1_s_bin.append(f1_s_per_bin)
+            
+        fig, axes = plt.subplots(2, 1, figsize=(10, 10))
+        x = np.arange(len(bins[:-1]))
+        labels = [f'{bins[i]:.2f}-{bins[i+1]:.2f}' for i in range(len(bins) - 1)]
+        width = 0.25
+        axes[0].bar(x - width, precision_p_bin, width=width, label='precision_p')
+        axes[0].bar(x, recall_p_bin, width=width, label='recall_p')
+        axes[0].bar(x + width, f1_p_bin, width=width, label='f1_p')
+        for bar in axes[0].patches:
+            height = bar.get_height()
+            axes[0].annotate(f'{height:.2f}', 
+                            xy=(bar.get_x() + bar.get_width() / 2, height), 
+                            xytext=(0, 3), 
+                            textcoords="offset points",
+                            ha='center', va='bottom', fontsize=10)
+        axes[0].set_xlabel(param)
+        axes[0].set_xticks(x)
+        axes[0].set_xticklabels(labels)
+        axes[0].legend(loc='lower right')
+        axes[0].set_ylim(0.9, 1.0)
+        axes[1].bar(x - width,precision_s_bin, width=width, label='precision_s')
+        axes[1].bar(x, recall_s_bin, width=width, label='recall_s')
+        axes[1].bar(x + width,f1_s_bin, width=width, label='f1_s')
+        axes[1].set_xlabel(param)
+        axes[1].set_xticks(x)
+        axes[1].set_xticklabels(labels)
+        axes[1].legend(loc='lower right')
+        axes[1].set_ylim(0.9, 1.0)
+        for bar in axes[1].patches:
+            height = bar.get_height()
+            axes[1].annotate(f'{height:.2f}', 
+                            xy=(bar.get_x() + bar.get_width() / 2, height), 
+                            xytext=(0, 3), 
+                            textcoords="offset points",
+                            ha='center', va='bottom', fontsize=10)
+
+        plt.tight_layout()
+        if save_path is not None:
+            plt.savefig(save_path)
+        else:
+            plt.show()
+        plt.close()
+        return precision_p_bin, precision_s_bin, recall_p_bin, recall_s_bin, f1_p_bin, f1_s_bin, tp_p_bin, tp_s_bin, fp_p_bin, fp_s_bin, fn_p_bin, fn_s_bin
 
 # %%
 pick_metric = PickMetric(sample_rate=sample_rate)
@@ -388,8 +481,12 @@ with h5py.File(h5_file, "r") as fp:
                     s_picks_gt.append(phase_index_gt[np.logical_and(e_ids==e_id, phase_type_gt=='S')][0])
                 pick_metric.num_p_picks_label+=len(p_picks_gt)
                 pick_metric.num_s_picks_label+=len(s_picks_gt)
+                pick_metric.p_trace_stat_label.extend([{"trace_id": f"{event_id}/{sta_id}", "snr": event[sta_id].attrs["snr"].max(), "magnitude": event.attrs["magnitude"], "distance": event[sta_id].attrs["distance_km"], "azimuth": event[sta_id].attrs["azimuth"]}]*len(p_picks_gt))
+                pick_metric.s_trace_stat_label.extend([{"trace_id": f"{event_id}/{sta_id}", "snr": event[sta_id].attrs["snr"].max(), "magnitude": event.attrs["magnitude"], "distance": event[sta_id].attrs["distance_km"], "azimuth": event[sta_id].attrs["azimuth"]}]*len(s_picks_gt))
                 pick_metric_thld.num_p_picks_label += len(p_picks_gt) if num_stations>=station_threshold else 0
                 pick_metric_thld.num_s_picks_label += len(s_picks_gt) if num_stations>=station_threshold else 0
+                pick_metric_thld.p_trace_stat_label.extend([{"trace_id": f"{event_id}/{sta_id}", "snr": event[sta_id].attrs["snr"].max(), "magnitude": event.attrs["magnitude"], "distance": event[sta_id].attrs["distance_km"], "azimuth": event[sta_id].attrs["azimuth"]}]*len(p_picks_gt) if num_stations>=station_threshold else [])
+                pick_metric_thld.s_trace_stat_label.extend([{"trace_id": f"{event_id}/{sta_id}", "snr": event[sta_id].attrs["snr"].max(), "magnitude": event.attrs["magnitude"], "distance": event[sta_id].attrs["distance_km"], "azimuth": event[sta_id].attrs["azimuth"]}]*len(s_picks_gt) if num_stations>=station_threshold else [])
             fn_p_trace.append([f"{event_id}/{sta_id}" for sta_id in station_ids if len(set(event[sta_id].attrs["phase_type"]))>1])
             fn_s_trace.append([f"{event_id}/{sta_id}" for sta_id in station_ids if len(set(event[sta_id].attrs["phase_type"]))>1])
             continue
@@ -429,8 +526,12 @@ with h5py.File(h5_file, "r") as fp:
             assert len(s_picks_gt) == len(s_pol_gt), f"s_picks_gt and s_pol_gt have different length in {event_id} {sta_id}"
             pick_metric.num_p_picks_label+=len(p_picks_gt)
             pick_metric.num_s_picks_label+=len(s_picks_gt)
+            pick_metric.p_trace_stat_label.extend([{"trace_id": f"{event_id}/{sta_id}", "snr": event[sta_id].attrs["snr"].max(), "magnitude": event.attrs["magnitude"], "distance": event[sta_id].attrs["distance_km"], "azimuth": event[sta_id].attrs["azimuth"]}]*len(p_picks_gt))
+            pick_metric.s_trace_stat_label.extend([{"trace_id": f"{event_id}/{sta_id}", "snr": event[sta_id].attrs["snr"].max(), "magnitude": event.attrs["magnitude"], "distance": event[sta_id].attrs["distance_km"], "azimuth": event[sta_id].attrs["azimuth"]}]*len(s_picks_gt))    
             pick_metric_thld.num_p_picks_label += len(p_picks_gt) if num_stations>=station_threshold else 0
             pick_metric_thld.num_s_picks_label += len(s_picks_gt) if num_stations>=station_threshold else 0
+            pick_metric_thld.p_trace_stat_label.extend([{"trace_id": f"{event_id}/{sta_id}", "snr": event[sta_id].attrs["snr"].max(), "magnitude": event.attrs["magnitude"], "distance": event[sta_id].attrs["distance_km"], "azimuth": event[sta_id].attrs["azimuth"]}]*len(p_picks_gt) if num_stations>=station_threshold else [])
+            pick_metric_thld.s_trace_stat_label.extend([{"trace_id": f"{event_id}/{sta_id}", "snr": event[sta_id].attrs["snr"].max(), "magnitude": event.attrs["magnitude"], "distance": event[sta_id].attrs["distance_km"], "azimuth": event[sta_id].attrs["azimuth"]}]*len(s_picks_gt) if num_stations>=station_threshold else [])
             if sta_id not in df["station_id"].values:
                 continue
             if len(p_picks_gt) == 0 or len(s_picks_gt) == 0:
@@ -438,7 +539,7 @@ with h5py.File(h5_file, "r") as fp:
             
             df_sta = df[df["station_id"] == sta_id]
             if args.main_event_only:
-                duration = np.stack([p_picks_gt-100, p_picks_gt+3*(s_picks_gt-p_picks_gt)], axis=1)
+                duration = np.stack([p_picks_gt-5*sample_rate, p_picks_gt+3*(s_picks_gt-p_picks_gt)], axis=1)
                 duration = np.clip(duration, 0, 12000) #NOTE hard code the duration
                 mask = np.zeros(len(df_sta), dtype=bool)
                 for i, (p, s) in enumerate(duration):
@@ -448,8 +549,12 @@ with h5py.File(h5_file, "r") as fp:
             df_sta_s = df_sta[df_sta["phase_type"] == "S"]
             pick_metric.num_p_picks += len(df_sta_p)
             pick_metric.num_s_picks += len(df_sta_s)
+            pick_metric.p_trace_stat.extend([{"trace_id": f"{event_id}/{sta_id}", "snr": event[sta_id].attrs["snr"].max(), "magnitude": event.attrs["magnitude"], "distance": event[sta_id].attrs["distance_km"], "azimuth": event[sta_id].attrs["azimuth"]}]*len(df_sta_p))
+            pick_metric.s_trace_stat.extend([{"trace_id": f"{event_id}/{sta_id}", "snr": event[sta_id].attrs["snr"].max(), "magnitude": event.attrs["magnitude"], "distance": event[sta_id].attrs["distance_km"], "azimuth": event[sta_id].attrs["azimuth"]}]*len(df_sta_s))
             pick_metric_thld.num_p_picks += len(df_sta_p) if num_stations>=station_threshold else 0
             pick_metric_thld.num_s_picks += len(df_sta_s) if num_stations>=station_threshold else 0
+            pick_metric_thld.p_trace_stat.extend([{"trace_id": f"{event_id}/{sta_id}", "snr": event[sta_id].attrs["snr"].max(), "magnitude": event.attrs["magnitude"], "distance": event[sta_id].attrs["distance_km"], "azimuth": event[sta_id].attrs["azimuth"]}]*len(df_sta_p) if num_stations>=station_threshold else [])
+            pick_metric_thld.s_trace_stat.extend([{"trace_id": f"{event_id}/{sta_id}", "snr": event[sta_id].attrs["snr"].max(), "magnitude": event.attrs["magnitude"], "distance": event[sta_id].attrs["distance_km"], "azimuth": event[sta_id].attrs["azimuth"]}]*len(df_sta_s) if num_stations>=station_threshold else [])
             if len(df_sta_p) == 0:
                 min_res_p = [np.inf] * len(p_picks_gt)
                 min_scores_p = [np.inf] * len(p_picks_gt)
@@ -473,7 +578,7 @@ with h5py.File(h5_file, "r") as fp:
                 min_polarity_manual_p = list(p_pol_gt)
                 
                 #if np.abs(min_res_p[list(set(e_ids)).index(event_id)]) > dt_bar:
-                if np.abs(min_res_p).max() > dt_bar:
+                if np.abs(min_res_p).max()/sample_rate > dt_bar:
                     fn_p_trace.append(f"{event_id}/{sta_id}")
             if len(df_sta_s) == 0:
                 min_res_s = [np.inf] * len(s_picks_gt)
@@ -495,18 +600,19 @@ with h5py.File(h5_file, "r") as fp:
                 assert len(index_s) == len(s_pol_gt), f"index_s and s_picks_gt have different length in {event_id} {sta_id}"
                 min_polarity_manual_s = list(s_pol_gt)
                 #if np.abs(min_res_s[list(set(e_ids)).index(event_id)]) > dt_bar:
-                if np.abs(min_res_s).max() > dt_bar:
+                if np.abs(min_res_s).max()/sample_rate > dt_bar:
                     fn_s_trace.append(f"{event_id}/{sta_id}")
                 
             snr_sta = event[sta_id].attrs["snr"]
             snr_sta = snr_sta[snr_sta > 0]
             if len(snr_sta) > 0:
-                snr_sta = snr_sta.mean()
+                #snr_sta = snr_sta.mean()
+                snr_sta = snr_sta.max()
             else:
                 snr_sta = 0
-            pick_metric.update_matched_picks(min_res_p, min_res_s, min_scores_p, min_scores_s, [event.attrs["magnitude"]], [event[sta_id].attrs["distance_km"]], [snr_sta], min_polarity_score_p, min_polarity_score_s, min_polarity_pred_p, min_polarity_pred_s, min_polarity_manual_p, min_polarity_manual_s)
+            pick_metric.update_matched_picks(min_res_p, min_res_s, min_scores_p, min_scores_s, [event.attrs["magnitude"]], [event[sta_id].attrs["distance_km"]], [snr_sta], [event[sta_id].attrs["azimuth"]], min_polarity_score_p, min_polarity_score_s, min_polarity_pred_p, min_polarity_pred_s, min_polarity_manual_p, min_polarity_manual_s)
             if num_stations>=station_threshold:
-                pick_metric_thld.update_matched_picks(min_res_p, min_res_s, min_scores_p, min_scores_s, [event.attrs["magnitude"]], [event[sta_id].attrs["distance_km"]], [snr_sta], min_polarity_score_p, min_polarity_score_s, min_polarity_pred_p, min_polarity_pred_s, min_polarity_manual_p, min_polarity_manual_s)
+                pick_metric_thld.update_matched_picks(min_res_p, min_res_s, min_scores_p, min_scores_s, [event.attrs["magnitude"]], [event[sta_id].attrs["distance_km"]], [snr_sta], [event[sta_id].attrs["azimuth"]], min_polarity_score_p, min_polarity_score_s, min_polarity_pred_p, min_polarity_pred_s, min_polarity_manual_p, min_polarity_manual_s)
 
 pick_metric.list2numpy()
 pick_metric_thld.list2numpy()
@@ -552,6 +658,8 @@ class EventMetric:
     def __init__(self):
         self.num_event_picks = 0
         self.num_event_picks_label = 0
+        self.event_stat = []
+        self.event_stat_label = []
         
         self.time_res = []
         self.x_res = []
@@ -560,6 +668,7 @@ class EventMetric:
         self.x = []
         self.y = []
         self.z = []  
+        self.depth = []
         self.magnitude = []
         self.magnitude_pred = []
         self.snr = []
@@ -582,6 +691,9 @@ class EventMetric:
         self.epicenter_distance_pred = np.concatenate(self.epicenter_distance_pred)
         self.epicenter_distance_res = np.concatenate(self.epicenter_distance_res)
         self.azimuth_res = np.concatenate(self.azimuth_res)
+        assert all([len(self.event_stat)==self.num_event_picks, len(self.event_stat_label)==self.num_event_picks_label]), f"event_stat and num_event_picks have different length in {self.num_event_picks} {self.num_event_picks_label}"
+        self.event_stat = pd.DataFrame(self.event_stat)
+        self.event_stat_label = pd.DataFrame(self.event_stat_label)
         
         return
     
@@ -726,6 +838,7 @@ def average_location(locations):
 event_metric = EventMetric()
 event_metric_thld = EventMetric()
 fn_event_ids = []
+num_event_center_picks = 0
 
 #dbscan = DBSCAN(eps=dbscan_epsilon, min_samples=1)
 dbscan = DBSCAN(eps=dbscan_epsilon, min_samples=3)
@@ -757,38 +870,46 @@ with h5py.File(h5_file, "r") as fp:
             df = pd.concat(
                 [pd.read_csv(os.path.join(pick, f)) for f in os.listdir(pick) if f.endswith(".csv")]
             )
-        df = df[df["phase_score"] >= args.score_threshold]
-        #if args.main_event_only:
-        #    new_df = []
-        #    for sta_id in df["station_id"].unique():
-        #        phase_type_gt = event[sta_id].attrs["phase_type"]
-        #        phase_index_gt = event[sta_id].attrs["phase_index"]
-        #        try:
-        #            if len(phase_type_gt)==1 or event[sta_id].attrs["phase_status"]=='automatic':
-        #                new_df.append(df[df["station_id"]==sta_id])
-        #                continue
-        #        except:
-        #            pass
-        #        
-        #        p_picks_gt, s_picks_gt = [], []
-        #        e_ids = event[sta_id].attrs["event_id"]
-        #        for e_id in set(e_ids): # exclude single p event in more than one event case
-        #            if len(set(event[sta_id].attrs["phase_type"][e_ids==e_id])) < 2:
-        #                continue
-        #            p_picks_gt.append(phase_index_gt[np.logical_and(e_ids==e_id, phase_type_gt=='P')][0])
-        #            s_picks_gt.append(phase_index_gt[np.logical_and(e_ids==e_id, phase_type_gt=='S')][0])
-        #        p_picks_gt = np.array(p_picks_gt)
-        #        s_picks_gt = np.array(s_picks_gt)
-        #        
-        #        df_sta = df[df["station_id"] == sta_id]
-        #        duration = np.stack([p_picks_gt-100, p_picks_gt+3*(s_picks_gt-p_picks_gt)], axis=1)
-        #        duration = np.clip(duration, 0, 12000) #NOTE hard code the duration
-        #        mask = np.zeros(len(df_sta), dtype=bool)
-        #        for i, (p, s) in enumerate(duration):
-        #            mask = np.logical_or(mask, np.logical_and(df_sta["phase_index"]>=p, df_sta["phase_index"]<=s))
-        #        df_sta = df_sta[mask]
-        #        new_df.append(df_sta)
-        #    df = pd.concat(new_df)
+        df = df[df["event_score"] >= args.score_threshold]
+        if args.main_event_only:
+            new_df = []
+            VAPP = 8.20 # km/s
+            for sta_id in df["station_id"].unique():
+                phase_type_gt = event[sta_id].attrs["phase_type"]
+                phase_index_gt = event[sta_id].attrs["phase_index"]
+                #try:
+                #    if len(phase_type_gt)==1 or event[sta_id].attrs["phase_status"]=='automatic':
+                #        new_df.append(df[df["station_id"]==sta_id])
+                #        continue
+                #except:
+                #    pass
+                
+                p_picks_gt, s_picks_gt = [], []
+                e_ids = event[sta_id].attrs["event_id"]
+                for e_id in [event_id]:#set(e_ids): # exclude single p event in more than one event case
+                    #if len(set(event[sta_id].attrs["phase_type"][e_ids==e_id])) < 2:
+                    #    continue
+                    p_picks_gt.append(phase_index_gt[np.logical_and(e_ids==e_id, phase_type_gt=='P')])
+                    s_picks_gt.append(phase_index_gt[np.logical_and(e_ids==e_id, phase_type_gt=='S')])
+                p_picks_gt = np.concatenate(p_picks_gt)
+                s_picks_gt = np.concatenate(s_picks_gt)
+                if len(p_picks_gt) == 0 and len(s_picks_gt) == 0:
+                    new_df.append(df[df["station_id"]==sta_id])
+                    continue
+                if len(s_picks_gt) == 0:
+                    s_picks_gt = p_picks_gt + event[sta_id].attrs["distance_km"] / VAPP * sample_rate
+                if len(p_picks_gt) == 0:
+                    p_picks_gt = s_picks_gt - event[sta_id].attrs["distance_km"] / VAPP * sample_rate
+                
+                df_sta = df[df["station_id"] == sta_id]
+                duration = np.stack([p_picks_gt-5*sample_rate, p_picks_gt+3*(s_picks_gt-p_picks_gt)], axis=1) / feature_scale
+                duration = np.clip(duration, 0, 12000/feature_scale) #NOTE hard code the duration
+                mask = np.zeros(len(df_sta), dtype=bool)
+                for i, (p, s) in enumerate(duration):
+                    mask = np.logical_or(mask, np.logical_and(df_sta["phase_index"]>=p, df_sta["phase_index"]<=s))
+                df_sta = df_sta[mask]
+                new_df.append(df_sta)
+            df = pd.concat(new_df) if len(new_df) > 0 else pd.DataFrame()
                 
         if len(df) == 0:
             event_metric.empty_files += 1
@@ -797,7 +918,7 @@ with h5py.File(h5_file, "r") as fp:
         assert 'event_center_index' in df.columns, f'event_center_index not in {event_id}.columns'
         assert 'p_index' in df.columns, f'p_index not in {event_id}.columns'
         assert 's_index' in df.columns, f's_index not in {event_id}.columns'
-        assert 'event_original_time' in df.columns, f'event_original_time not in {event_id}.columns'
+        assert 'event_time' in df.columns, f'event_time not in {event_id}.columns'
         
         stations = df["station_id"].values
         hypoparameters = np.zeros((len(df),9))
@@ -813,7 +934,7 @@ with h5py.File(h5_file, "r") as fp:
         
         labels = dbscan.fit_predict(hypoparameters[:,:4]*np.array(time_space_weight)[None,:]) # weighted
         classes, counts = np.unique(labels, return_counts=True)
-        if num_stations > 5 and len(classes) > 1:
+        if len(classes) > 1:
             if classes[0] == -1:
                 classes = classes[1:]
                 counts = counts[1:]
@@ -822,6 +943,7 @@ with h5py.File(h5_file, "r") as fp:
             
         event_metric.num_event_picks += len(classes)
         event_metric_thld.num_event_picks += len(classes) if num_stations>=station_threshold else 0
+        num_event_center_picks += len(df)
         min_time_diff = np.inf
         x_diff = np.inf
         y_diff = np.inf
@@ -898,3 +1020,5 @@ print(f"azimuth residual: len: {len(event_metric.azimuth_res.flatten())}, abs me
 print(f"\nnum_station >= {station_threshold} subset:\n")
 event_metric_thld.plot_residual(f"./metrics/event_residual_threshold{station_threshold}{suffix}.png", info_only=(args.save_path is not None))
 print(f"azimuth residual: len: {len(event_metric_thld.azimuth_res.flatten())}, abs medium: {np.median(np.abs(event_metric_thld.azimuth_res.flatten()))}, max: {event_metric_thld.azimuth_res.flatten()[np.argmax(np.abs(event_metric_thld.azimuth_res.flatten()))]}, min: {event_metric_thld.azimuth_res.flatten()[np.argmin(np.abs(event_metric_thld.azimuth_res.flatten()))]}")
+
+print(f"num_event_center_picks: {num_event_center_picks}")
