@@ -6,9 +6,9 @@ from torch.distributions import MultivariateNormal as MVN
 
 def cross_entropy_loss(inputs, targets, mask):
     inputs = inputs.float()  # https://github.com/pytorch/pytorch/issues/48163
+    targets = targets.float()
     num=mask.sum()
-    loss = F.binary_cross_entropy_with_logits(inputs, targets, weight=mask, 
-                     reduction='sum')/(num*targets.shape[1])
+    loss = (F.binary_cross_entropy_with_logits(inputs, targets, reduction='none') * mask).sum() / (num + 1e-4)
         
     return loss
 

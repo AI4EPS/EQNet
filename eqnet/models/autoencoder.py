@@ -239,7 +239,7 @@ class UNetHead(nn.Module):
 
         return loss
 
-class AutoEncoder(_SimpleSegmentationModel):
+class AutoEncoder(nn.Module):
     pass
 
 

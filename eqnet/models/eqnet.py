@@ -126,7 +126,7 @@ class EventDetector(nn.Module):
         )
         #'''
 
-    def forward(self, features, event_center, event_location, event_location_mask):
+    def forward(self, features, event_center, event_mask, event_location, event_location_mask):
         """input shape [batch, in_channels, time_steps]
         output shape [batch, time_steps]"""
         x = features["out3"]
@@ -152,10 +152,10 @@ class EventDetector(nn.Module):
         hypocenter = hypocenter.permute(0, 2, 3, 1)
 
         if self.training:            
-            return None, self.losses({"event": heatmap, "offset": offset, "hypocenter": hypocenter}, event_center, event_location, event_location_mask)
+            return None, self.losses({"event": heatmap, "offset": offset, "hypocenter": hypocenter}, event_center, event_mask, event_location, event_location_mask)
         elif event_center is not None:
             return {"event": heatmap, "offset": offset, "hypocenter": hypocenter}, \
-                self.losses({"event": heatmap, "offset": offset, "hypocenter": hypocenter}, event_center, event_location, event_location_mask)
+                self.losses({"event": heatmap, "offset": offset, "hypocenter": hypocenter}, event_center, event_mask, event_location, event_location_mask)
         else:
             return {"event": heatmap, "offset": offset, "hypocenter": hypocenter}, {}
         
@@ -168,9 +168,9 @@ class EventDetector(nn.Module):
         #    return {"event": heatmap, "offset": offset}, {}
 
 
-    def losses(self, outputs, event_center, event_location, event_location_mask):
+    def losses(self, outputs, event_center, event_mask, event_location, event_location_mask):
         #hm_loss = cross_entropy_loss(outputs["event"], event_center)
-        hm_loss = focal_loss(outputs["event"], event_center)
+        hm_loss = focal_loss(outputs["event"], event_center, event_mask)
         hw_loss = weighted_l1_reg_loss(outputs["offset"], event_location[:, 5:, :, :], event_location_mask, weights=self.offset_weight)
         
         #reg_loss = smoothl1_reg_loss(outputs["hypocenter"], event_location[:, :3, :, :], event_location_mask)
@@ -291,12 +291,13 @@ class EQNet(nn.Module):
                 depths=[2, 2, 6, 2],
                 #num_heads=[3, 6, 12, 24],
                 num_heads=[2, 4, 8, 16],
-                window_size=[8, 10],
+                window_size=[16, 16], # can use 32 for inference
                 #stochastic_depth_prob=0.2,
                 stochastic_depth_prob=0.15,
                 block_name="SwinTransformerBlockV2",
                 out_indices=out_indices,
                 use_station_location=use_station_location,
+                decoupled_relative_position_bias=False,
             )
         elif backbone == "swin_rope_axial":
             out_indices = [0, 1, 2, 3] if "upernet" in head else [3]
@@ -404,7 +405,7 @@ class EQNet(nn.Module):
         if head == "upernet":
             self.phase_picker = PhaseHead(channels=neck_channels)
         elif head == "upernet2":
-            self.phase_picker = PhaseHead2(channels=neck_channels)
+            self.phase_picker = PhaseHead(channels=neck_channels)
         else:
             self.phase_picker = PhasePicker(channels=channels, bn=True, dilations=dilations)
         
@@ -456,19 +457,22 @@ class EQNet(nn.Module):
             polarity = batched_inputs["polarity"].to(self.device)
             polarity_mask = batched_inputs["polarity_mask"].to(self.device)
             event_center = batched_inputs["event_center"].to(self.device)
+            event_mask = batched_inputs["event_mask"].to(self.device)
             event_location = batched_inputs["event_location"].to(self.device)
             event_location_mask = batched_inputs["event_location_mask"].to(self.device)
-            num_stations = torch.any(event_location_mask>0, axis=1).float().to(self.device)
+            phase_mask = batched_inputs["phase_mask"].to(self.device)
         elif "phase_pick" in batched_inputs.keys(): # validation
             phase_pick = batched_inputs["phase_pick"].to(self.device)
             polarity = batched_inputs["polarity"].to(self.device)
             polarity_mask = batched_inputs["polarity_mask"].to(self.device)
             event_center = batched_inputs["event_center"].to(self.device)
+            event_mask = batched_inputs["event_mask"].to(self.device)
             event_location = batched_inputs["event_location"].to(self.device)
             event_location_mask = batched_inputs["event_location_mask"].to(self.device)
-            num_stations = torch.any(event_location_mask>0, axis=1).float().to(self.device)
+            phase_mask = batched_inputs["phase_mask"].to(self.device)
         else:
-            phase_pick, polarity, polarity_mask, event_center, event_location, event_location_mask, num_stations = None, None, None, None, None, None, None
+            phase_pick, polarity, polarity_mask, event_center, event_mask, event_location, event_location_mask = None, None, None, None, None, None, None
+            phase_mask = None
 
         if "swin" in self.backbone_name:
             station_location = batched_inputs["station_location"].to(self.device)
@@ -479,8 +483,8 @@ class EQNet(nn.Module):
             
         features = self.neck(features)
 
-        output_phase, loss_phase = self.phase_picker(features, phase_pick, num_stations)
-        outputs_event, losses_event = self.event_detector(features, amplitude, event_center, event_location, event_location_mask)
+        output_phase, loss_phase = self.phase_picker(features, phase_pick, phase_mask)
+        outputs_event, losses_event = self.event_detector(features, amplitude, event_center, event_mask, event_location, event_location_mask)
         output_polarity, loss_polarity = self.polarity_picker(features, self.polarity_stem(data), polarity, polarity_mask)
 
         if self.training:

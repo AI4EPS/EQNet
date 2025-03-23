@@ -995,7 +995,7 @@ class EventHead2(nn.Module):
         self.depth_loss = loss_factory[loss_dict["depth_loss"]]
         self.mag_loss = loss_factory[loss_dict["mag_loss"]]
         
-    def forward(self, features, amplitude, event_center, event_location, event_location_mask):
+    def forward(self, features, amplitude, event_center, event_mask, event_location, event_location_mask):
         """
         Forward pass of the EventHead module.
 
@@ -1074,16 +1074,16 @@ class EventHead2(nn.Module):
         hypocenter = hypocenter.permute(0, 2, 3, 1)
         
         if self.training:            
-            return None, self.losses({"event": heatmap, "offset": offset, "hypocenter": hypocenter}, event_center, event_location, event_location_mask)
+            return None, self.losses({"event": heatmap, "offset": offset, "hypocenter": hypocenter}, event_center, event_mask, event_location, event_location_mask)
         else:
             loss = {}
             if event_center is not None:
-                loss = self.losses({"event": heatmap, "offset": offset, "hypocenter": hypocenter}, event_center, event_location, event_location_mask)
+                loss = self.losses({"event": heatmap, "offset": offset, "hypocenter": hypocenter}, event_center, event_mask, event_location, event_location_mask)
             hypocenter = torch.cat([hypocenter[:, :2, :, :], self.angle_coder.decode(hypocenter[:, 2:(2+self.angle_dims), :, :]),
                                     hypocenter[:, (2+self.angle_dims):, :, :]], dim=1)
             return {"event": heatmap, "offset": offset, "hypocenter": hypocenter}, loss
     
-    def losses(self, outputs, event_center, event_location, event_location_mask):
+    def losses(self, outputs, event_center, event_mask, event_location, event_location_mask):
         """
         Compute the loss values for the predicted outputs.
 
@@ -1098,8 +1098,9 @@ class EventHead2(nn.Module):
         """
         #hm_loss = cross_entropy_loss(outputs["event"], event_center)
         #hm_loss = self.hm_loss(outputs["event"], event_center)
-        station_mask = (event_location_mask.sum(axis=1) > 0).float().unsqueeze(1)
-        hm_loss = self.hm_loss(outputs["event"], event_center, station_mask)
+        #station_mask = (event_location_mask.sum(axis=1) > 0).float().unsqueeze(1)
+        #hm_loss = self.hm_loss(outputs["event"], event_center, station_mask)
+        hm_loss = self.hm_loss(outputs["event"], event_center, event_mask)
         hw_loss = self.hw_loss(outputs["offset"], event_location[:, 5:, :, :], event_location_mask, weights=self.offset_weight)
         
         travel_time_loss = self.travel_time_loss(outputs["hypocenter"][:, :1, :, :], event_location[:, :1, :, :], event_location_mask)
@@ -1433,7 +1434,7 @@ class PhaseHead(nn.Module):
                  hidden_channels=[256, 128, 64, 32],
                  dilations=[1, 8, 16, 32],
                  kernel_size=7,
-                 weights=[0.9,],
+                 weights=[0.6,],
                  ):
         super().__init__()
         
@@ -1474,7 +1475,7 @@ class PhaseHead(nn.Module):
             kernel_size=1,
         )
         
-    def forward(self, features, targets=None, num_stations=None):
+    def forward(self, features, targets=None, phase_mask=None):
         """input shape [batch, in_channels, time_steps]
         output shape [batch, time_steps]"""
         x = features["fusion"]
@@ -1492,17 +1493,20 @@ class PhaseHead(nn.Module):
         x = x.permute(0, 2, 3, 1)
 
         if self.training:
-            return None, self.losses(x, targets, num_stations)
+            return None, self.losses(x, targets, phase_mask)
         elif targets is not None:
-            return {"phase": x}, self.losses(x, targets, num_stations)
+            return {"phase": x}, self.losses(x, targets, phase_mask)
         else:
             return {"phase": x}, {}
 
-    def losses(self, inputs, targets, num_stations):
+    def losses(self, inputs, targets, phase_mask):
         inputs = inputs.float()  # https://github.com/pytorch/pytorch/issues/48163
-        num=num_stations.sum()
-        #mask = num_stations.unsqueeze(1).unsqueeze(1)
-        loss = torch.sum(-targets * F.log_softmax(inputs, dim=1) * num_stations.unsqueeze(1).unsqueeze(1))/(num*targets.shape[2])
+        num=phase_mask.sum()
+        #ps_weights = torch.tensor([1.0, 1.0, 1.1], device=inputs.device)[None, :, None, None].detach()
+        #mask = phase_mask.unsqueeze(1).unsqueeze(1)
+        #loss = torch.sum(-targets * F.log_softmax(inputs, dim=1) * phase_mask.unsqueeze(1).unsqueeze(1)*ps_weights)/(num*targets.shape[2])
+        #loss = torch.sum(-targets * F.log_softmax(inputs, dim=1) * phase_mask.unsqueeze(1).unsqueeze(1))/(num*targets.shape[2])
+        loss = torch.sum(-targets * F.log_softmax(inputs, dim=1) * phase_mask.unsqueeze(1))/(num) # now phase_mask is the mask with dim [batch, time, station]
 
         return {"loss_phase": loss}
 
@@ -1568,7 +1572,7 @@ class PhaseHead2(nn.Module):
             kernel_size=1,
         )
         
-    def forward(self, features, targets=None, num_stations=None):
+    def forward(self, features, targets=None, phase_mask=None):
         """input shape [batch, in_channels, time_steps]
         output shape [batch, time_steps]"""
         x = features["fusion"]
@@ -1586,19 +1590,20 @@ class PhaseHead2(nn.Module):
         x = x.permute(0, 2, 3, 1)
 
         if self.training:
-            return None, self.losses(x, targets, num_stations)
+            return None, self.losses(x, targets, phase_mask)
         elif targets is not None:
-            return {"phase": x}, self.losses(x, targets, num_stations)
+            return {"phase": x}, self.losses(x, targets, phase_mask)
         else:
             return {"phase": x}, {}
 
-    def losses(self, inputs, targets, num_stations):
+    def losses(self, inputs, targets, phase_mask):
         inputs = inputs.float()  # https://github.com/pytorch/pytorch/issues/48163
-        num=num_stations.sum()
+        num=phase_mask.sum()
         #ps_weights = torch.tensor([1.0, 1.0, 1.1], device=inputs.device)[None, :, None, None].detach()
-        #mask = num_stations.unsqueeze(1).unsqueeze(1)
-        #loss = torch.sum(-targets * F.log_softmax(inputs, dim=1) * num_stations.unsqueeze(1).unsqueeze(1)*ps_weights)/(num*targets.shape[2])
-        loss = torch.sum(-targets * F.log_softmax(inputs, dim=1) * num_stations.unsqueeze(1).unsqueeze(1))/(num*targets.shape[2])
+        #mask = phase_mask.unsqueeze(1).unsqueeze(1)
+        #loss = torch.sum(-targets * F.log_softmax(inputs, dim=1) * phase_mask.unsqueeze(1).unsqueeze(1)*ps_weights)/(num*targets.shape[2])
+        #loss = torch.sum(-targets * F.log_softmax(inputs, dim=1) * phase_mask.unsqueeze(1).unsqueeze(1))/(num*targets.shape[2])
+        loss = torch.sum(-targets * F.log_softmax(inputs, dim=1) * phase_mask.unsqueeze(1))/(num) # now phase_mask is the mask with dim [batch, time, station]
 
         return {"loss_phase": loss}
 
