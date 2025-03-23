@@ -228,6 +228,21 @@ def setup_for_distributed(is_master):
             builtin_print(*args, **kwargs)
 
     __builtin__.print = print
+    
+    
+def setup_for_distributed_debugging(rank):
+    """
+    This function disables printing when not in master process
+    """
+    import builtins as __builtin__
+
+    builtin_print = __builtin__.print
+
+    def print(*args, **kwargs):
+        builtin_print(f'[Rank {rank}]: ', end='')
+        builtin_print(*args, **kwargs)
+
+    __builtin__.print = print
 
 
 def is_dist_avail_and_initialized():
@@ -288,6 +303,7 @@ def init_distributed_mode(args):
         )
         torch.distributed.barrier()
         setup_for_distributed(args.rank == 0)
+        #setup_for_distributed_debugging(args.rank)
 
 
 def average_checkpoints(inputs):
@@ -572,8 +588,9 @@ class DWAInverse:
             if epoch==1:
                 self.batch_weight[epoch+1] = 1./(self.task_num*torch.nn.functional.softmax(w_i/2.0, dim=-1))
                 if delay is not None:
-                    for i, k in enumerate(self.tasks):
-                        if k in delay:
-                            self.batch_weight[epoch+1, i] = 1.0
+                    if len(delay)>0:
+                        for i, k in enumerate(self.tasks):
+                            if k in delay:
+                                self.batch_weight[epoch+1, i] = 1.0
             else:
                 self.batch_weight[epoch+1] = 1./(self.task_num*torch.nn.functional.softmax(w_i/self.temp, dim=-1))
