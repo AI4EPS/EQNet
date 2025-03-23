@@ -1424,7 +1424,7 @@ class SwinTransformer(nn.Module):
                         use_rope=use_rope,
                         use_rope_mixed=use_rope_mixed,
                         decoupled_relative_position_bias=decoupled_relative_position_bias,
-                        time_unit = dt_s*(4**(i_stage+1))
+                        time_unit=dt_s*(4**(i_stage+1))
                     )
                 )
                 stage_block_id += 1

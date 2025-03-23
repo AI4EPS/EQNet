@@ -537,6 +537,8 @@ def plot_eqnet_train(meta, phase, event, polarity, epoch, figure_dir="figures", 
     data = normalize(meta["data"])
     flag=True if (offset is not None) and (hypocenter is not None) else False
     for i in range(meta["data"].shape[0]):
+        if i>=16:
+            break # don't plot too many
         plt.close("all")
         if flag:
             #fig, axes = plt.subplots(5, 1, figsize=(10, 20), dpi=100)
@@ -713,6 +715,7 @@ def plot_eqnet_train(meta, phase, event, polarity, epoch, figure_dir="figures", 
             axes[4].sharex(axes[3])
             axes[5].sharey(axes[3])
             #axes[8].set_title("hypocenter dz")
+        fig.suptitle(f"{meta['event_id'][i]}")
         fig.subplots_adjust(hspace=0.5, bottom=0.05, top=0.95)
         if "LOCAL_RANK" in os.environ:
             local_rank = int(os.environ["LOCAL_RANK"])
@@ -1003,7 +1006,12 @@ def plot_eqnet(meta, pred_phase, pred_event, phase_picks=None, event_picks=None,
 
         for ii in range(0, nt0, nt):
             plt.close("all")
-            fig, axes = plt.subplots(4, 1, figsize=(20, 10))
+            fig = plt.figure(figsize=(10, 30), dpi=300)
+            axes=[]
+            axes.append(plt.subplot2grid((6, 1), (0, 0), rowspan=2))
+            axes.append(plt.subplot2grid((6, 1), (2, 0), rowspan=2))
+            axes.append(plt.subplot2grid((6, 1), (4, 0), rowspan=1))
+            axes.append(plt.subplot2grid((6, 1), (5, 0), rowspan=1))
 
             for k in range(ns0):
                 begin_time_i = datetime.fromisoformat(begin_time[i])
@@ -1034,8 +1042,8 @@ def plot_eqnet(meta, pred_phase, pred_event, phase_picks=None, event_picks=None,
 
             meta["station_location"][i, :, 0] = meta["station_location"][i, :, 0] * torch.cos(torch.deg2rad(meta["station_location"][i, :, 1])) * degree2km
             meta["station_location"][i, :, 1] = meta["station_location"][i, :, 1] * degree2km
-            axes[2].scatter(meta["station_location"][i, :, 0], meta["station_location"][i, :, 1], c=np.arange(ns0), s=50, marker="^")
-            axes[3].scatter(meta["station_location"][i, :, 0], meta["station_location"][i, :, 2], c=np.arange(ns0), s=50, marker="^")
+            axes[2].scatter(meta["station_location"][i, :, 0], meta["station_location"][i, :, 1], c=np.arange(ns0), s=50, marker="^", vmin=0, vmax=ns0)
+            axes[3].scatter(meta["station_location"][i, :, 0], meta["station_location"][i, :, 2], c=np.arange(ns0), s=50, marker="^", vmin=0, vmax=ns0)
             for pick_dict in event_picks[i]:
                 if len(phase_picks[i]) == 0:
                     continue
@@ -1050,16 +1058,19 @@ def plot_eqnet(meta, pred_phase, pred_event, phase_picks=None, event_picks=None,
                 axes[1].vlines(p_time, sta_order[0]-0.5, sta_order[0]+0.5, color="r", linewidth=1.0)
                 axes[1].vlines(s_time, sta_order[0]-0.5, sta_order[0]+0.5, color="b", linewidth=1.0)
                 
-                axes[2].scatter(pick_dict["event_location_x"], pick_dict["event_location_y"], marker=".", s=50, c=sta_order[0])
-                axes[3].scatter(pick_dict["event_location_x"], pick_dict["event_location_z"], marker=".", s=50, c=sta_order[0])
+                axes[2].scatter(pick_dict["event_location_x"], pick_dict["event_location_y"], marker=".", s=50, c=sta_order[0], vmin=0, vmax=ns0)
+                axes[3].scatter(pick_dict["event_location_x"], pick_dict["event_location_z"], marker=".", s=50, c=sta_order[0], vmin=0, vmax=ns0)
             
             axes[0].grid("on")
             axes[1].grid("on")
             axes[2].grid("on")
             axes[3].grid("on")
             axes[0].set_title(f"{file_name[i]} data")
-            axes[1].set_title("phase & event")
-            axes[2].set_title("event location")
+            #axes[1].set_title("phase & event")
+            #axes[2].set_title("event location")
+            axes[3].sharex(axes[2])
+            axes[2].set_aspect("equal")
+            axes[3].invert_yaxis()
 
             fig.tight_layout()
             fig.subplots_adjust(hspace=0.5, bottom=0.05, top=0.95)
