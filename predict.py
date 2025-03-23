@@ -38,6 +38,7 @@ logger = logging.getLogger()
 
 # cuda:1
 #os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["PYTORCH_CUDA_ALLOC_CONF"]="expandable_segments:True"
 
 def postprocess(meta, output, polarity_scale=4, event_scale=16):
     assert torch.all(meta["nt"]==meta["nt"][0]), "nt should be the same for all data"
@@ -312,7 +313,7 @@ def pred_eqnet(args, model, data_loader, pick_path, figure_path, event_path=None
                 with ctx:
                     output = model(meta)
             except torch.OutOfMemoryError:
-                print(f"Out of memory during processing {meta['file_name']}", force=True)
+                print(f"Out of memory during processing {meta['file_name']}")
                 try:
                     del meta, output
                 except:
@@ -328,6 +329,8 @@ def pred_eqnet(args, model, data_loader, pick_path, figure_path, event_path=None
                 output["offset"] = output["offset"][:, :, :, :num_stations]
                 output["hypocenter"] = output["hypocenter"][:, :, :, :num_stations]
             meta["station_location"] = meta["station_location"][:, :num_stations]
+            
+            dt = meta["dt_s"] if "dt_s" in meta else [torch.tensor(0.01)] * len(meta["data"])
             for k in meta.keys():
                 try:
                     # if v is a number in fp16, convert it to fp32
@@ -343,7 +346,8 @@ def pred_eqnet(args, model, data_loader, pick_path, figure_path, event_path=None
                     if output['polarity'].shape[1] > 1:
                         polarity_scores = torch.softmax(output["polarity"], dim=1)
                     else:
-                        cutpoints = (torch.arange(3-1).float()*20/(3-2) - 20 / 2)[None, :, None, None].detach()
+                        cut_scale = 20
+                        cutpoints = (torch.arange(3-1).float()*cut_scale/(3-2) - cut_scale / 2)[None, :, None, None].detach()
                         sigmoids = torch.sigmoid(cutpoints.to(output["polarity"].device) - output["polarity"])
                         link_mat = sigmoids[:, 1:] - sigmoids[:, :-1]
                         link_mat = torch.cat((
@@ -357,7 +361,7 @@ def pred_eqnet(args, model, data_loader, pick_path, figure_path, event_path=None
                         polarity_scores = torch.clamp(link_mat, eps, 1 - eps)[:, [1,2,0]] # DNU -> NUD
                 else:
                     polarity_scores = None
-                topk_phase_scores, topk_phase_inds = detect_peaks(phase_scores, vmin=args.min_prob, kernel=128)
+                topk_phase_scores, topk_phase_inds = detect_peaks(phase_scores, vmin=args.min_prob, kernel=128, dt=dt.min().item())
                 phase_picks_ = extract_picks(
                     topk_phase_inds,
                     topk_phase_scores,
@@ -376,9 +380,9 @@ def pred_eqnet(args, model, data_loader, pick_path, figure_path, event_path=None
             if ("event" in output) and (output["event"] is not None):
                 event_scores = torch.sigmoid(output["event"])
                 event_scores = event_scores.unsqueeze(1)  # [batch, 1, nt, nsta]
-                topk_event_scores, topk_event_inds, event_mask = detect_peaks(event_scores, vmin=args.min_prob, kernel=24, if_mask=True)
+                topk_event_scores, topk_event_inds, event_mask = detect_peaks(event_scores, vmin=args.min_prob, kernel=16, if_mask=True, dt=dt.min().item()*feature_scale)
                 event_scores = event_scores.squeeze(1)  # [batch, nt, nsta]
-                event_picks_ = extract_picks(
+                event_picks_ = extract_events(#)extract_picks(
                     topk_event_inds,
                     topk_event_scores,
                     file_name=meta["file_name"],
@@ -386,9 +390,17 @@ def pred_eqnet(args, model, data_loader, pick_path, figure_path, event_path=None
                     begin_time=meta["begin_time"] if "begin_time" in meta else None,
                     begin_time_index=meta["begin_time_index"] if "begin_time_index" in meta else None,
                     ## event are picked on downsampled time resolution
-                    dt=meta["dt_s"] * feature_scale if "dt_s" in meta else 0.01 * feature_scale,
+                    event_scale=feature_scale,
+                    #dt=meta["dt_s"] * feature_scale if "dt_s" in meta else [0.01 * feature_scale]*meta["data"].shape[0],
+                    dt=meta["dt_s"] if "dt_s" in meta else 0.01,
+                    travel_time=output["hypocenter"][:, 0],
+                    station_location=meta["station_location"],
+                    relative_location=output["hypocenter"][:, 1:4],
+                    ps_delta=output["offset"][:, 1],
+                    magnitude=output["hypocenter"][:, 4],
+                    waveform=meta["data"],
                     vmin=args.min_prob,
-                    phases=["event"],
+                    #phases=["event"],
                     scores_mask=event_mask,
                 )
                 
@@ -402,71 +414,31 @@ def pred_eqnet(args, model, data_loader, pick_path, figure_path, event_path=None
                     torch.save(output["hypocenter"][i], os.path.join(event_path.replace('events', 'scores'), filename + "_hypocenter.pt"))
                     with open(os.path.join(pick_path.replace('picks', 'scores'), filename + "_station_id.txt"), "w") as f:
                         f.write("\n".join([j[i] for j in meta["station_id"]]))
+                if args.save_attn:
+                    for layer in [(0,0), (0,1), (2,0), (2,1), (4,4), (4,5), (6,0), (6,1)]:
+                        torch.save(eval(f'model.backbone.features[{layer[0]}][{layer[1]}].attn').attn[i], os.path.join(pick_path.replace('picks', 'scores'), filename + f"_{layer[0]}_{layer[1]}_attn.pt"))
+                        torch.save(eval(f'model.backbone.features[{layer[0]}][{layer[1]}].attn').qk_sim[i], os.path.join(pick_path.replace('picks', 'scores'), filename + f"_{layer[0]}_{layer[1]}_qk_sim.pt"))
+                        torch.save(eval(f'model.backbone.features[{layer[0]}][{layer[1]}].attn').rpb[i], os.path.join(pick_path.replace('picks', 'scores'), filename + f"_{layer[0]}_{layer[1]}_rpb.pt"))
+                    with open(os.path.join(pick_path.replace('picks', 'scores'), filename + "_station_id.txt"), "w") as f:
+                        f.write("\n".join([j[i] for j in meta["station_id"]]))
+                    
                 if "phase" in output:
                     if len(phase_picks_[i]) == 0:
                         ## keep an empty file for the file with no picks to make it easier to track processed files
                         with open(os.path.join(pick_path, filename + ".csv"), "a"):
                             pass
-                    else:
-                        picks_df = pd.DataFrame(phase_picks_[i])
-                        picks_df.sort_values(by=["phase_time"], inplace=True)
-                        picks_df.to_csv(os.path.join(pick_path, filename + ".csv"), index=False)
+                        continue
+                    picks_df = pd.DataFrame(phase_picks_[i])
+                    picks_df.sort_values(by=["phase_time"], inplace=True)
+                    picks_df.to_csv(os.path.join(pick_path, filename + ".csv"), index=False)
                     
                 if ("event" in output) and (output["event"] is not None):
                     if len(event_picks_[i]) == 0:
                         with open(os.path.join(event_path, filename + ".csv"), "a"):
                             pass
                         continue
-                    for pick_dict in event_picks_[i]:
-                        sta_order = pick_dict["station_index"]
-                        station_loc = meta["station_location"][sta_order[1], sta_order[0]]
-                        time_shift = meta["begin_time_index"][sta_order[1]] if "begin_time_index" in meta.keys() else 0
-                        # offset = output["offset"][i, 0, pick_dict["phase_index"]-time_shift, sta_order[0]].float().item()
-                        # width = output["offset"][i, 1, pick_dict["phase_index"]-time_shift, sta_order[0]].float().item()
-                        # dt = output["hypocenter"][i, 0, pick_dict["phase_index"]-time_shift, sta_order[0]].float().item()
-                        offset = output["offset"][i, 0, pick_dict["phase_mask"], sta_order[0]].float().mean().item()
-                        # assert 0, f"phase_mask: {pick_dict['phase_mask']}, phase_index: {pick_dict['phase_index']}, offset: {offset}"
-                        width = output["offset"][i, 1, pick_dict["phase_mask"], sta_order[0]].float().mean().item()
-                        dt = output["hypocenter"][i, 0, pick_dict["phase_mask"], sta_order[0]].float().mean().item()
-                        # dx = output["hypocenter"][i, 1, pick_dict["phase_index"]-time_shift, sta_order[0]].float().item()
-                        # dy = output["hypocenter"][i, 2, pick_dict["phase_index"]-time_shift, sta_order[0]].float().item()
-                        # dz = output["hypocenter"][i, 3, pick_dict["phase_index"]-time_shift, sta_order[0]].float().item()
-                        #dt = dt * meta["dt_s"][i].item()
-                        assert dt<99999, f"dt: {dt}, offset: {offset}, width: {width}, dt_s: {meta['dt_s'][i].item()}"
-                        event_center_index = pick_dict["phase_index"]#+offset
-                        event_index = event_center_index - dt/(meta["dt_s"][i].item())/feature_scale
-                        p_index = event_center_index - width
-                        s_index = event_center_index + width
-                        pick_dict["event_center_index"] = event_center_index
-                        pick_dict["event_index"] = event_index
-                        pick_dict["p_index"] = p_index
-                        pick_dict["s_index"] = s_index
-                        pick_dict["travel_time_s"] = dt
-                        pick_dict["ps_delta_s"] = width*feature_scale*(meta["dt_s"][i].item()) * 2
-                        pick_dict["event_original_time"] = (datetime.fromisoformat(pick_dict["phase_time"])
-                                                            + timedelta(seconds=(-dt))).isoformat(
-                                timespec="milliseconds"
-                        )
-
-                        dist = output["hypocenter"][i, 1, pick_dict["phase_mask"], sta_order[0]].mean()
-                        azimuth = output["hypocenter"][i, 2, pick_dict["phase_mask"], sta_order[0]].mean()
-                        pick_dict["epicentral_distance"] = dist.item()
-                        pick_dict["azimuth"] = torch.rad2deg(azimuth).item() % 360
-                        dist = dist/6371
-                        sta_lon = torch.deg2rad(station_loc[0]) # longitude
-                        sta_lat = torch.deg2rad(station_loc[1]) # latitude
-                        pick_dict["event_latitude"] = torch.asin(torch.sin(sta_lat)*torch.cos(dist) + torch.cos(sta_lat)*torch.sin(dist)*torch.cos(azimuth))
-                        pick_dict["event_longitude"] = sta_lon + torch.atan2(torch.sin(azimuth)*torch.sin(dist)*torch.cos(sta_lat), torch.cos(dist)-torch.sin(sta_lat)*torch.sin(pick_dict["event_latitude"]))
-                        pick_dict["event_location_x"] = (pick_dict["event_longitude"]*torch.cos(pick_dict["event_latitude"]) * 6371).item()
-                        pick_dict["event_location_y"] = (pick_dict["event_latitude"] * 6371).item()
-                        pick_dict["event_location_z"] = (station_loc[2] + output["hypocenter"][i, 3, pick_dict["phase_mask"], sta_order[0]].mean()).item() #output["hypocenter"][i, 3, pick_dict["phase_index"]-time_shift, sta_order[0]]).item()
-                        pick_dict["magnitude"] = output["hypocenter"][i, 4, pick_dict["phase_mask"], sta_order[0]].mean().float().item()#output["hypocenter"][i, 4, pick_dict["phase_index"]-time_shift, sta_order[0]].float().item()
-                        pick_dict["phase_mask"] = [int(pick_dict["phase_mask"].item()), int(pick_dict["phase_mask"].item())]
-                        pick_dict["event_latitude"] = torch.rad2deg(pick_dict["event_latitude"]).item()
-                        pick_dict["event_longitude"] = torch.rad2deg(pick_dict["event_longitude"]).item()
-
                     picks_df = pd.DataFrame(event_picks_[i])
-                    picks_df.sort_values(by=["phase_time"], inplace=True)
+                    picks_df.sort_values(by=["event_time"], inplace=True)
                     picks_df.to_csv(os.path.join(event_path, filename + ".csv"), index=False)
 
             if args.plot_figure:
@@ -485,9 +457,14 @@ def pred_eqnet(args, model, data_loader, pick_path, figure_path, event_path=None
                     figure_dir=figure_path,
                     feature_scale=feature_scale,
                 )
-                print("saving:", meta["file_name"], force=True)
+                print("saving:", meta["file_name"])
                 
             del meta, output
+            if args.save_attn:
+                for layer in [(0,0), (0,1), (2,0), (2,1), (4,4), (4,5), (6,0), (6,1)]:
+                    eval(f'model.backbone.features[{layer[0]}][{layer[1]}].attn').attn = []
+                    eval(f'model.backbone.features[{layer[0]}][{layer[1]}].attn').qk_sim = []
+                    eval(f'model.backbone.features[{layer[0]}][{layer[1]}].attn').rpb = []
             # if cuda, clear cache
             if args.device != "cpu" and args.device != "mps":
                 torch.cuda.empty_cache()
@@ -648,7 +625,7 @@ def main(args):
         model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
 
     if args.resume:
-        checkpoint = torch.load(args.resume, map_location="cpu")
+        checkpoint = torch.load(args.resume, map_location="cpu", weights_only=False)
         model.load_state_dict(checkpoint["model"], strict=True)
         print("Loaded checkpoint '{}' (epoch {})".format(args.resume, checkpoint["epoch"]))
         #print(f"weight keys: {checkpoint['model'].keys()}")
@@ -759,6 +736,7 @@ def get_args_parser(add_help=True):
     parser.add_argument("--sort", action="store_true", help="If sort the data by station locations for eqnet")
     parser.add_argument("--num_stations", default=10, type=int, help="number of stations for eqnet")
     parser.add_argument("--save_score", action="store_true", help="If save score for test")
+    parser.add_argument("--save_attn", action="store_true", help="If save attention for visualization")
 
     ## Seismic
     parser.add_argument("--add_polarity", action="store_true", help="If use polarity information")
