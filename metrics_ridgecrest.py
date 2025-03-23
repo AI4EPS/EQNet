@@ -210,7 +210,227 @@ class EventMetric:
             plt.show()
         
         return
+
+def cartesian_distance(lon1, lat1, lon2, lat2):
+    degree2km = 111.32
+    x1 = lon1 * degree2km * np.cos(lat1 * np.pi / 180)
+    y1 = lat1 * degree2km
+    x2 = lon2 * degree2km * np.cos(lat2 * np.pi / 180)
+    y2 = lat2 * degree2km
+    return np.sqrt((x1 - x2) ** 2 + (y1 - y2) ** 2)
+
+def link_unassociated_picks(event_picks, events, DT=2, VP=6, VPVS_RATIO=1.73, discarded_indexes=None):
+    """
+    Update event_picks rows (where event_index == -1) by matching candidate events from `events`
+    in a ±DT window around the pick's event_time. For candidate events, compute the distance
+    using the haversine formula and compare expected travel time (distance / VP) with the pick's
+    travel_time (within ±DT). The best candidate (smallest sum time difference) is used to update event_index.
+
+    This version uses pandarallel to parallelize the row-wise processing.
     
+    Parameters:
+      event_picks : pandas.DataFrame
+        Must contain 'event_index', 'event_time', 'travel_time', 'latitude', and 'longitude' columns.
+      events : pandas.DataFrame
+        Must contain 'event_index', 'time', 'latitude', and 'longitude' columns.
+      DT : float
+        Time window in seconds for candidate events (±DT around event_time).
+      VP : float
+        Seismic velocity (km/s) for travel time computation.
+        
+    Returns:
+      Updated event_picks DataFrame with new event_index values.
+    """
+    # Work on copies
+    events = events.copy()
+    event_picks = event_picks.copy()
+    
+    # Sort events by time for fast search
+    events_sorted = events.sort_values('timestamp').reset_index(drop=True)
+    events_time = events_sorted['timestamp'].values
+    if discarded_indexes is not None:
+        discarded_indexes = discarded_indexes.union(set([-1]))
+    else:
+        discarded_indexes = set([-1])
+
+    def process_pick(row):
+        # Only process rows where event_index is -1
+        if row['event_index'] not in discarded_indexes:
+            return row['event_index']
+            
+        t_pick = row['timestamp']
+        # Find candidate events within ±DT seconds using np.searchsorted
+        left = np.searchsorted(events_time, t_pick - DT, side='left')
+        right = np.searchsorted(events_time, t_pick + DT, side='right')
+        if left == right:
+            return -1  # No candidates found
+        
+        candidates = events_sorted.iloc[left:right]
+        candidate_times = events_time[left:right]
+        time_diffs = np.abs(candidate_times - t_pick)
+        
+        # Station location for the current pick
+        station_lat = row['latitude']
+        station_lon = row['longitude']
+        candidate_lat = candidates['latitude'].values
+        candidate_lon = candidates['longitude'].values
+        
+        # Compute distances and expected travel times
+        distances = cartesian_distance(station_lon, station_lat, candidate_lon, candidate_lat)
+        expected_travel_time = distances / VP
+        
+        travel_time = row['travel_time'] # Travel time is actually travel_time_p + (s-p) / 2
+        # Filter candidates based on travel time closeness (within ±DT seconds)
+        travel_time_diffs = np.abs(expected_travel_time - travel_time*2/(VPVS_RATIO + 1))
+        valid_mask = (travel_time_diffs <= DT)
+        if not valid_mask.any():
+            return -1
+        
+        valid_time_diffs = time_diffs[valid_mask] + travel_time_diffs[valid_mask]
+        valid_indices = np.where(valid_mask)[0]
+        best_candidate_idx = valid_indices[np.argmin(valid_time_diffs)]
+        best_event_index = candidates.iloc[best_candidate_idx]['event_index']
+        return best_event_index
+
+    # Use parallel_apply from pandarallel to process each row in parallel
+    try:
+        event_picks['event_index'] = event_picks.parallel_apply(process_pick, axis=1)
+    except AttributeError:
+        # Fallback to regular apply if pandarallel is not available
+        event_picks['event_index'] = event_picks.apply(process_pick, axis=1)
+    return event_picks
+
+def calc_association_ratio(events, stations, weight_ratio=1.0):
+    """
+    Update each row in the events DataFrame as follows:
+      - For each event, compute the weighted ratio between its related stations and
+        all stations within the coverage distance.
+      - If the ratio is lower than the threshold, set event_index to -1.
+    The computation is parallelized using pandarallel.
+    """
+    events = events.copy()
+    stations = stations.copy()
+    def process_event(row):
+        """
+        For a given event row, do the following:
+          1. From the event's related stations (in row['station_id'] which is assumed to be a list),
+             compute distances from the event location (row['latitude'], row['longitude']).
+          2. Determine d_max (the largest distance among related stations).
+          3. Compute distances from the event to all stations (vectorized haversine).
+          4. Identify stations within d_max (“covered stations”).
+          5. Compute weights using linear scaling:
+                weight = 1 + (d_max - d) / (d_max - 1)
+             so that a station at d_max gets weight 1 and a station at 1 km gets weight 2.
+          6. Compute the weighted ratio:
+                 ratio = (sum of weights for stations that are related) / (sum of weights for all covered stations)
+          7. If the ratio is lower than the given threshold, return -1 (to mark event_index as -1);
+             otherwise, return the original event_index.
+        """
+        event_lat = row['latitude']
+        event_lon = row['longitude']
+        related_ids = row['station_id'].split(',')
+
+        # If there are no related stations, mark this event as invalid.
+        if len(related_ids) < 3:
+            return -1
+
+        stations['distance'] = stations.apply(lambda x: cartesian_distance(event_lon, event_lat, x['longitude'], x['latitude']), axis=1)
+        related_distances = stations[stations['station_id'].isin(related_ids)]['distance'].values
+        if len(related_distances) == 0:
+            return -1  # None of the related stations are in our stations data.
+        # The maximum distance among related stations defines the coverage radius.
+        d_max = 50#max(related_distances)
+        # For the weighting formula to work, assume d_max >= 1. Otherwise, set d_max = 1.
+        if d_max < 1:
+            d_max = 1.1
+
+        covered_distances = stations[stations['distance'] <= related_distances.max()]['distance'].values
+
+        if weight_ratio != 0:
+            # Compute weights for the covered stations.
+            # Linear scaling: weight = 1 + (d_max - d) / (d_max - 1)
+            weights = 1 + np.clip(weight_ratio*(d_max - covered_distances) / (d_max - 1), a_min=-0.8, a_max=1)
+            total_weight = weights.sum()
+            related_weights = 1 + np.clip(weight_ratio*(d_max - related_distances) / (d_max - 1), a_min=-0.8, a_max=1)
+            related_weight = related_weights.sum()
+            ratio = related_weight / total_weight if total_weight > 0 else 0
+        else:
+            # If weight_ratio is 0, just count the number of related stations.
+            ratio = len(related_ids) / len(covered_distances) if len(covered_distances) > 0 else 0
+
+        return ratio
+
+    try:
+        events['association_ratio'] = events.parallel_apply(process_event, axis=1)
+    except AttributeError:
+        events['association_ratio'] = events.apply(process_event, axis=1)
+    # Mark events with ratio < threshold as invalid.
+    #events = events[events['association_ratio'] >= threshold]
+    return events
+
+def link_picks_to_events(phase_picks, event_picks, VPVS_RATIO=1.73):
+    """
+    group: A DataFrame of `events` for a single station_id. 
+           The group is identified by group.name (the station_id).
+           
+    This function:
+      1. Sorts the events by 'num_picks'
+      2. Computes ps_delta and the time windows t1, t2
+      3. Retrieves picks for this station from the global `picks` DataFrame
+      4. Updates event_index, sp_ratio, event_amplitude for the picks that fall in the events' time windows
+      5. Returns a small updated DataFrame of picks for this station
+    """
+    
+    def process_group(group):
+        event = group.copy()
+        event = event[event['event_index'] != -1]  # Filter out events with event_index == -1
+        if len(event) == 0:
+            return pd.DataFrame(columns=phase_picks.columns)
+        
+        station_id = event['station_id'].iloc[0]  # The station_id for this group
+        # travel time tt = (tp + ts) / 2 = (1 + ps_ratio)/2 * tp => tp = tt * 2 / (1 + ps_ratio)
+        # (ts - tp) = (ps_ratio - 1) tp = tt * 2 * (ps_ratio - 1) / (ps_ratio + 1)
+        #event = event.sort_values(by='num_picks', ascending=True)
+        # since the argmax returns the first of the max, the largest num_picks should be the first
+        event = event.sort_values(by='num_picks', ascending=False) 
+        #ps_delta = event["travel_time"].values * 2 * (VPVS_RATIO - 1) / (VPVS_RATIO + 1)
+        ps_delta = np.max(np.stack([event["ps_delta"].values, event["travel_time"].values * 2 * (VPVS_RATIO - 1) / (VPVS_RATIO + 1)], axis=0), axis=0)
+        t1 = event["timestamp_center"].values - (ps_delta*0.6 + 1.0) # the width is half ps_delta with a extension of 0.5s
+        t2 = event["timestamp_center"].values + (ps_delta*0.6 + 1.0)
+        t_center = event["timestamp_center"].values
+        # Retrieve picks for this station
+        try:
+            picks_for_station = phase_picks.loc[station_id].copy()  # or picks.loc[station_id].copy()
+            #picks.loc[station_id].copy()
+        except KeyError:
+            # If no picks for this station, just return empty or do nothing
+            return pd.DataFrame(columns=phase_picks.columns)
+
+        # We have shape (n_events, ) and picks_for_station has shape (n_picks_for_station, ...).
+        # Let's match them up by broadcast.
+        picks_ = picks_for_station['timestamp'].values  # shape (Npk, )
+        phase_types = picks_for_station['phase_type'].values  # shape (Npk, )
+        #mask = (picks_[None, :] >= t1[:, None]) & (picks_[None, :] <= t2[:, None])  # (Nev, Npk)
+        mask = ((picks_[None, :] >= t1[:, None]) & (picks_[None, :] <= t_center[:, None]) & (phase_types[None, :] == 'P')) | \
+               ((picks_[None, :] >= t_center[:, None]) & (picks_[None, :] <= t2[:, None]) & (phase_types[None, :] == 'S'))  # (Nev, Npk)
+        # picks.loc[group_id, "event_index"] = np.where(
+        #     mask.any(axis=0), index.values[mask.argmax(axis=0)], picks.loc[group_id, "event_index"]
+        # )
+        mask_true = mask.any(axis=0)
+        mask_idx = mask.argmax(axis=0)
+        picks_for_station["event_index"] = np.where(mask_true, event["event_index"].values[mask_idx], -1)
+        picks_for_station["sp_ratio"] = np.where(mask_true, event["sp_ratio"].values[mask_idx], np.nan)
+        picks_for_station["event_amplitude"] = np.where(mask_true, event["event_amplitude"].values[mask_idx], np.nan)
+
+        # Return the updated picks for this station
+        return picks_for_station
+    
+    updated_picks_list = event_picks.groupby("station_id").parallel_apply(process_group)
+    updated_picks_list.index = updated_picks_list.index.droplevel(0)
+    updated_picks_list = updated_picks_list.reset_index()
+    
+    return updated_picks_list
+
 # %% [markdown]
 # ## Metrics for Ridgecrest
 # %%
@@ -225,10 +445,17 @@ parser.add_argument('--save_path', type=str, default="./ridgecrest_metrics/", he
 parser.add_argument('--score_threshold', type=float, default=0.3, help='the threshold of phase score')
 parser.add_argument('--suffix', type=str, default="", help='suffix of the pics')
 parser.add_argument('--cluster_method', type=str, default="dbscan", help='cluster method')
+parser.add_argument('--sliding_window', type=int, default=0, help='sliding window size')
+parser.add_argument('--gpu', action='store_true', help='use gpu')
+parser.add_argument('--num_workers', type=int, default=16, help='number of workers')
 parser.add_argument('--test_only', action='store_true', help='test only')
 parser.add_argument('--use_depth', action='store_true', help='use depth during matching')
 
 args = parser.parse_args()
+if args.num_workers > 1:
+    from pandarallel import pandarallel
+    pandarallel.initialize(nb_workers=args.num_workers, progress_bar=False)
+
 pick_dir = args.pick_dir
 event_dir = args.event_dir
 pick_dir = os.path.dirname(event_dir)+"/"+event_dir.split("/")[-1].replace("events", "picks")
@@ -251,6 +478,11 @@ eps_z = 8.0
 time_space_weight = [1, dbscan_epsilon/eps_xy, dbscan_epsilon/eps_xy, dbscan_epsilon/eps_z]
 #time_space_weight = [1, 3.3, 3.3, 1]
 DT = 2.0 # s
+DXY = 5.0 # km
+RT = 4.0 # s
+RXY = 30.0 # km
+KT = int(RT // DT) + 1
+KXY = int(RXY // DXY) + 1
 MIN_STATION = 3
 region="ridgecrest"
 config={}
@@ -318,13 +550,13 @@ if not args.test_only:
             continue
         df = pd.read_csv(pick)
         events.append(df)
-        #df = df[df["phase_score"] >= args.score_threshold]
+        #df = df[df["event_score"] >= args.score_threshold]
         #if len(df) == 0:
         #    ridgecrest_metric.empty_files += 1
         #    continue
         #
         #stations = df["station_id"].values
-        #time_stamps = pd.to_datetime(df["event_original_time"])
+        #time_stamps = pd.to_datetime(df["event_time"])
         #assert type(time_stamps) == pd.core.series.Series
         #hypoparameters = np.zeros((len(df),9))
         #hypoparameters[:,0] = df["event_index"].values
@@ -374,37 +606,42 @@ if not args.test_only:
     picks = pd.concat(picks, ignore_index=True)
     events = pd.concat(events, ignore_index=True)
     picks['phase_time'] = pd.to_datetime(picks['phase_time'])
-    events['event_original_time'] = pd.to_datetime(events['event_original_time'])
+    events['event_time'] = pd.to_datetime(events['event_time'])
     events['phase_time'] = pd.to_datetime(events['phase_time'])
     picks = picks.sort_values(by="phase_time", ascending=True)
-    events = events.sort_values(by="event_original_time", ascending=True)
+    events = events.sort_values(by="event_time", ascending=True)
     picks = picks[picks["phase_score"] >= args.score_threshold]
-    events = events[events["phase_score"] >= args.score_threshold]
+    events = events[events["event_score"] >= args.score_threshold]
 
-    time_stamp0 = min(picks["phase_time"].min(), events["event_original_time"].min()) - pd.Timedelta(seconds=10)
-    events['timestamp'] = events['event_original_time'].apply(lambda x: (x - time_stamp0).total_seconds())
+    time_stamp0 = min(picks["phase_time"].min(), events["event_time"].min()) - pd.Timedelta(seconds=10)
+    events['timestamp'] = events['event_time'].apply(lambda x: (x - time_stamp0).total_seconds())
     events['timestamp_center'] = events['phase_time'].apply(lambda x: (x - time_stamp0).total_seconds())
-    if "travel_time_s" not in events.columns:
-        events['travel_time_s'] = events['timestamp_center'] - events['timestamp']
+    if "travel_time" not in events.columns:
+        events['travel_time'] = events['timestamp_center'] - events['timestamp']
     picks['timestamp'] = picks['phase_time'].apply(lambda x: (x - time_stamp0).total_seconds())
 
     t0, t1 = min(events['timestamp'].min(), picks['timestamp'].min()), max(events['timestamp'].max(), picks['timestamp'].max())
 
     events['event_index'] = -1
     if args.cluster_method == "dbscan":
-        event_indexes = dbscan.fit_predict(events[['timestamp', 'event_location_x', 'event_location_y', 'event_location_z']].values*np.array(time_space_weight)[None,:])
+        event_indexes = dbscan.fit_predict(events[['timestamp', 'event_location_x', 'event_location_y', 'event_location_z']].values*np.array(time_space_weight)[None,:], sample_weight=events['event_score'])
         events['event_index'] = event_indexes
     elif args.cluster_method == "time":
         t = np.arange(t0, t1, DT)
-        hist, edge = np.histogram(events["timestamp"], bins=t, weights=events["phase_score"])
+        hist, edge = np.histogram(events["timestamp"], bins=t, weights=events["event_score"])
         xt = (edge[:-1] + edge[1:]) / 2  # center of the bin
         # hist_numpy = hist.copy()
 
         hist = torch.from_numpy(hist).float().unsqueeze(0).unsqueeze(0)
+        if torch.cuda.is_available():
+            hist = hist.cuda()
+            hist.requires_grad = False
         hist_pool = F.max_pool1d(hist, kernel_size=3, padding=1, stride=1)
         mask = hist_pool == hist
         hist = hist * mask
-        hist = hist.squeeze(0).squeeze(0)
+        hist = hist.squeeze(0).squeeze(0).detach().cpu()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         K = int((t[-1] - t[0]) / 5)  # assume max 1 event per 10 seconds on average
         topk_score, topk_index = torch.topk(hist, k=K)
         topk_index = topk_index[topk_score >= MIN_STATION]  # min 3 stations
@@ -418,72 +655,264 @@ if not args.test_only:
         for i in tqdm(range(num_events), desc="Assigning event index"):
             mask = (timestamp >= t00[i]) & (timestamp <= t11[i])
             events.loc[mask, "event_index"] = i
+    elif args.cluster_method == "time_space":
+        num_events = 0
+        #slide = 86400 # 1 day
+        slide = args.sliding_window
+        slided_time = [t0 + slide*j for j in range(int((t1-t0)//slide) + 1)]+[t1] if slide > 0 else [t0, t1]
+        t00, t11, x00, x11, y00, y11 = [], [], [], [], [], []
+        print(f"Sliding window: {slided_time}")
+        for t_left, t_right in tqdm(zip(slided_time[:-1], slided_time[1:])):
+            #t = np.arange(t0, t1, DT)
+            t_pad = ((KT-2)//2 + (KT)//2)
+            #t = np.arange(t_left, t_right, DT)
+            t = np.arange(t_left-t_pad*DT, t_right+t_pad*DT, DT)
+            #if len(t) <= 1:
+            if len(t) <= 1+t_pad:
+                continue
+            x_min, x_max = events["event_location_x"].min(), events["event_location_x"].max()
+            y_min, y_max = events["event_location_y"].min(), events["event_location_y"].max()
+            #z_min, z_max = events["event_location_z"].min(), events["event_location_z"].max()
+
+            x_bins = np.arange(int(x_min), int(x_max)+1, DXY)
+            y_bins = np.arange(int(y_min), int(y_max)+1, DXY)
+            #z_bins = np.arange(int(z_min), int(z_max)+1, 4)
+            hist, edges = np.histogramdd(
+                sample=[events['timestamp'], events['event_location_x'], events['event_location_y'],],# events['event_location_z']],
+                bins=[t, x_bins, y_bins,],# z_bins],
+                weights=events['event_score']
+            )
+            # 获取每个维度的中心点
+            t_centers = (edges[0][:-1] + edges[0][1:]) / 2
+            x_centers = (edges[1][:-1] + edges[1][1:]) / 2
+            y_centers = (edges[2][:-1] + edges[2][1:]) / 2
+            #z_centers = (edges[3][:-1] + edges[3][1:]) / 2
+
+            # 将直方图转换为张量
+            #histdd = torch.from_numpy(hist).float()
+            #nt, nx, ny, nz = histdd.shape
+            #nt, nx, ny = histdd.shape
+            #hist_pool = torch.zeros_like(histdd)
+
+            #window_size=100
+            ## sliding window
+            #for t_start in range(0, nt, window_size):
+            #    t_end = min(t_start+window_size, nt)
+            #    padding = 3//2
+            #    len_t = t_end - t_start + padding
+            #    tmp = F.unfold(histdd[t_start:t_end+padding].permute(0, 3, 1, 2).contiguous().view(len_t*nz, nx, ny).unsqueeze(1), kernel_size=(5,5), padding=(2,2), stride=1).permute(2, 1, 0).contiguous().view(nx*ny, -1, len_t, nz)
+            #    tmp = F.unfold(tmp, kernel_size=(3,3), padding=(1,1), stride=1).view(nx, ny, -1, len_t, nz).permute(3, 0, 1, 4, 2).contiguous()
+            #    tmp = tmp.max(dim=-1)
+            #    hist_pool[t_start:t_end] = tmp
+
+
+            ##FIXME: don't try this, time bins are too more, it will cause memory error
+            #hist_pool = F.unfold(histdd.permute(0, 3, 1, 2).contiguous().view(nt*nz, nx, ny).unsqueeze(1), kernel_size=(5,5), padding=(2,2), stride=1).permute(2, 1, 0).contiguous().view(nx*ny, -1, nt, nz)
+            #hist_pool = F.unfold(hist_pool, kernel_size=(3,3), padding=(1,1), stride=1).view(nx, ny, -1, nt, nz).permute(3, 0, 1, 4, 2).contiguous()
+            #hist_pool = hist_pool.max(dim=-1)
+
+            histdd = torch.from_numpy(hist).float().unsqueeze(0).unsqueeze(0)
+            kernel = torch.ones(1, 1, KT-2, KXY-2, KXY-2)
+            kernel[0,0,(KT-2)//2, (KXY-2)//2, (KXY-2)//2] = 1.2 # center weighting
+            if args.gpu and torch.cuda.is_available():
+                kernel = kernel.cuda()
+                histdd = histdd.cuda()
+                histdd.requires_grad = False
+            #histdd = F.conv3d(histdd, kernel, padding=((KT-2)//2, (KXY-2)//2, (KXY-2)//2))
+            #hist_pool = F.max_pool3d(histdd, kernel_size=(KT, KXY, KXY), padding=(KT//2, KXY//2, KXY//2), stride=1)
+            histdd = F.conv3d(histdd, kernel, padding=(0, (KXY-2)//2, (KXY-2)//2))
+            hist_pool = F.max_pool3d(histdd, kernel_size=(KT, KXY, KXY), padding=(0, KXY//2, KXY//2), stride=1)
+            
+            if t_pad > 0:
+                histdd = histdd[:, :, t_pad:-t_pad, :, :]
+                t = t[t_pad:-t_pad]
+                t_centers = t_centers[t_pad:-t_pad]
+
+            mask = hist_pool == histdd
+            del hist_pool
+            histdd = histdd * mask
+            histdd = histdd.squeeze(0).squeeze(0).detach().cpu()
+            nt, nx, ny = histdd.shape
+            K = int((t[-1] - t[0]) / 5)  # assume max 1 event per 10 seconds on average
+            topk_score, topk_index = torch.topk(histdd.view(-1), k=K)
+            topk_index = topk_index[topk_score >= MIN_STATION]  # min 3 stations
+            topk_score = topk_score[topk_score >= MIN_STATION]
+            topk_index = topk_index.numpy()
+            topk_score = topk_score.numpy()
+            #num_events = len(topk_index)
+            num_events += len(topk_index)
+            #t00 = t_centers[np.clip(topk_index//(nx*ny)-KT//2, 0, nt-2)]
+            #t11 = t_centers[np.clip(topk_index//(nx*ny)+KT//2, 0, nt-2)]
+            #x00 = x_centers[np.clip((topk_index//ny)%nx-KXY//2, 0, nx-2)]
+            #x11 = x_centers[np.clip((topk_index//ny)%nx+KXY//2, 0, nx-2)]
+            #y00 = y_centers[np.clip(topk_index%ny-KXY//2, 0, ny-2)]
+            #y11 = y_centers[np.clip(topk_index%ny+KXY//2, 0, ny-2)]
+            t00.append(t_centers[np.clip(topk_index//(nx*ny)-KT//2, 0, nt-2)])
+            t11.append(t_centers[np.clip(topk_index//(nx*ny)+KT//2, 0, nt-2)])
+            x00.append(x_centers[np.clip((topk_index//ny)%nx-KXY//2, 0, nx-2)])
+            x11.append(x_centers[np.clip((topk_index//ny)%nx+KXY//2, 0, nx-2)])
+            y00.append(y_centers[np.clip(topk_index%ny-KXY//2, 0, ny-2)])
+            y11.append(y_centers[np.clip(topk_index%ny+KXY//2, 0, ny-2)])
+            #z00 = z_centers[topk_index - 1]
+            #z11 = z_centers[topk_index + 1]
+
+        t00, t11 = np.concatenate(t00), np.concatenate(t11)
+        x00, x11 = np.concatenate(x00), np.concatenate(x11)
+        y00, y11 = np.concatenate(y00), np.concatenate(y11)
+        timestamp = events["timestamp"].values
+        x_km = events["event_location_x"].values
+        y_km = events["event_location_y"].values
+        #z_km = events["event_location_z"].values
+        if args.gpu and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        for i in tqdm(range(num_events), desc="Assigning event index"):
+            mask = (timestamp >= t00[i]) & (timestamp <= t11[i]) & (x_km >= x00[i]) & (x_km <= x11[i]) & (y_km >= y00[i]) & (y_km <= y11[i])# & (z_km >= z00[i]) & (z_km <= z11[i])
+            events.loc[mask, "event_index"] = i
     else:
         raise ValueError(f"Cluster method {args.cluster_method} not supported")
     
     events['num_picks'] = events.groupby('event_index').transform('size')
-
-    picks['event_index'] = -1
-    picks.set_index('station_id', inplace=True)
+    ### logPGV = -4.75 + 1.68 * logR + 0.93M => M = (logPGV - 4.175 - 1.68 * logR) / 0.93
+    #events["magnitude"] = (
+    #    np.log10(events["event_amplitude"])
+    #    + 4.175
+    #    + 1.68 * np.log10(events["travel_time"] * VP * (VPVS_RATIO + 1.0) / 2.0)
+    #) / 0.93
 
     VP = config[region]["VP"]
     VPVS_RATIO = config[region]["VPVS_RATIO"]
+    
+    #picks['event_index'] = -1
+    #picks.set_index('station_id', inplace=True)
 
-    for group_id, event in tqdm(events.groupby("station_id"), desc="Linking picks to events"):
-        # travel time tt = (tp + ts) / 2 = (1 + ps_ratio)/2 * tp => tp = tt * 2 / (1 + ps_ratio)
-        # (ts - tp) = (ps_ratio - 1) tp = tt * 2 * (ps_ratio - 1) / (ps_ratio + 1)
-        event = event.sort_values(by='num_picks', ascending=True)
-        #ps_delta = event["travel_time_s"].values * 2 * (VPVS_RATIO - 1) / (VPVS_RATIO + 1)
-        ps_delta = np.max(np.stack([event["ps_delta_s"].values, event["travel_time_s"].values * 2 * (VPVS_RATIO - 1) / (VPVS_RATIO + 1)], axis=0), axis=0)
-        #t1 = event["timestamp_center"].values - np.min(np.stack([ps_delta*0.6, ps_delta*0.5 + 0.5], axis=0), axis=0) # the width is half ps_delta with a extension of 0.5s
-        #t2 = event["timestamp_center"].values + np.min(np.stack([ps_delta*0.6, ps_delta*0.5 + 0.5], axis=0), axis=0)
-        t1 = event["timestamp_center"].values - (ps_delta*0.6 + 1.0) # the width is half ps_delta with a extension of 0.5s
-        t2 = event["timestamp_center"].values + (ps_delta*0.6 + 1.0)
-        picks_ = picks.loc[group_id, 'timestamp'].values # (Npk, )
-        mask = (picks_[None, :] >= t1[:, None]) & (picks_[None, :] <= t2[:, None])  # (Nev, Npk)
-        # picks.loc[group_id, "event_index"] = np.where(
-        #     mask.any(axis=0), index.values[mask.argmax(axis=0)], picks.loc[group_id, "event_index"]
-        # )
-        picks.loc[group_id, "event_index"] = np.where(
-            mask.any(axis=0), event["event_index"].values[mask.argmax(axis=0)], -1
-        )
+    #for group_id, event in tqdm(events.groupby("station_id"), desc="Linking picks to events"):
+    #    # travel time tt = (tp + ts) / 2 = (1 + ps_ratio)/2 * tp => tp = tt * 2 / (1 + ps_ratio)
+    #    # (ts - tp) = (ps_ratio - 1) tp = tt * 2 * (ps_ratio - 1) / (ps_ratio + 1)
+    #    event = event.sort_values(by='num_picks', ascending=True)
+    #    #ps_delta = event["travel_time"].values * 2 * (VPVS_RATIO - 1) / (VPVS_RATIO + 1)
+    #    ps_delta = np.max(np.stack([event["ps_delta"].values, event["travel_time"].values * 2 * (VPVS_RATIO - 1) / (VPVS_RATIO + 1)], axis=0), axis=0)
+    #    #t1 = event["timestamp_center"].values - np.min(np.stack([ps_delta*0.6, ps_delta*0.5 + 0.5], axis=0), axis=0) # the width is half ps_delta with a extension of 0.5s
+    #    #t2 = event["timestamp_center"].values + np.min(np.stack([ps_delta*0.6, ps_delta*0.5 + 0.5], axis=0), axis=0)
+    #    t1 = event["timestamp_center"].values - (ps_delta*0.6 + 1.0) # the width is half ps_delta with a extension of 0.5s
+    #    t2 = event["timestamp_center"].values + (ps_delta*0.6 + 1.0)
+    #    picks_ = picks.loc[group_id, 'timestamp'].values # (Npk, )
+    #    mask = (picks_[None, :] >= t1[:, None]) & (picks_[None, :] <= t2[:, None])  # (Nev, Npk)
+    #    # picks.loc[group_id, "event_index"] = np.where(
+    #    #     mask.any(axis=0), index.values[mask.argmax(axis=0)], picks.loc[group_id, "event_index"]
+    #    # )
+    #    mask_true = mask.any(axis=0)
+    #    mask_idx = mask.argmax(axis=0)
+    #    picks.loc[group_id, "event_index"] = np.where(mask_true, event["event_index"].values[mask_idx], -1)
+    #    picks.loc[group_id, "sp_ratio"] = np.where(mask_true, event["sp_ratio"].values[mask_idx], np.nan)
+    #    picks.loc[group_id, "event_amplitude"] = np.where(mask_true, event["event_amplitude"].values[mask_idx], np.nan)
 
-    picks.reset_index(inplace=True)
+    #picks.reset_index(inplace=True)
 
-    picks.drop(columns=['timestamp'], inplace=True)
-    events.drop(columns=['timestamp', 'timestamp_center'], inplace=True)
-    #events = events.merge(stations[['station_id', 'latitude', 'longitude']], on='station_id', how='left')
-    events = events.groupby('event_index').agg({
-        'event_original_time': 'median',
-        'phase_score': 'sum',
+    #print(f"Number of associated events: {(len(events['event_index'].unique())-1):,} ({len(events[events['event_index'] != -1]):,} / {len(events):,})")
+    #print(f"Number of associated picks: {len(picks[picks['event_index'] != -1]):,} / {len(picks):,}")
+
+    #events.drop(columns=['timestamp', 'timestamp_center'], inplace=True)
+    events = events.merge(stations[['station_id', 'latitude', 'longitude']], on='station_id', how='left')
+    events_catalog = events.groupby('event_index').agg({
+        'event_time': 'median',
+        'timestamp': 'median',
+        'event_score': 'sum',
         'event_latitude': 'median',
         'event_longitude': 'median',
         'event_location_x': 'median',
         'event_location_y': 'median',
         'event_location_z': 'median',
         'magnitude': 'median',
+        'station_id': lambda x: ','.join(x),
     }).reset_index()
-    events.rename(columns={
-        "event_original_time": "time",
+    events_catalog.rename(columns={
+        "event_time": "time",
         "event_latitude": "latitude",
         "event_longitude": "longitude",
         "event_location_x": "x_km",
         "event_location_y": "y_km",
         "event_location_z": "depth_km",
     }, inplace=True)
-    events['z_km'] = events['depth_km']
-    events = events[events['event_index'] != -1]
+    events_catalog['z_km'] = events_catalog['depth_km']
+    events_catalog = events_catalog[events_catalog['event_index'] != -1]
+    events_catalog = events_catalog[events_catalog['event_score'] >= MIN_STATION//2]
+    print(f"Calculating association ratio for {len(events_catalog)} events")
+    thld = 0.08
+    events_catalog = calc_association_ratio(events_catalog, stations, weight_ratio=0)
+    print(f"Removing {len(events_catalog[events_catalog['association_ratio'] < thld])} events with association ratio < {thld}")
+    discarded_indexes = set(events_catalog[events_catalog['association_ratio'] < thld]['event_index'].values.tolist())
+    print(f"{discarded_indexes=}")
+    events_catalog = events_catalog[events_catalog['association_ratio'] >= thld]
+    print(f"Assigning unassociated event picks using origin time prediction and travel time prediction")
+    events = link_unassociated_picks(events, events_catalog, DT=DT, VP=VP, VPVS_RATIO=VPVS_RATIO, discarded_indexes=discarded_indexes)
+    events['num_picks'] = events.groupby('event_index').transform('size')
+    # update the event_score and station_id of events_catalog
+    tmp = events.groupby('event_index').agg({
+        'event_score': 'sum',
+        'station_id': lambda x: ','.join(x),
+    }).reset_index()
+    events_catalog.drop(columns=['event_score', 'station_id'], inplace=True)
+    events_catalog = events_catalog.merge(tmp, on='event_index', how='left')
+    events_catalog = events_catalog[events_catalog['event_score'] >= MIN_STATION]
+    events_catalog = calc_association_ratio(events_catalog, stations, weight_ratio=0)
+    #events_catalog.drop(columns=['timestamp'], inplace=True)
+    
+    picks['event_index'] = -1
+    picks.set_index('station_id', inplace=True)
 
-    print(f"Number of associated events: {len(events['event_index'].unique()):,}")
+    if args.num_workers <= 1:
+        for group_id, event in tqdm(events.groupby("station_id"), desc="Linking picks to events"):
+            event = event[event['event_index'] != -1]  # Filter out events with event_index == -1
+            if len(event) == 0:
+                continue
+            # travel time tt = (tp + ts) / 2 = (1 + ps_ratio)/2 * tp => tp = tt * 2 / (1 + ps_ratio)
+            # (ts - tp) = (ps_ratio - 1) tp = tt * 2 * (ps_ratio - 1) / (ps_ratio + 1)
+            #event = event.sort_values(by='num_picks', ascending=True)
+            # since the argmax returns the first of the max, the largest num_picks should be the first
+            event = event.sort_values(by='num_picks', ascending=False) 
+            #ps_delta = event["travel_time"].values * 2 * (VPVS_RATIO - 1) / (VPVS_RATIO + 1)
+            ps_delta = np.max(np.stack([event["ps_delta"].values, event["travel_time"].values * 2 * (VPVS_RATIO - 1) / (VPVS_RATIO + 1)], axis=0), axis=0)
+            #t1 = event["timestamp_center"].values - np.min(np.stack([ps_delta*0.6, ps_delta*0.5 + 0.5], axis=0), axis=0) # the width is half ps_delta with a extension of 0.5s
+            #t2 = event["timestamp_center"].values + np.min(np.stack([ps_delta*0.6, ps_delta*0.5 + 0.5], axis=0), axis=0)
+            t1 = event["timestamp_center"].values - (ps_delta*0.6 + 1.0) # the width is half ps_delta with a extension of 0.5s
+            t2 = event["timestamp_center"].values + (ps_delta*0.6 + 1.0)
+            t_center = event["timestamp_center"].values
+            picks_ = picks.loc[group_id, 'timestamp'].values # (Npk, )
+            phase_types = picks.loc[group_id, 'phase_type'].values  # shape (Npk, )
+            #mask = (picks_[None, :] >= t1[:, None]) & (picks_[None, :] <= t2[:, None])  # (Nev, Npk)
+            mask = ((picks_[None, :] >= t1[:, None]) & (picks_[None, :] <= t_center[:, None]) & (phase_types[None, :] == 'P')) | \
+                   ((picks_[None, :] >= t_center[:, None]) & (picks_[None, :] <= t2[:, None]) & (phase_types[None, :] == 'S'))  # (Nev, Npk)
+            mask = (picks_[None, :] >= t1[:, None]) & (picks_[None, :] <= t2[:, None])  # (Nev, Npk)
+            # picks.loc[group_id, "event_index"] = np.where(
+            #     mask.any(axis=0), index.values[mask.argmax(axis=0)], picks.loc[group_id, "event_index"]
+            # )
+            mask_true = mask.any(axis=0)
+            mask_idx = mask.argmax(axis=0)
+            picks.loc[group_id, "event_index"] = np.where(mask_true, event["event_index"].values[mask_idx], -1)
+            picks.loc[group_id, "sp_ratio"] = np.where(mask_true, event["sp_ratio"].values[mask_idx], np.nan)
+            picks.loc[group_id, "event_amplitude"] = np.where(mask_true, event["event_amplitude"].values[mask_idx], np.nan)
+
+        picks.reset_index(inplace=True)
+    else:
+        print(f"Using {args.num_workers} workers to link picks to events")
+        picks = link_picks_to_events(phase_picks=picks, event_picks=events, VPVS_RATIO=VPVS_RATIO)
+    
+    print(f"Number of associated events: {(len(events['event_index'].unique())-1):,} ({len(events[events['event_index'] != -1]):,} / {len(events):,})")
     print(f"Number of associated picks: {len(picks[picks['event_index'] != -1]):,} / {len(picks):,}")
 
+    picks.drop(columns=['timestamp'], inplace=True)
     # add timezone info (UTC)
     picks['phase_time'] = picks['phase_time'].dt.tz_localize('UTC')
-    events['time'] = events['time'].dt.tz_localize('UTC')
+    events_catalog['time'] = events_catalog['time'].dt.tz_localize('UTC')
+    events['event_time'] = events['event_time'].dt.tz_localize('UTC')
+    events['phase_time'] = events['phase_time'].dt.tz_localize('UTC')
     picks['phase_time'] = picks['phase_time'].dt.strftime('%Y-%m-%dT%H:%M:%S.%f%z')
-    events['time'] = events['time'].dt.strftime('%Y-%m-%dT%H:%M:%S.%f%z')
-    events.to_csv(catalog_pred_dir.replace('catalog', 'events'), index=False)
+    events_catalog['time'] = events_catalog['time'].dt.strftime('%Y-%m-%dT%H:%M:%S.%f%z')
+    events['event_time'] = events['event_time'].dt.strftime('%Y-%m-%dT%H:%M:%S.%f%z')
+    events['phase_time'] = events['phase_time'].dt.strftime('%Y-%m-%dT%H:%M:%S.%f%z')
+    events_catalog.to_csv(catalog_pred_dir.replace('catalog', 'events'), index=False)
     picks.to_csv(catalog_pred_dir.replace('catalog', 'picks'), index=False)
+    events.to_csv(catalog_pred_dir.replace('catalog', 'event_picks'), index=False)
 
 # %%
 
@@ -667,7 +1096,7 @@ axes.append(plt.subplot2grid((39, 13), (32, 8), colspan=6, rowspan=5))
 axes[0].scatter(ridgecrest_metric.lon_pred, ridgecrest_metric.lat_pred, s=1, c='C0', label='Prediction')
 axes[0].scatter(catalog['longitude'], catalog['latitude'], s=1, c='C3', label='SCSN')
 axes[0].scatter(valid_stations['longitude'], valid_stations['latitude'], s=10, marker='^', c='k', label='Stations')
-axes[0].set_xlim(-118.2, -117.0)
+#axes[0].set_xlim(-118.2, -117.0)
 axes[0].set_xlabel('Longitude')
 axes[0].set_ylabel('Latitude')
 axes[0].set_aspect("equal")
@@ -678,7 +1107,7 @@ axes[1].scatter(catalog['longitude'], catalog['depth_km'], s=1, c='C3', label='S
 axes[1].scatter(ridgecrest_metric.lon_pred, ridgecrest_metric.z, s=1, c='C0', label='Prediction')
 # reverse the y axis
 axes[1].set_ylim(axes[1].get_ylim()[::-1])
-axes[1].set_xlim(-118.2, -117.0)
+#axes[1].set_xlim(-118.2, -117.0)
 axes[1].set_xlabel('Longitude')
 axes[1].set_ylabel('Depth (km)')
 
@@ -693,7 +1122,7 @@ axes[2].set_ylabel('Depth (km)')
 ## prediction
 axes[3].scatter(ridgecrest_metric.lon_pred, ridgecrest_metric.lat_pred, s=1, c='C0', label='Prediction')
 axes[3].scatter(valid_stations['longitude'], valid_stations['latitude'], s=10, marker='^', c='k', label='Stations')
-axes[3].set_xlim(-118.2, -117.0)
+#axes[3].set_xlim(-118.2, -117.0)
 axes[3].set_xlabel('Longitude')
 axes[3].set_ylabel('Latitude')
 axes[3].set_aspect("equal")
@@ -703,7 +1132,7 @@ axes[3].legend()
 axes[4].scatter(ridgecrest_metric.lon_pred, ridgecrest_metric.z, s=1, c='C0', label='Prediction')
 # reverse the y axis
 axes[4].set_ylim(axes[4].get_ylim()[::-1])
-axes[4].set_xlim(-118.2, -117.0)
+#axes[4].set_xlim(-118.2, -117.0)
 axes[4].set_xlabel('Longitude')
 axes[4].set_ylabel('Depth (km)')
 
@@ -717,7 +1146,7 @@ axes[5].set_ylabel('Depth (km)')
 ## SCSN
 axes[6].scatter(catalog['longitude'], catalog['latitude'], s=1, c='C3', label='SCSN')
 axes[6].scatter(valid_stations['longitude'], valid_stations['latitude'], s=10, marker='^', c='k', label='Stations')
-axes[6].set_xlim(-118.2, -117.0)
+#axes[6].set_xlim(-118.2, -117.0)
 axes[6].set_xlabel('Longitude')
 axes[6].set_ylabel('Latitude')
 axes[6].set_aspect("equal")
@@ -726,7 +1155,7 @@ axes[6].legend()
 axes[7].scatter(catalog['longitude'], catalog['depth_km'], s=1, c='C3', label='SCSN')
 # reverse the y axis
 axes[7].set_ylim(axes[7].get_ylim()[::-1])
-axes[7].set_xlim(-118.2, -117.0)
+#axes[7].set_xlim(-118.2, -117.0)
 axes[7].set_xlabel('Longitude')
 axes[7].set_ylabel('Depth (km)')
 
@@ -761,7 +1190,7 @@ axes[0].scatter(raw_picks['longitude'], raw_picks['latitude'], s=1, c='C0', labe
 #axes[0].scatter(raw_picks['event_longitude'], raw_picks['event_latitude'], s=1, c='C0', label='Prediction')
 axes[0].scatter(catalog['longitude'], catalog['latitude'], s=1, c='C3', label='SCSN')
 axes[0].scatter(valid_stations['longitude'], valid_stations['latitude'], s=10, marker='^', c='k', label='Stations')
-axes[0].set_xlim(-118.2, -117.0)
+#axes[0].set_xlim(-118.2, -117.0)
 axes[0].set_xlabel('Longitude')
 axes[0].set_ylabel('Latitude')
 axes[0].set_aspect("equal")
@@ -772,7 +1201,7 @@ axes[1].scatter(raw_picks['longitude'], raw_picks['z_km'], s=1, c='C0', label='P
 #axes[1].scatter(raw_picks['event_longitude'], raw_picks['event_location_z'], s=1, c='C0', label='Prediction')
 # reverse the y axis
 axes[1].set_ylim(axes[1].get_ylim()[::-1])
-axes[1].set_xlim(-118.2, -117.0)
+#axes[1].set_xlim(-118.2, -117.0)
 axes[1].set_xlabel('Longitude')
 axes[1].set_ylabel('Depth (km)')
 
@@ -787,7 +1216,7 @@ axes[2].set_ylabel('Depth (km)')
 ## prediction
 axes[3].scatter(raw_picks['longitude'], raw_picks['latitude'], s=1, c='C0', label='Prediction')
 axes[3].scatter(valid_stations['longitude'], valid_stations['latitude'], s=10, marker='^', c='k', label='Stations')
-axes[3].set_xlim(-118.2, -117.0)
+#axes[3].set_xlim(-118.2, -117.0)
 axes[3].set_xlabel('Longitude')
 axes[3].set_ylabel('Latitude')
 axes[3].set_aspect("equal")
@@ -797,7 +1226,7 @@ axes[4].scatter(raw_picks['longitude'], raw_picks['z_km'], s=1, c='C0', label='P
 #axes[4].scatter(raw_picks['event_longitude'], raw_picks['event_location_z'], s=1, c='C0', label='Prediction')
 # reverse the y axis
 axes[4].set_ylim(axes[4].get_ylim()[::-1])
-axes[4].set_xlim(-118.2, -117.0)
+#axes[4].set_xlim(-118.2, -117.0)
 axes[4].set_xlabel('Longitude')
 axes[4].set_ylabel('Depth (km)')
 
@@ -811,7 +1240,7 @@ axes[5].set_ylabel('Depth (km)')
 ## SCSN
 axes[6].scatter(catalog['longitude'], catalog['latitude'], s=1, c='C3', label='SCSN')
 axes[6].scatter(valid_stations['longitude'], valid_stations['latitude'], s=10, marker='^', c='k', label='Stations')
-axes[6].set_xlim(-118.2, -117.0)
+#axes[6].set_xlim(-118.2, -117.0)
 axes[6].set_xlabel('Longitude')
 axes[6].set_ylabel('Latitude')
 axes[6].set_aspect("equal")
@@ -820,7 +1249,7 @@ axes[6].legend()
 axes[7].scatter(catalog['longitude'], catalog['depth_km'], s=1, c='C3', label='SCSN')
 # reverse the y axis
 axes[7].set_ylim(axes[7].get_ylim()[::-1])
-axes[7].set_xlim(-118.2, -117.0)
+#axes[7].set_xlim(-118.2, -117.0)
 axes[7].set_xlabel('Longitude')
 axes[7].set_ylabel('Depth (km)')
 
