@@ -78,9 +78,12 @@ test_predict_mseed.txt
 test_centernet.txt
 test_predict.txt
 test_*.txt
+test_*.log
 test_*.sh
 test_*.py
 test_*.png
+*.gif
+*.pkl
 test*.parquet
 *.npy
 train_*.txt
