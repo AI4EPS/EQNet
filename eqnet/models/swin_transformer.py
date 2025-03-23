@@ -183,7 +183,7 @@ class PatchReduction(nn.Module):
     """
 
     def __init__(self, dim: int, norm_layer: Callable[..., nn.Module] = nn.LayerNorm, 
-                 k=(7, 1), s=(2, 1)):
+                 k=(7, 1), s=(4, 1)):
         super().__init__()
         self.dim = dim
         self.reduction = nn.Conv2d(dim, 2*dim, kernel_size=k, stride=s, 
@@ -327,7 +327,7 @@ def shifted_window_attention(
     if use_station_location and use_relative_position_bias:
         # use bias shape B, nH, Wh, nsta, Wh, nsta
         relative_position_bias = F.pad(relative_position_bias, (0, pad_r, 0, 0, 0, pad_r))
-        if sum(shift_size) > 0:
+        if shift_size[1] > 0:
             relative_position_bias = torch.roll(relative_position_bias,
                                         shifts=(-shift_size[1], -shift_size[1]), dims=(3, 5))
         relative_position_bias = relative_position_bias.view(B, num_heads, 
@@ -346,7 +346,9 @@ def shifted_window_attention(
         attn_mask = x.new_zeros((pad_H, pad_W))
         #NOTE: it is easy to change the shift direction from upper left to lower right by changing below 2 lines
         h_slices = ((0, -window_size[0]), (-window_size[0], -shift_size[0]), (-shift_size[0], None))
-        w_slices = ((0, -window_size[1]), (-window_size[1], -shift_size[1]), (-shift_size[1], None))
+        #w_slices = ((0, -window_size[1]), (-window_size[1], -shift_size[1]), (-shift_size[1], None))
+        #NOTE: we don't need mask for station dimension
+        w_slices = ((0, -window_size[1]), (-window_size[1], -0), (-0, None))
         count = 0
         for h in h_slices:
             for w in w_slices:
@@ -799,6 +801,8 @@ class ShiftedWindowAttentionV2(ShiftedWindowAttention):
         dropout: float = 0.0,
         use_station_location: bool = True,
         use_relative_position_bias: bool = True,
+        decoupled_relative_position_bias: bool = False,
+        time_unit: float = 1.0,
     ):
         super().__init__(
             dim,
@@ -814,13 +818,23 @@ class ShiftedWindowAttentionV2(ShiftedWindowAttention):
         )
 
         self.earth_radius = 6371
+        self.time_unit = time_unit
         self.logit_scale = nn.Parameter(torch.log(10 * torch.ones((num_heads, 1, 1))))
         ## https://github.com/microsoft/Swin-Transformer/blob/b720b4191588c19222ccf129860e905fb02373a7/models/swin_transformer_v2.py#L92
         # mlp to generate continuous relative position bias
         coords_dim = 5 if self.use_station_location else 2
-        self.cpb_mlp = nn.Sequential(nn.Linear(coords_dim, 512, bias=True),
-                                     nn.ReLU(inplace=True),
-                                     nn.Linear(512, num_heads, bias=False))
+        self.decoupled_relative_position_bias = decoupled_relative_position_bias
+        if not decoupled_relative_position_bias:
+            self.cpb_mlp = nn.Sequential(nn.Linear(coords_dim, 512, bias=True),
+                                         nn.ReLU(inplace=True),
+                                         nn.Linear(512, num_heads, bias=False))
+        else:
+            self.cpb_mlp_time = nn.Sequential(nn.Linear(1, 128, bias=True),
+                                                nn.ReLU(inplace=True),
+                                                nn.Linear(128, num_heads, bias=False))
+            self.cpb_mlp_space = nn.Sequential(nn.Linear(coords_dim-1, 512, bias=True),
+                                                nn.ReLU(inplace=True),
+                                                nn.Linear(512, num_heads, bias=False))
         if qkv_bias:
             length = self.qkv.bias.numel() // 3
             self.qkv.bias[length : 2 * length].data.zero_()
@@ -863,10 +877,11 @@ class ShiftedWindowAttentionV2(ShiftedWindowAttention):
     def get_relative_position_bias(self, loc: Union[Tensor, None]) -> Tensor:
         if self.use_station_location:
             #relative_coords_t = self.relative_coords_t.repeat(loc.shape[0], loc.shape[1], loc.shape[1], 1) # B, nt*nx, nt*nx, 1 #FIXME: this is wrong, causing mismatch in relative_position_coords
-            relative_coords_t = self.relative_coords_t.repeat(loc.shape[0], 1,1,1).repeat_interleave(loc.shape[1], dim=1).repeat_interleave(loc.shape[1], dim=2) # B, nt*nx, nt*nx, 1
+            relative_coords_t = self.relative_coords_t.repeat(loc.shape[0], 1,1,1).repeat_interleave(loc.shape[1], dim=1).repeat_interleave(loc.shape[1], dim=2)*self.time_unit # B, nt*nx, nt*nx, 1
             device = loc.device
             dtype = loc.dtype
             device = device if isinstance(device, str) and device != "mps" else "cpu"
+            #TODO: IF we implement window for station here, more memory can be saved to deal with large number of stations ~300+  
             with torch.autocast(device_type=device, enabled=False):
                 # keep precision in small distance
                 loc = loc.float() # to avoid round error
@@ -895,7 +910,10 @@ class ShiftedWindowAttentionV2(ShiftedWindowAttention):
             #relative_coords_sta = relative_coords_sta.repeat_interleave(self.window_size[0], dim=1).repeat_interleave(self.window_size[0], dim=2) # B, nt*nx, nt*nx, 4
             # relative_coords = torch.cat((relative_coords_t, relative_coords_sta), dim=-1) # B, nt*nx, nt*nx, 5
             # relative_position_bias = self.cpb_mlp(relative_coords) #bt, Wh*Ww, Wh*Ww, nH
-            relative_position_bias = self.cpb_mlp(torch.cat((relative_coords_t, relative_coords_sta), dim=-1)) #bt, Wh*Ww, Wh*Ww, nH
+            if not self.decoupled_relative_position_bias:
+                relative_position_bias = self.cpb_mlp(torch.cat((relative_coords_t, relative_coords_sta), dim=-1)) #bt, Wh*Ww, Wh*Ww, nH
+            else:
+                relative_position_bias = self.cpb_mlp_time(relative_coords_t.to(dtype)) + self.cpb_mlp_space(relative_coords_sta) #bt, Wh*Ww, Wh*Ww, nH
             relative_position_bias = relative_position_bias.permute(0, 3, 1, 2).view(loc.shape[0], self.num_heads, self.window_size[0], loc.shape[1], self.window_size[0], loc.shape[1]) #bt, nH, nt, nx, nt, nx
             relative_position_bias = 32 * torch.sigmoid(relative_position_bias)
         else:
@@ -1166,6 +1184,8 @@ class SwinTransformerBlock(nn.Module):
         attn_layer: Callable[..., nn.Module] = ShiftedWindowAttention,
         use_station_location: bool = True,
         use_relative_position_bias: bool = True,
+        decoupled_relative_position_bias: bool = False,
+        time_unit: float = 1.0,
     ):
         super().__init__()
 
@@ -1179,6 +1199,8 @@ class SwinTransformerBlock(nn.Module):
             dropout=dropout,
             use_station_location=use_station_location,
             use_relative_position_bias=use_relative_position_bias,
+            decoupled_relative_position_bias=decoupled_relative_position_bias,
+            time_unit=time_unit,
         )
         self.stochastic_depth = StochasticDepth(stochastic_depth_prob, "row")
         self.norm2 = norm_layer(dim)
@@ -1231,6 +1253,8 @@ class SwinTransformerBlockV2(SwinTransformerBlock):
         attn_layer: Callable[..., nn.Module] = ShiftedWindowAttentionV2,
         use_station_location: bool = True,
         use_relative_position_bias: bool = True,
+        decoupled_relative_position_bias: bool = False,
+        time_unit: float = 1.0,
         **kwargs,
     ):
         super().__init__(
@@ -1246,6 +1270,8 @@ class SwinTransformerBlockV2(SwinTransformerBlock):
             attn_layer=attn_layer,
             use_station_location=use_station_location,
             use_relative_position_bias=use_relative_position_bias,
+            decoupled_relative_position_bias=decoupled_relative_position_bias,
+            time_unit=time_unit,
         )
 
     def forward(self, meta: Dict):
@@ -1330,6 +1356,7 @@ class SwinTransformer(nn.Module):
         use_relative_position_bias: bool = True,
         use_rope: bool = False,
         use_rope_mixed: bool = False,
+        decoupled_relative_position_bias: bool = False,
     ):
         super().__init__()
 
@@ -1372,6 +1399,7 @@ class SwinTransformer(nn.Module):
         layers: List[nn.Module] = []
         total_stage_blocks = sum(depths)
         stage_block_id = 0
+        dt_s = 1.0/100
         # build SwinTransformer blocks
         for i_stage in range(len(depths)):
             stage: List[nn.Module] = []
@@ -1379,12 +1407,13 @@ class SwinTransformer(nn.Module):
             for i_layer in range(depths[i_stage]):
                 # adjust stochastic depth probability based on the depth of the stage block
                 sd_prob = stochastic_depth_prob * float(stage_block_id) / (total_stage_blocks - 1)
+                #temp_window_size = [window_size[0], window_size[1]//(4//(2**i_stage))] if i_stage <= 1 else window_size
                 stage.append(
                     block(
                         dim,
                         num_heads[i_stage],
-                        window_size=window_size,
-                        shift_size=[0 if i_layer % 2 == 0 else w // 2 for w in window_size],
+                        window_size=window_size,# if i_stage > 1 else temp_window_size,
+                        shift_size=[0 if i_layer % 2 == 0 else w // 2 for w in window_size],# if i_stage > 1 else [0 if i_layer % 2 == 0 else w // 2 for w in temp_window_size],
                         mlp_ratio=mlp_ratio,
                         dropout=dropout,
                         attention_dropout=attention_dropout,
@@ -1394,6 +1423,8 @@ class SwinTransformer(nn.Module):
                         use_relative_position_bias=use_relative_position_bias,
                         use_rope=use_rope,
                         use_rope_mixed=use_rope_mixed,
+                        decoupled_relative_position_bias=decoupled_relative_position_bias,
+                        time_unit = dt_s*(4**(i_stage+1))
                     )
                 )
                 stage_block_id += 1
@@ -1461,6 +1492,7 @@ def _swin_transformer(
     use_relative_position_bias: bool,
     use_rope: bool = False,
     use_rope_mixed: bool = False,
+    decoupled_relative_position_bias: bool = False,
     **kwargs: Any,
 ) -> SwinTransformer:
     model = SwinTransformer(
@@ -1475,6 +1507,7 @@ def _swin_transformer(
         use_relative_position_bias=use_relative_position_bias,
         use_rope=use_rope,
         use_rope_mixed=use_rope_mixed,
+        decoupled_relative_position_bias=decoupled_relative_position_bias,
         **kwargs,
     )
 
