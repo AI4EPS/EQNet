@@ -390,6 +390,9 @@ class PhaseNet(nn.Module):
                 dim_mults=(1, 2, 4, 8),
                 nested_unet_depths=(7, 4, 2, 1),  # nested unet depths, from unet-squared paper
                 consolidate_upsample_fmaps=True,  # whether to consolidate outputs from all upsample blocks, used in unet-squared paper
+                log_scale=log_scale,
+                add_polarity=add_polarity,
+                add_event=add_event,
             )
         else:
             raise ValueError("backbone only supports resnet18, resnet50, or unet")
@@ -401,12 +404,20 @@ class PhaseNet(nn.Module):
                 init_features, 3, kernel_size=kernel_size, padding=padding, feature_names="phase"
             )
             if self.add_event:
-                self.event_detector = UNetHead(
-                    init_features, 1, kernel_size=kernel_size, padding=padding, feature_names="event"
-                )
-                self.event_timer = EventHead(
-                    init_features, 1, kernel_size=kernel_size, padding=padding, feature_names="event"
-                )
+                if self.backbone_name == "xunet":
+                    self.event_detector = UNetHead(
+                        init_features * 8, 1, kernel_size=kernel_size, padding=padding, feature_names="event"
+                    )
+                    self.event_timer = EventHead(
+                        init_features * 8, 1, kernel_size=kernel_size, padding=padding, feature_names="event"
+                    )
+                else:
+                    self.event_detector = UNetHead(
+                        init_features, 1, kernel_size=kernel_size, padding=padding, feature_names="event"
+                    )
+                    self.event_timer = EventHead(
+                        init_features, 1, kernel_size=kernel_size, padding=padding, feature_names="event"
+                    )
             if self.add_polarity:
                 self.polarity_picker = UNetHead(
                     init_features, 1, kernel_size=kernel_size, padding=padding, feature_names="polarity"

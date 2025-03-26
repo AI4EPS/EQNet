@@ -351,9 +351,16 @@ class XUnet(nn.Module):
         skip_scale = 2 ** -0.5,
         weight_standardize = False,
         attn_heads: MaybeTuple(int) = 8,
-        attn_dim_head: MaybeTuple(int) = 32
+        attn_dim_head: MaybeTuple(int) = 32,
+        add_polarity=False,
+        add_event=False,
+        log_scale=False,
     ):
         super().__init__()
+
+        self.add_polarity = add_polarity
+        self.add_event = add_event
+        self.log_scale = log_scale
 
         self.train_as_images = station_kernel_size == 1 ## FIXME
 
@@ -487,6 +494,13 @@ class XUnet(nn.Module):
 
         x = self.init_conv(x)
 
+        if self.add_polarity:
+            out_polarity = x
+            if is_image:
+                out_polarity = rearrange(out_polarity, 'b c 1 h w -> b c h w')
+                # FIXME: HARDCODED
+                out_polarity = out_polarity.permute(0, 1, 3, 2)
+
         # residual
 
         r = x.clone()
@@ -512,9 +526,15 @@ class XUnet(nn.Module):
         x = self.mid_attn(x) + x
         x = self.mid_after(x)
 
+        if self.add_event:
+            out_event = x
+            if is_image:
+                out_event = rearrange(out_event, 'b c 1 h w -> b c h w')
+                # FIXME: HARDCODED
+                out_event = out_event.permute(0, 1, 3, 2)
+
         up_hiddens.append(x)
         x = self.mid_upsample(x)
-
 
         for init_block, blocks, attn_blocks, upsample in self.ups:
             x = torch.cat((x, down_hiddens.pop() * self.skip_scale), dim=1)
@@ -546,8 +566,8 @@ class XUnet(nn.Module):
             out = rearrange(out, 'b c 1 h w -> b c h w')
 
         # FIXME: HARDCODED
-        out = out.permute(0, 1, 3, 2)
-        out = {"phase": out}
+        out_phase = out.permute(0, 1, 3, 2)
+        out = {"phase": out_phase, "polarity": out_polarity, "event": out_event}
 
         return out
 
