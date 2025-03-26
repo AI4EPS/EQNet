@@ -31,6 +31,8 @@ default_cfg = {
     },
 }
 
+from .prompt import MaskDecoder, PromptEncoder, TwoWayTransformer
+
 
 class FCNHead(nn.Module):
     # class FCNHead(nn.Sequential):
@@ -353,6 +355,7 @@ class PhaseNet(nn.Module):
         spectrogram=False,
         add_polarity=False,
         add_event=False,
+        add_prompt=True,
         event_center_loss_weight=1.0,
         event_time_loss_weight=1.0,
         polarity_loss_weight=1.0,
@@ -362,6 +365,7 @@ class PhaseNet(nn.Module):
         self.spectrogram = spectrogram
         self.add_event = add_event
         self.add_polarity = add_polarity
+        self.add_prompt = add_prompt
         self.event_center_loss_weight = event_center_loss_weight
         self.event_time_loss_weight = event_time_loss_weight
         self.polarity_loss_weight = polarity_loss_weight
@@ -418,6 +422,34 @@ class PhaseNet(nn.Module):
                     self.event_timer = EventHead(
                         init_features, 1, kernel_size=kernel_size, padding=padding, feature_names="event"
                     )
+                
+                # # #### FIXME: HARDCODED
+                # if self.add_prompt:
+                #     prompt_embed_dim = 16
+                #     image_embedding_size = [256, 8]
+                #     image_size = [256, 8]
+
+                #     self.prompt_encoder=PromptEncoder(
+                #         embed_dim=prompt_embed_dim,
+                #         image_embedding_size=(image_embedding_size, image_embedding_size),
+                #         input_image_size=(image_size, image_size),
+                #         mask_in_chans=16,
+                #     ),
+                #     self.mask_decoder=MaskDecoder(
+                #         num_multimask_outputs=1,
+                #         transformer=TwoWayTransformer(
+                #             depth=2,
+                #             embedding_dim=prompt_embed_dim,
+                #             mlp_dim=512,
+                #             num_heads=4,
+                #         ),
+                #         transformer_dim=prompt_embed_dim,
+                #         iou_head_depth=3,
+                #         iou_head_hidden_dim=16,
+                #     )
+                # # ####
+
+                
             if self.add_polarity:
                 self.polarity_picker = UNetHead(
                     init_features, 1, kernel_size=kernel_size, padding=padding, feature_names="polarity"
@@ -430,6 +462,7 @@ class PhaseNet(nn.Module):
                 self.event_timer = EventHead(128, 1, scale_factor=2)
             if self.add_polarity:
                 self.polarity_picker = DeepLabHead(128, 1, scale_factor=32)
+
 
     @property
     def device(self):
@@ -468,6 +501,21 @@ class PhaseNet(nn.Module):
             if loss_event_time is not None:
                 output["loss_event_time"] = loss_event_time * self.event_time_loss_weight
                 output["loss"] += loss_event_time * self.event_time_loss_weight
+
+
+            # ### FIXME: HARDCODED
+            # points = batched_inputs["points"]
+            # labels = torch.ones_like(points[:, :, 0])
+            # points = (points, labels)
+            # curr_embedding = features["event"]
+            # sparse_embeddings, dense_embeddings = self.prompt_encoder(points=points)
+            # low_res_masks, iou_predictions = self.mask_decoder(
+            #     image_embeddings=curr_embedding.unsqueeze(0),
+            #     image_pe=self.prompt_encoder.get_dense_pe(),
+            #     sparse_prompt_embeddings=sparse_embeddings,
+            #     dense_prompt_embeddings=dense_embeddings,
+            # )
+
         if self.add_polarity:
             output_polarity, loss_polarity = self.polarity_picker(features, polarity, mask=polarity_mask)
             output["polarity"] = output_polarity

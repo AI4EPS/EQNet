@@ -2,28 +2,17 @@ import h5py
 import numpy as np
 import torch
 from torch.utils.data import Dataset, IterableDataset
-
-
-def generate_label(phase_list, label_width=[150, 150], nt=8192):
-    target = np.zeros([len(phase_list) + 1, nt], dtype=np.float32)
-
-    for i, (picks, w) in enumerate(zip(phase_list, label_width)):
-        for phase_time in picks:
-            t = np.arange(nt) - phase_time
-            gaussian = np.exp(-(t**2) / (2 * (w / 6) ** 2))
-            gaussian[gaussian < 0.1] = 0.0
-            target[i + 1, :] += gaussian
-
-    target[0:1, :] = np.maximum(0, 1 - np.sum(target[1:, :], axis=0, keepdims=True))
-
-    return target
+from .seismic_trace import generate_phase_label, generate_event_label
 
 
 class SeismicNetworkIterableDataset(IterableDataset):
     degree2km = 111.32
-    nt = 8192  ## 8992
-    feature_nt = 512  ##560
-    feature_scale = int(nt / feature_nt)
+    nt0 = 12000
+    nt = 4096  ## 8992
+    event_feature_scale = 16
+    polarity_feature_scale = 1
+    event_feature_nt = nt // event_feature_scale
+    polarity_feature_nt = nt // polarity_feature_scale
 
     def __init__(self, hdf5_file="ncedc_event.h5", sampling_rate=100.0):
         super().__init__()
@@ -45,22 +34,27 @@ class SeismicNetworkIterableDataset(IterableDataset):
         return len(self.event_ids)
 
     def sample(self, event_ids):
-        num_station = 10
+        num_station = 8
         while True:
             idx = np.random.randint(0, len(event_ids))
             event_id = event_ids[idx]
             station_ids = list(self.hdf5_fp[event_id].keys())
+            event_time_index = self.hdf5_fp[event_id].attrs["event_time_index"]
             if len(station_ids) < num_station:
                 continue
             else:
                 station_ids = np.random.choice(station_ids, num_station, replace=False)
 
-            data = np.zeros([3, self.nt, len(station_ids)])
-            phase_pick = np.zeros([3, self.nt, len(station_ids)])
-            event_center = np.zeros([self.nt, len(station_ids)])
-            event_location = np.zeros([4, self.nt, len(station_ids)])
-            event_location_mask = np.zeros([self.nt, len(station_ids)])
-            station_location = np.zeros([len(station_ids), 3])
+            data = np.zeros([3, self.nt0, len(station_ids)])
+            phase_pick = np.zeros([3, self.nt0, len(station_ids)])
+            phase_mask = np.zeros([self.nt0, len(station_ids)])
+            polarity = np.zeros([self.nt0, len(station_ids)])
+            polarity_mask = np.zeros([self.nt0, len(station_ids)])
+            event_center = np.zeros([self.nt0, len(station_ids)])
+            event_time = np.zeros([self.nt0, len(station_ids)])
+            event_location = np.zeros([3])
+            event_mask = np.zeros([self.nt0, len(station_ids)])
+            station_location = np.zeros([3, len(station_ids)])
 
             for i, sta_id in enumerate(station_ids):
                 trace_id = event_id + "/" + sta_id
@@ -68,23 +62,33 @@ class SeismicNetworkIterableDataset(IterableDataset):
                 # if self.hdf5_fp[trace_id][()].shape != (9000, 3):
                 #     continue
 
-                data[:, :, i] = self.hdf5_fp[trace_id][: self.nt, :].T
+                data[:, :, i] = self.hdf5_fp[trace_id][:, :]
                 attrs = self.hdf5_fp[trace_id].attrs
                 p_picks = attrs["phase_index"][attrs["phase_type"] == "P"]
                 s_picks = attrs["phase_index"][attrs["phase_type"] == "S"]
-                phase_pick[:, :, i] = generate_label([p_picks, s_picks], nt=self.nt)
+                phase_pick[:, :, i], phase_mask[:, i] = generate_phase_label([p_picks, s_picks], nt=self.nt0)
+
+                up = attrs["phase_index"][attrs["phase_polarity"] == "U"]
+                dn = attrs["phase_index"][attrs["phase_polarity"] == "D"]
+
+
+                phase_up, mask_up = generate_phase_label([up], nt=self.nt0)
+                phase_dn, mask_dn = generate_phase_label([dn], nt=self.nt0)
+                polarity[:, i] = ((phase_up[1, :] - phase_dn[1, :]) + 1.0) / 2.0
+                polarity_mask[:, i] = mask_up + mask_dn
 
                 ## TODO: how to deal with multiple phases
                 # center = (self.hdf5_fp[trace_id].attrs["phase_index"][::2] + self.hdf5_fp[trace_id].attrs["phase_index"][1::2])/2.0
                 ## assuming only one event with both P and S picks
                 c0 = (
-                    (self.hdf5_fp[trace_id].attrs["phase_index"][attrs["phase_type"] == "P"])
-                    + (self.hdf5_fp[trace_id].attrs["phase_index"][attrs["phase_type"] == "S"])
+                    (self.hdf5_fp[trace_id].attrs["p_phase_index"])
+                    + (self.hdf5_fp[trace_id].attrs["s_phase_index"])
                 ) / 2.0
+                t0 = event_time_index
                 c0_width = (
                     (
-                        (self.hdf5_fp[trace_id].attrs["phase_index"][attrs["phase_type"] == "S"])
-                        - (self.hdf5_fp[trace_id].attrs["phase_index"][attrs["phase_type"] == "P"])
+                        (self.hdf5_fp[trace_id].attrs["s_phase_index"])
+                        - (self.hdf5_fp[trace_id].attrs["p_phase_index"])
                     )
                     * self.sampling_rate
                     / 200.0
@@ -109,49 +113,47 @@ class SeismicNetworkIterableDataset(IterableDataset):
 
                 # event_center[int(c0//self.feature_scale), i] = 1
                 # print(c0_width)
-                event_center[:, i] = generate_label(
-                    [
-                        # [c0 / self.feature_scale],
-                        c0,
-                    ],
-                    label_width=[
-                        c0_width,
-                    ],
-                    # label_width=[
-                    #     10,
-                    # ],
-                    # nt=self.feature_nt,
-                    nt=self.nt,
-                )[1, :]
-                mask = event_center[:, i] >= 0.5
-                event_location[0, :, i] = (
-                    np.arange(self.nt) - self.hdf5_fp[event_id].attrs["event_time_index"]
-                ) / self.sampling_rate
-                # event_location[0, :, i] = (np.arange(self.feature_nt) - 3000 / self.feature_scale) / self.sampling_rate
-                event_location[1:, mask, i] = np.array([dx, dy, dz])[:, np.newaxis]
-                event_location_mask[:, i] = mask
+
+                event_center[:, i], event_time[:, i], event_mask[:, i] = generate_event_label([c0], [t0], nt=self.nt0)
+                event_location[:] = np.array([dx, dy, dz])
 
                 ## station location
-                station_location[i, 0] = round(
+                station_location[0, i] = round(
                     self.hdf5_fp[trace_id].attrs["longitude"]
                     * np.cos(np.radians(self.hdf5_fp[trace_id].attrs["latitude"]))
                     * self.degree2km,
                     2,
                 )
-                station_location[i, 1] = round(self.hdf5_fp[trace_id].attrs["latitude"] * self.degree2km, 2)
-                station_location[i, 2] = round(-self.hdf5_fp[trace_id].attrs["elevation_m"] / 1e3, 2)
+                station_location[1, i] = round(self.hdf5_fp[trace_id].attrs["latitude"] * self.degree2km, 2)
+                station_location[2, i] = round(-self.hdf5_fp[trace_id].attrs["elevation_m"] / 1e3, 2)
 
             std = np.std(data, axis=1, keepdims=True)
             std[std == 0] = 1.0
             data = (data - np.mean(data, axis=1, keepdims=True)) / std
             data = data.astype(np.float32)
 
+            # ii = np.random.randint(0, self.nt0 - self.nt)
+            ii = np.random.randint(0, 3000)
+            data = data[:, ii : ii + self.nt, :]
+            phase_pick = phase_pick[:, ii : ii + self.nt, :]
+            phase_mask = phase_mask[np.newaxis, ii : ii + self.nt, :]
+            event_center = event_center[np.newaxis, ii : ii + self.nt, :]
+            event_time = event_time[np.newaxis, ii : ii + self.nt, :]
+            # event_location = event_location[:, ii : ii + self.nt, :]
+            event_mask = event_mask[np.newaxis, ii : ii + self.nt, :]
+            polarity = polarity[np.newaxis, ii : ii + self.nt, :]
+            polarity_mask = polarity_mask[np.newaxis, ii : ii + self.nt, :]
+
+
             yield {
                 "data": torch.from_numpy(data).float(),
                 "phase_pick": torch.from_numpy(phase_pick).float(),
-                "event_center": torch.from_numpy(event_center[::self.feature_scale]).float(),
-                "event_location": torch.from_numpy(event_location[:, ::self.feature_scale]).float(),
-                "event_location_mask": torch.from_numpy(event_location_mask[::self.feature_scale]).float(),
+                "phase_mask": torch.from_numpy(phase_mask).float(),
+                "polarity": torch.from_numpy(polarity[:, ::self.polarity_feature_scale]).float(),
+                "polarity_mask": torch.from_numpy(polarity_mask[:, ::self.polarity_feature_scale]).float(),
+                "event_center": torch.from_numpy(event_center[:, ::self.event_feature_scale]).float(),
+                "event_time": torch.from_numpy(event_time[:, ::self.event_feature_scale]).float(),
+                "event_mask": torch.from_numpy(event_mask[:, ::self.event_feature_scale]).float(),
                 "station_location": torch.from_numpy(station_location).float(),
             }
 
@@ -159,7 +161,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
 if __name__ == "__main__":
     import matplotlib.pyplot as plt
 
-    dataset = SeismicNetworkIterableDataset("/Users/weiqiang/Research/EQNet/datasets/NCEDC/ncedc_event.h5")
+    dataset = SeismicNetworkIterableDataset("/global/home/users/zhuwq0/scratch/CEED/quakeflow_nc/waveform_test.h5")
     for x in dataset:
         # print(x)
         fig, axes = plt.subplots(1, 5, figsize=(15, 5))
@@ -169,15 +171,18 @@ if __name__ == "__main__":
             axes[1].plot(x["phase_pick"][1, :, i] + i)
             axes[1].plot(x["phase_pick"][2, :, i] + i)
 
-            axes[2].plot(x["event_center"][:, i] + i - 0.5)
+            axes[2].plot(x["polarity"][0, :, i] + i)
+            axes[2].plot(x["polarity_mask"][0, :, i] + i, linestyle="--", color="k")
+
+            axes[3].plot(x["event_center"][0, :, i] + i - 0.5)
+            axes[3].plot(x["event_mask"][0, :, i] + i - 0.5, linestyle="--", color="k")
             # axes[2].scatter(x["event_location"][0, :, i], x["event_location"][1, :, i])
 
-            axes[3].plot(x["event_location"][0, :, i] / 10 + i)
+            event_time = x["event_time"][0, :, i] * x["event_mask"][0, :, i]
+            event_time = event_time / torch.max(event_time)
+            axes[4].plot(event_time + i)
+            axes[4].plot(x["event_mask"][0, :, i] + i - 0.5, linestyle="--", color="k")
 
-            t = np.arange(x["event_location"].shape[1])[x["event_location_mask"][:, i] == 1]
-            axes[4].plot(t, x["event_location"][1, x["event_location_mask"][:, i] == 1, i] / 10 + i, color=f"C{i}")
-            axes[4].plot(t, x["event_location"][2, x["event_location_mask"][:, i] == 1, i] / 10 + i, color=f"C{i}")
-            axes[4].plot(t, x["event_location"][3, x["event_location_mask"][:, i] == 1, i] / 10 + i, color=f"C{i}")
 
         plt.savefig("test.png")
         plt.show()
