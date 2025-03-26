@@ -50,19 +50,28 @@ class MaskDecoder(nn.Module):
         self.num_mask_tokens = num_multimask_outputs + 1
         self.mask_tokens = nn.Embedding(self.num_mask_tokens, transformer_dim)
 
-        self.output_upscaling = nn.Sequential(
-            nn.ConvTranspose2d(transformer_dim, transformer_dim // 4, kernel_size=2, stride=2),
-            LayerNorm2d(transformer_dim // 4),
-            activation(),
-            nn.ConvTranspose2d(transformer_dim // 4, transformer_dim // 8, kernel_size=2, stride=2),
-            activation(),
-        )
+        ## FIXME: Need to understand the hypernetworks here
+        # self.output_upscaling = nn.Sequential(
+        #     nn.ConvTranspose2d(transformer_dim, transformer_dim // 4, kernel_size=2, stride=2),
+        #     LayerNorm2d(transformer_dim // 4),
+        #     activation(),
+        #     nn.ConvTranspose2d(transformer_dim // 4, transformer_dim // 8, kernel_size=2, stride=2),
+        #     activation(),
+        # )
+        # self.output_hypernetworks_mlps = nn.ModuleList(
+        #     [
+        #         MLP(transformer_dim, transformer_dim, transformer_dim // 8, 3)
+        #         for i in range(self.num_mask_tokens)
+        #     ]
+        # )
+        self.output_upscaling = nn.Identity()
         self.output_hypernetworks_mlps = nn.ModuleList(
             [
-                MLP(transformer_dim, transformer_dim, transformer_dim // 8, 3)
+                MLP(transformer_dim, transformer_dim, transformer_dim, 3)
                 for i in range(self.num_mask_tokens)
             ]
         )
+
 
         self.iou_prediction_head = MLP(
             transformer_dim, iou_head_hidden_dim, self.num_mask_tokens, iou_head_depth
@@ -122,6 +131,7 @@ class MaskDecoder(nn.Module):
         output_tokens = output_tokens.unsqueeze(0).expand(sparse_prompt_embeddings.size(0), -1, -1)
         tokens = torch.cat((output_tokens, sparse_prompt_embeddings), dim=1)
 
+        ## FIXME: Need to understand the logic here
         # Expand per-image data in batch direction to be per-mask
         src = torch.repeat_interleave(image_embeddings, tokens.shape[0], dim=0)
         src = src + dense_prompt_embeddings

@@ -44,6 +44,8 @@ def evaluate(model, data_loader, scaler, args, epoch=0, total_samples=1):
         metric_logger.add_meter("loss_event_time", utils.SmoothedValue(window_size=1, fmt="{value}"))
     if args.model in ["phasenet_plus", "phasenet_prompt"]:
         metric_logger.add_meter("loss_polarity", utils.SmoothedValue(window_size=1, fmt="{value}"))
+    if args.model == "phasenet_prompt":
+        metric_logger.add_meter("loss_prompt", utils.SmoothedValue(window_size=1, fmt="{value}"))
     header = f"Test: "
 
     processed_samples = 0
@@ -60,6 +62,8 @@ def evaluate(model, data_loader, scaler, args, epoch=0, total_samples=1):
                 metric_logger.meters["loss_event_time"].update(output["loss_event_time"].item(), n=batch_size)
             if args.model in ["phasenet_plus", "phasenet_prompt"]:
                 metric_logger.meters["loss_polarity"].update(output["loss_polarity"].item(), n=batch_size)
+            if args.model == "phasenet_prompt":
+                metric_logger.meters["loss_prompt"].update(output["loss_prompt"].item(), n=batch_size)
 
             processed_samples += batch_size
             if processed_samples > total_samples:
@@ -79,6 +83,8 @@ def evaluate(model, data_loader, scaler, args, epoch=0, total_samples=1):
             log["test/loss_event_time"] = metric_logger.loss_event_time.global_avg
         if args.model in ["phasenet_plus", "phasenet_prompt"]:
             log["test/loss_polarity"] = metric_logger.loss_polarity.global_avg
+        if args.model == "phasenet_prompt":
+            log["test/loss_prompt"] = metric_logger.loss_prompt.global_avg
         wandb.log(log)
 
     plot_results(meta, model, output, args, epoch, "test")
@@ -122,6 +128,8 @@ def train_one_epoch(
         metric_logger.add_meter("loss_event_time", utils.SmoothedValue(window_size=1, fmt="{value}"))
     if args.model in ["phasenet_plus", "phasenet_prompt"]:
         metric_logger.add_meter("loss_polarity", utils.SmoothedValue(window_size=1, fmt="{value}"))
+    if args.model == "phasenet_prompt":
+        metric_logger.add_meter("loss_prompt", utils.SmoothedValue(window_size=1, fmt="{value}"))
     header = f"Epoch: [{epoch}]"
 
     ctx = (
@@ -168,6 +176,8 @@ def train_one_epoch(
             metric_logger.update(loss_event_time=output["loss_event_time"].item())
         if args.model in ["phasenet_plus", "phasenet_prompt"]:
             metric_logger.update(loss_polarity=output["loss_polarity"].item())
+        if args.model == "phasenet_prompt":
+            metric_logger.update(loss_prompt=output["loss_prompt"].item())
         if args.wandb and utils.is_main_process():
             log = {
                 "train/train_loss": loss.item(),
@@ -182,10 +192,13 @@ def train_one_epoch(
                 log["train/loss_event_time"] = output["loss_event_time"].item()
             if args.model in ["phasenet_plus", "phasenet_prompt"]:
                 log["train/loss_polarity"] = output["loss_polarity"].item()
+            if args.model == "phasenet_prompt":
+                log["train/loss_prompt"] = output["loss_prompt"].item()
             wandb.log(log, step=epoch * (total_samples // batch_size) + i)
 
         if processed_samples >= total_samples:
             break
+
 
     plot_results(meta, model, output, args, epoch, "train")
     del meta, output, loss
@@ -230,6 +243,27 @@ def plot_results(meta, model, output, args, epoch, prefix=""):
                 polarity=polarity,
                 event_center=event_center,
                 event_time=event_time,
+                epoch=epoch,
+                figure_dir=args.figure_dir,
+                prefix=prefix,
+            )
+            del phase, event_center, polarity
+
+        elif args.model == "phasenet_prompt":
+            phase = torch.softmax(output["phase"], dim=1).cpu().float()
+            event_center = torch.sigmoid(output["event_center"]).cpu().float()
+            event_time = output["event_time"].cpu().float()
+            polarity = torch.sigmoid(output["polarity"]).cpu().float()
+            prompt_center = output["prompt_center"].cpu().float()
+            meta["data"] = moving_normalize(meta["data"])
+            print("Plotting...")
+            eqnet.utils.plot_phasenet_prompt_train(
+                meta,
+                phase,
+                polarity=polarity,
+                event_center=event_center,
+                event_time=event_time,
+                prompt_center=prompt_center,
                 epoch=epoch,
                 figure_dir=args.figure_dir,
                 prefix=prefix,
@@ -528,8 +562,9 @@ def main(args):
     model_without_ddp = model
     if args.distributed:
         model = torch.nn.parallel.DistributedDataParallel(
-            model, device_ids=[args.gpu]
-        )  # , find_unused_parameters=True)
+            model, device_ids=[args.gpu],
+            find_unused_parameters=True ## FIXME: What layers are not used?
+        )
         model_without_ddp = model.module
 
     model_ema = None

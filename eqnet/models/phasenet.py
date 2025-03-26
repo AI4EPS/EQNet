@@ -423,31 +423,31 @@ class PhaseNet(nn.Module):
                         init_features, 1, kernel_size=kernel_size, padding=padding, feature_names="event"
                     )
                 
-                # # #### FIXME: HARDCODED
-                # if self.add_prompt:
-                #     prompt_embed_dim = 16
-                #     image_embedding_size = [256, 8]
-                #     image_size = [256, 8]
+                # #### FIXME: HARDCODED
+                if self.add_prompt:
+                    prompt_embed_dim = 16
+                    image_embedding_size = [256, 8]
+                    image_size = [256, 8]
 
-                #     self.prompt_encoder=PromptEncoder(
-                #         embed_dim=prompt_embed_dim,
-                #         image_embedding_size=(image_embedding_size, image_embedding_size),
-                #         input_image_size=(image_size, image_size),
-                #         mask_in_chans=16,
-                #     ),
-                #     self.mask_decoder=MaskDecoder(
-                #         num_multimask_outputs=1,
-                #         transformer=TwoWayTransformer(
-                #             depth=2,
-                #             embedding_dim=prompt_embed_dim,
-                #             mlp_dim=512,
-                #             num_heads=4,
-                #         ),
-                #         transformer_dim=prompt_embed_dim,
-                #         iou_head_depth=3,
-                #         iou_head_hidden_dim=16,
-                #     )
-                # # ####
+                    self.prompt_encoder=PromptEncoder(
+                        embed_dim=prompt_embed_dim,
+                        image_embedding_size=image_embedding_size,
+                        input_image_size=image_size,
+                        mask_in_chans=16,
+                    )
+                    self.mask_decoder=MaskDecoder(
+                        num_multimask_outputs=1,
+                        transformer=TwoWayTransformer(
+                            depth=2,
+                            embedding_dim=prompt_embed_dim,
+                            mlp_dim=512,
+                            num_heads=4,
+                        ),
+                        transformer_dim=prompt_embed_dim,
+                        iou_head_depth=3,
+                        iou_head_hidden_dim=16,
+                    )
+                # ####
 
                 
             if self.add_polarity:
@@ -503,18 +503,48 @@ class PhaseNet(nn.Module):
                 output["loss"] += loss_event_time * self.event_time_loss_weight
 
 
-            # ### FIXME: HARDCODED
-            # points = batched_inputs["points"]
-            # labels = torch.ones_like(points[:, :, 0])
-            # points = (points, labels)
-            # curr_embedding = features["event"]
-            # sparse_embeddings, dense_embeddings = self.prompt_encoder(points=points)
-            # low_res_masks, iou_predictions = self.mask_decoder(
-            #     image_embeddings=curr_embedding.unsqueeze(0),
-            #     image_pe=self.prompt_encoder.get_dense_pe(),
-            #     sparse_prompt_embeddings=sparse_embeddings,
-            #     dense_prompt_embeddings=dense_embeddings,
-            # )
+            ### FIXME: HARDCODED
+            points = batched_inputs["prompt"].unsqueeze(1) # [B, 1, 3]
+            pos = batched_inputs["position"] # [B, T, S, 3]
+            B, T, S, _ = pos.shape
+            pos = pos.view(B, T*S, 3)
+            labels = torch.ones((points.shape[0], points.shape[1]))
+            points = (points, labels)
+            labels = torch.ones((pos.shape[0], pos.shape[1]))
+            pos = (pos, labels)
+            point_embeddings, dense_embeddings = self.prompt_encoder(points=points, boxes=None, masks=None)
+            pos_embeddings, _ = self.prompt_encoder(points=pos, boxes=None, masks=None)
+            C = point_embeddings.shape[-1]
+            pos_embeddings = pos_embeddings.reshape(B, C, T, S)
+
+            low_res_masks = []
+            iou_predictions = []
+            image_embeddings = features["event"]
+            for i in range(B): ## FIXME: Don't understand why have to use loop here
+                low_res_masks_, iou_predictions_ = self.mask_decoder(
+                    image_embeddings=image_embeddings[i:i+1],
+                    image_pe=pos_embeddings[i:i+1],
+                    sparse_prompt_embeddings=point_embeddings[i:i+1],
+                    dense_prompt_embeddings=dense_embeddings[i:i+1],
+                    multimask_output=False,
+                )
+
+                low_res_masks.append(low_res_masks_)
+                iou_predictions.append(iou_predictions_)
+
+            low_res_masks = torch.cat(low_res_masks, dim=0)
+            iou_predictions = torch.cat(iou_predictions, dim=0)
+
+            targets = batched_inputs["prompt_center"].float()
+            mask = batched_inputs["prompt_mask"].float()
+            inputs = low_res_masks.float()
+            min_loss = -(targets * torch.nan_to_num(torch.log(targets)) + (1 - targets) * torch.nan_to_num(torch.log(1 - targets)))
+            # loss_prompt = torch.sum((F.binary_cross_entropy_with_logits(inputs, targets, reduction="none") - min_loss) * mask) / mask.sum()
+            loss_prompt = torch.mean(F.binary_cross_entropy_with_logits(inputs, targets, reduction="none") - min_loss)
+            output["loss_prompt"] = loss_prompt
+            output["prompt_center"] = torch.sigmoid(low_res_masks)
+            output["loss"] += loss_prompt
+            ####
 
         if self.add_polarity:
             output_polarity, loss_polarity = self.polarity_picker(features, polarity, mask=polarity_mask)

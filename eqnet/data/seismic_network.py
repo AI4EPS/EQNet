@@ -35,6 +35,23 @@ class SeismicNetworkIterableDataset(IterableDataset):
 
     def sample(self, event_ids):
         num_station = 8
+
+        ### FIXME: DUMMY DATA
+        data_old = np.zeros([3, self.nt, num_station])
+        phase_pick_old = np.zeros([3, self.nt, num_station])
+        phase_mask_old = np.zeros([self.nt, num_station])
+        polarity_old = np.zeros([self.nt, num_station])
+        polarity_mask_old = np.zeros([self.nt, num_station])
+        event_center_old = np.zeros([self.nt, num_station])
+        event_time_old = np.zeros([self.nt, num_station])
+        event_mask_old = np.zeros([self.nt, num_station])
+        station_location_old = np.zeros([3, num_station])
+        prompt_center_old = np.zeros([self.nt, num_station])
+        prompt_mask_old = np.zeros([self.nt, num_station])
+        prompt_old = np.zeros([3])
+        position_old = np.zeros([self.nt, num_station, 3])
+        ###
+
         while True:
             idx = np.random.randint(0, len(event_ids))
             event_id = event_ids[idx]
@@ -55,7 +72,10 @@ class SeismicNetworkIterableDataset(IterableDataset):
             event_location = np.zeros([3])
             event_mask = np.zeros([self.nt0, len(station_ids)])
             station_location = np.zeros([3, len(station_ids)])
+            prompt_center = np.zeros([self.nt0, len(station_ids)])
+            prompt_mask = np.zeros([self.nt0, len(station_ids)])
 
+            position = []
             for i, sta_id in enumerate(station_ids):
                 trace_id = event_id + "/" + sta_id
 
@@ -117,6 +137,8 @@ class SeismicNetworkIterableDataset(IterableDataset):
                 event_center[:, i], event_time[:, i], event_mask[:, i] = generate_event_label([c0], [t0], nt=self.nt0)
                 event_location[:] = np.array([dx, dy, dz])
 
+                prompt_center[:, i], _, prompt_mask[:, i] = generate_event_label([c0], [t0], nt=self.nt0)
+
                 ## station location
                 station_location[0, i] = round(
                     self.hdf5_fp[trace_id].attrs["longitude"]
@@ -126,6 +148,10 @@ class SeismicNetworkIterableDataset(IterableDataset):
                 )
                 station_location[1, i] = round(self.hdf5_fp[trace_id].attrs["latitude"] * self.degree2km, 2)
                 station_location[2, i] = round(-self.hdf5_fp[trace_id].attrs["elevation_m"] / 1e3, 2)
+
+                if i == 0:
+                    prompt = np.array([c0, dx, dy]) # t, x, y
+                position.append([dx, dy])
 
             std = np.std(data, axis=1, keepdims=True)
             std[std == 0] = 1.0
@@ -144,6 +170,53 @@ class SeismicNetworkIterableDataset(IterableDataset):
             polarity = polarity[np.newaxis, ii : ii + self.nt, :]
             polarity_mask = polarity_mask[np.newaxis, ii : ii + self.nt, :]
 
+            prompt_center = prompt_center[np.newaxis, ii : ii + self.nt, :]
+            prompt_mask = prompt_mask[np.newaxis, ii : ii + self.nt, :]
+            
+            prompt[0] -= ii #[3,] ## FIXME: Double check if the prompt and position time is the same
+            t = np.arange(self.nt)[::self.event_feature_scale] #[nt]
+            position = np.array(position) #[nsta, 2]
+            position = np.stack([np.tile(t[:, None], (1, position.shape[0])), 
+                               np.tile(position[:, 0], (len(t), 1)),
+                               np.tile(position[:, 1], (len(t), 1))], axis=-1) #[nt, nsta, 3]
+            
+            prompt[0] = prompt[0] / self.nt # [0 - 1]
+            prompt[1] = prompt[1] / 100 # scale by 100 km
+            prompt[2] = prompt[2] / 100 # scale by 100 km
+            position[:, :, 0] = position[:, :, 0] / self.nt # [0 - 1]
+            position[:, :, 1] = position[:, :, 1] / 100 # scale by 100 km
+            position[:, :, 2] = position[:, :, 2] / 100 # scale by 100 km
+
+
+            ## FIXME: DUMMY DATA
+            data_new = data.copy()
+            phase_pick_new = phase_pick.copy()
+            phase_mask_new = phase_mask.copy()
+            polarity_new = polarity.copy()
+            polarity_mask_new = polarity_mask.copy()
+            event_center_new = event_center.copy()
+            event_time_new = event_time.copy()
+            
+            data += data_old
+            phase_pick[1, :, :] += phase_pick_old[1, :, :]
+            phase_pick[2, :, :] += phase_pick_old[2, :, :]
+            phase_pick[0, :, :] = 1 - np.clip(phase_pick[1, :, :] + phase_pick[2, :, :], 0, 1)
+            phase_mask = np.clip(phase_mask + phase_mask_old, 0, 1)
+            polarity = (polarity - 0.5) + (polarity_old - 0.5) + 0.5
+            polarity_mask = np.clip(polarity_mask + polarity_mask_old, 0, 1)
+            event_center += event_center_old
+            event_time += event_time_old
+            event_mask = np.clip(event_mask + event_mask_old, 0, 1)
+
+            data_old = data_new
+            phase_pick_old = phase_pick_new
+            phase_mask_old = phase_mask_new
+            polarity_old = polarity_new
+            polarity_mask_old = polarity_mask_new
+            event_center_old = event_center_new
+            event_time_old = event_time_new
+            ###
+
 
             yield {
                 "data": torch.from_numpy(data).float(),
@@ -155,6 +228,10 @@ class SeismicNetworkIterableDataset(IterableDataset):
                 "event_time": torch.from_numpy(event_time[:, ::self.event_feature_scale]).float(),
                 "event_mask": torch.from_numpy(event_mask[:, ::self.event_feature_scale]).float(),
                 "station_location": torch.from_numpy(station_location).float(),
+                "prompt_center": torch.from_numpy(prompt_center[:, ::self.event_feature_scale]).float(),
+                "prompt_mask": torch.from_numpy(prompt_mask[:, ::self.event_feature_scale]).float(),
+                "prompt": torch.tensor(prompt),
+                "position": torch.tensor(position),
             }
 
 
@@ -162,27 +239,36 @@ if __name__ == "__main__":
     import matplotlib.pyplot as plt
 
     dataset = SeismicNetworkIterableDataset("/global/home/users/zhuwq0/scratch/CEED/quakeflow_nc/waveform_test.h5")
-    for x in dataset:
+    for i, x in enumerate(dataset):
+        if i < 3:
+            continue
         # print(x)
-        fig, axes = plt.subplots(1, 5, figsize=(15, 5))
+        fig, axes = plt.subplots(2, 4, figsize=(15, 5))
         for i in range(x["data"].shape[-1]):
-            axes[0].plot((x["data"][-1, :, i]) / torch.std(x["data"][-1, :, i]) / 10 + i)
+            axes[0, 0].plot((x["data"][-1, :, i]) / torch.std(x["data"][-1, :, i]) / 10 + i)
 
-            axes[1].plot(x["phase_pick"][1, :, i] + i)
-            axes[1].plot(x["phase_pick"][2, :, i] + i)
+            axes[0, 1].plot(x["phase_pick"][1, :, i] + i)
+            axes[0, 1].plot(x["phase_pick"][2, :, i] + i)
 
-            axes[2].plot(x["polarity"][0, :, i] + i)
-            axes[2].plot(x["polarity_mask"][0, :, i] + i, linestyle="--", color="k")
+            axes[0, 2].plot(x["polarity"][0, :, i] + i)
+            axes[0, 2].plot(x["polarity_mask"][0, :, i] + i, linestyle="--", color="k")
 
-            axes[3].plot(x["event_center"][0, :, i] + i - 0.5)
-            axes[3].plot(x["event_mask"][0, :, i] + i - 0.5, linestyle="--", color="k")
+            axes[0, 3].plot(x["event_center"][0, :, i] + i - 0.5)
+            axes[0, 3].plot(x["event_mask"][0, :, i] + i - 0.5, linestyle="--", color="k")
             # axes[2].scatter(x["event_location"][0, :, i], x["event_location"][1, :, i])
 
             event_time = x["event_time"][0, :, i] * x["event_mask"][0, :, i]
             event_time = event_time / torch.max(event_time)
-            axes[4].plot(event_time + i)
-            axes[4].plot(x["event_mask"][0, :, i] + i - 0.5, linestyle="--", color="k")
+            axes[1, 0].plot(event_time + i)
+            axes[1, 0].plot(x["event_mask"][0, :, i] + i - 0.5, linestyle="--", color="k")
 
+            axes[1, 1].plot(x["position"][:, i, 0])
+            axes[1, 1].axhline(x["prompt"][0], color="k", linestyle="--")
+            axes[1, 2].scatter(x["position"][:, :, 1].flatten(), x["position"][:, :, 2].flatten(), marker="o", color="k")
+            axes[1, 2].plot(x["prompt"][1], x["prompt"][2], marker="x", color="r")
+
+            axes[1, 3].plot(x["prompt_center"][0, :, i] + i - 0.5)
+            axes[1, 3].plot(x["prompt_mask"][0, :, i] + i - 0.5, linestyle="--", color="k")
 
         plt.savefig("test.png")
         plt.show()

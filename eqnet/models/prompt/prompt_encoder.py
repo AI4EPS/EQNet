@@ -78,11 +78,11 @@ class PromptEncoder(nn.Module):
     ) -> torch.Tensor:
         """Embeds point prompts."""
         points = points + 0.5  # Shift to center of pixel
-        if pad:
-            padding_point = torch.zeros((points.shape[0], 1, 2), device=points.device)
-            padding_label = -torch.ones((labels.shape[0], 1), device=labels.device)
-            points = torch.cat([points, padding_point], dim=1)
-            labels = torch.cat([labels, padding_label], dim=1)
+        # if pad: ## FIXME: Don't understand why pad is needed when boxes is None
+        #     padding_point = torch.zeros((points.shape[0], 1, 2), device=points.device)
+        #     padding_label = -torch.ones((labels.shape[0], 1), device=labels.device)
+        #     points = torch.cat([points, padding_point], dim=1)
+        #     labels = torch.cat([labels, padding_label], dim=1)
         point_embedding = self.pe_layer.forward_with_coords(points, self.input_image_size)
         point_embedding[labels == -1] = 0.0
         point_embedding[labels == -1] += self.not_a_point_embed.weight
@@ -179,7 +179,7 @@ class PositionEmbeddingRandom(nn.Module):
             scale = 1.0
         self.register_buffer(
             "positional_encoding_gaussian_matrix",
-            scale * torch.randn((2, num_pos_feats)),
+            scale * torch.randn((3, num_pos_feats)),
         )
 
     def _pe_encoding(self, coords: torch.Tensor) -> torch.Tensor:
@@ -209,6 +209,6 @@ class PositionEmbeddingRandom(nn.Module):
     ) -> torch.Tensor:
         """Positionally encode points that are not normalized to [0,1]."""
         coords = coords_input.clone()
-        coords[:, :, 0] = coords[:, :, 0] / image_size[1]
-        coords[:, :, 1] = coords[:, :, 1] / image_size[0]
+        # coords[:, :, 0] = coords[:, :, 0] / image_size[1]
+        # coords[:, :, 1] = coords[:, :, 1] / image_size[0]
         return self._pe_encoding(coords.to(torch.float))  # B x N x C
