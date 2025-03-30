@@ -532,7 +532,7 @@ def plot_phasenet_plus(
         plt.close(fig)
 
 
-def plot_eqnet_train(meta, phase, event, polarity, epoch, figure_dir="figures", prefix="", offset=None, hypocenter=None):
+def plot_eqnet_train(meta, phase, event, polarity, association, epoch, figure_dir="figures", prefix="", offset=None, hypocenter=None):
     degree2km = 111.19
     data = normalize(meta["data"])
     flag=True if (offset is not None) and (hypocenter is not None) else False
@@ -565,6 +565,9 @@ def plot_eqnet_train(meta, phase, event, polarity, epoch, figure_dir="figures", 
             if event is not None:
                 axes[2].plot(event[i, :, j] + j, "b")
             axes[2].plot(meta["event_center"][i, :, j] + j, "--C0")
+            if association is not None:
+                axes[2].plot(association[i, 0, :, j] + j, ":C1", alpha=0.7)
+            axes[2].plot(meta["association_mask"][i, 0, :, j] + j, ":", color="gray")
             
             polarity_number = 7 if flag else 3
             if polarity is not None:

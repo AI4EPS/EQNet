@@ -127,6 +127,9 @@ def train_one_epoch(
         metric_logger.add_meter("loss_depth", utils.SmoothedValue(window_size=1, fmt="{value}"))
         metric_logger.add_meter("loss_magnitude", utils.SmoothedValue(window_size=1, fmt="{value}"))
         metric_logger.add_meter("loss_polarity", utils.SmoothedValue(window_size=1, fmt="{value}"))
+        metric_logger.add_meter("loss_focal", utils.SmoothedValue(window_size=1, fmt="{value}"))
+        metric_logger.add_meter("loss_dice", utils.SmoothedValue(window_size=1, fmt="{value}"))
+        metric_logger.add_meter("loss_iou", utils.SmoothedValue(window_size=1, fmt="{value}"))
         
     header = f"Epoch: [{epoch}]"
     
@@ -163,6 +166,9 @@ def train_one_epoch(
         else:
             loss.backward()
         
+        #for name, param in model.named_parameters():
+        #    if param.grad is not None:
+        #        print(f"{name}: param.stride() = {param.stride()}, grad.stride() = {param.grad.stride()}")
         accumulation_counter += 1
         if accumulation_counter == accumulation_steps or processed_samples + meta["data"].shape[0] >= total_samples:
             if scaler is not None:
@@ -308,9 +314,12 @@ def plot_results(meta, model, output, args, epoch, prefix=""):
                     )
                     eps = 1e-15
                     polarity = torch.clamp(link_mat, eps, 1 - eps)[:, [1,2,0]].cpu().float() # DNU -> NUD
+                association = output["association"].cpu().float()
+                association = association > 0
             except:
                 event = None
                 polarity = None
+                association = None
             try:
                 offset = output["offset"].cpu().float()
                 hypocenter = output["hypocenter"].cpu().float()
@@ -318,7 +327,7 @@ def plot_results(meta, model, output, args, epoch, prefix=""):
                 offset = None
                 hypocenter = None
             print("Plotting...")
-            eqnet.utils.plot_eqnet_train(meta, phase, event, polarity, epoch=epoch, figure_dir=args.figure_dir, prefix=prefix, offset=offset, hypocenter=hypocenter)
+            eqnet.utils.plot_eqnet_train(meta, phase, event, polarity, association, epoch=epoch, figure_dir=args.figure_dir, prefix=prefix, offset=offset, hypocenter=hypocenter)
             del output, phase, event, polarity, offset, hypocenter
 
 
@@ -569,7 +578,7 @@ def main(args):
             drop_last=True,
             #prefetch_factor=3,
             #pin_memory=True,
-            persistent_workers=True,
+            #persistent_workers=True,
             worker_init_fn=partial(worker_init_fn, negative_mask_ratio) if args.model == "eqnet" else None,
         )
 
@@ -708,9 +717,9 @@ def main(args):
         if args.mtl == "dwa" or args.mtl == "dwa_inverse":
             if args.model == "eqnet":
                 #tasks = ["loss_phase", "loss_event", "loss_offset", "loss_hypocenter"]
-                tasks = ["loss_phase", "loss_event", "loss_offset", "loss_origin_time", "loss_x", "loss_y", "loss_depth", "loss_magnitude", "loss_polarity"]
+                tasks = ["loss_phase", "loss_event", "loss_offset", "loss_origin_time", "loss_x", "loss_y", "loss_depth", "loss_magnitude", "loss_polarity", "loss_focal", "loss_dice", "loss_iou"]
                 # pre_weight = args.pre_weight
-                pre_weight = model.phase_picker.weights+model.event_detector.weights+model.polarity_picker.weights
+                pre_weight = model.phase_picker.weights+model.event_detector.weights+model.polarity_picker.weights + list(model.association.weights.values())
                 print(f"{args.model}: {args.mtl} pre_weight: ", end="\t")
                 for i, k in enumerate(tasks):
                     print(f"{k}: {pre_weight[i]:.4f}", end="\t")

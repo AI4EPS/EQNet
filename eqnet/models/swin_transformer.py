@@ -9,6 +9,8 @@ import torch.nn.functional as F
 from torch import nn, Tensor
 from torch.fx import wrap
 
+from .ops import MLP, Permute, StochasticDepth
+
 __all__ = [
     "SwinTransformer",
     "swin_t",
@@ -18,117 +20,6 @@ __all__ = [
     "swin_v2_s",
     "swin_v2_b",
 ]
-
-### from ..ops.misc import MLP, Permute
-class MLP(torch.nn.Sequential):
-    """This block implements the multi-layer perceptron (MLP) module.
-    Args:
-        in_channels (int): Number of channels of the input
-        hidden_channels (List[int]): List of the hidden channel dimensions
-        norm_layer (Callable[..., torch.nn.Module], optional): Norm layer that will be stacked on top of the linear layer. If ``None`` this layer won't be used. Default: ``None``
-        activation_layer (Callable[..., torch.nn.Module], optional): Activation function which will be stacked on top of the normalization layer (if not None), otherwise on top of the linear layer. If ``None`` this layer won't be used. Default: ``torch.nn.ReLU``
-        inplace (bool, optional): Parameter for the activation layer, which can optionally do the operation in-place.
-            Default is ``None``, which uses the respective default values of the ``activation_layer`` and Dropout layer.
-        bias (bool): Whether to use bias in the linear layer. Default ``True``
-        dropout (float): The probability for the dropout layer. Default: 0.0
-    """
-
-    def __init__(
-        self,
-        in_channels: int,
-        hidden_channels: List[int],
-        norm_layer: Optional[Callable[..., torch.nn.Module]] = None,
-        activation_layer: Optional[Callable[..., torch.nn.Module]] = torch.nn.ReLU,
-        inplace: Optional[bool] = None,
-        bias: bool = True,
-        dropout: float = 0.0,
-    ):
-        # The addition of `norm_layer` is inspired from the implementation of TorchMultimodal:
-        # https://github.com/facebookresearch/multimodal/blob/5dec8a/torchmultimodal/modules/layers/mlp.py
-        params = {} if inplace is None else {"inplace": inplace}
-
-        layers = []
-        in_dim = in_channels
-        for hidden_dim in hidden_channels[:-1]:
-            layers.append(torch.nn.Linear(in_dim, hidden_dim, bias=bias))
-            if norm_layer is not None:
-                layers.append(norm_layer(hidden_dim))
-            layers.append(activation_layer(**params))
-            layers.append(torch.nn.Dropout(dropout, **params))
-            in_dim = hidden_dim
-
-        layers.append(torch.nn.Linear(in_dim, hidden_channels[-1], bias=bias))
-        layers.append(torch.nn.Dropout(dropout, **params))
-
-        super().__init__(*layers)
-
-class Permute(torch.nn.Module):
-    """This module returns a view of the tensor input with its dimensions permuted.
-    Args:
-        dims (List[int]): The desired ordering of dimensions
-    """
-
-    def __init__(self, dims: List[int]):
-        super().__init__()
-        self.dims = dims
-
-    def forward(self, x: Tensor) -> Tensor:
-        return torch.permute(x, self.dims).contiguous()
-
-
-### from ..ops.stochastic_depth import StochasticDepth
-@torch.fx.wrap
-def stochastic_depth(input: Tensor, p: float, mode: str, training: bool = True) -> Tensor:
-    """
-    Implements the Stochastic Depth from `"Deep Networks with Stochastic Depth"
-    <https://arxiv.org/abs/1603.09382>`_ used for randomly dropping residual
-    branches of residual architectures.
-    Args:
-        input (Tensor[N, ...]): The input tensor or arbitrary dimensions with the first one
-                    being its batch i.e. a batch with ``N`` rows.
-        p (float): probability of the input to be zeroed.
-        mode (str): ``"batch"`` or ``"row"``.
-                    ``"batch"`` randomly zeroes the entire input, ``"row"`` zeroes
-                    randomly selected rows from the batch.
-        training: apply stochastic depth if is ``True``. Default: ``True``
-    Returns:
-        Tensor[N, ...]: The randomly zeroed tensor.
-    """
-    if p < 0.0 or p > 1.0:
-        raise ValueError(f"drop probability has to be between 0 and 1, but got {p}")
-    if mode not in ["batch", "row"]:
-        raise ValueError(f"mode has to be either 'batch' or 'row', but got {mode}")
-    if not training or p == 0.0:
-        return input
-
-    survival_rate = 1.0 - p
-    if mode == "row":
-        size = [input.shape[0]] + [1] * (input.ndim - 1)
-    else:
-        size = [1] * input.ndim
-    noise = torch.empty(size, dtype=input.dtype, device=input.device)
-    noise = noise.bernoulli_(survival_rate)
-    if survival_rate > 0.0:
-        noise.div_(survival_rate)
-    return input * noise
-
-
-class StochasticDepth(nn.Module):
-    """
-    See :func:`stochastic_depth`.
-    """
-
-    def __init__(self, p: float, mode: str) -> None:
-        super().__init__()
-        self.p = p
-        self.mode = mode
-
-    def forward(self, input: Tensor) -> Tensor:
-        return stochastic_depth(input, self.p, self.mode, self.training)
-
-    def __repr__(self) -> str:
-        s = f"{self.__class__.__name__}(p={self.p}, mode={self.mode})"
-        return s
 
 ############################################
 
@@ -1357,6 +1248,7 @@ class SwinTransformer(nn.Module):
         use_rope: bool = False,
         use_rope_mixed: bool = False,
         decoupled_relative_position_bias: bool = False,
+        sampling_rate: float = 100.0,
     ):
         super().__init__()
 
@@ -1399,7 +1291,7 @@ class SwinTransformer(nn.Module):
         layers: List[nn.Module] = []
         total_stage_blocks = sum(depths)
         stage_block_id = 0
-        dt_s = 1.0/100
+        dt_s = 1.0/sampling_rate
         # build SwinTransformer blocks
         for i_stage in range(len(depths)):
             stage: List[nn.Module] = []
@@ -1424,7 +1316,7 @@ class SwinTransformer(nn.Module):
                         use_rope=use_rope,
                         use_rope_mixed=use_rope_mixed,
                         decoupled_relative_position_bias=decoupled_relative_position_bias,
-                        time_unit=dt_s*(4**(i_stage+1))
+                        time_unit=dt_s*(4**(i_stage+1)) if sampling_rate>0 else 1.0,
                     )
                 )
                 stage_block_id += 1

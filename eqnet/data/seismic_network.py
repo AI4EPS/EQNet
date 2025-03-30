@@ -244,6 +244,7 @@ def cut_data(meta, nt=8192, nt0=2560, feature_scale=16, base_phase_points=80, if
     base_phase_points = base_phase_points * meta["num_manual_stations"]
     phase_mask = (meta["phase_pick"] != 0).astype(np.float32)
     event_mask = (meta["event_location_mask"] != 0).astype(np.float32)
+    main_event_center_index = meta['main_event_center'][:meta["num_manual_stations"], 0]
     p_start = np.nonzero(phase_mask[:, 1, :].sum(axis=0))[0].min() // feature_scale
     event_start = np.nonzero(event_mask.sum(axis=0))[0].min()
     s_end = np.nonzero(phase_mask[:, 2, :].sum(axis=0))[0].max() // feature_scale
@@ -270,13 +271,17 @@ def cut_data(meta, nt=8192, nt0=2560, feature_scale=16, base_phase_points=80, if
             tmp_phase_points = phase_mask[:, 1:, :nt+it*feature_scale].sum() + phase_mask[:, 1:, it*feature_scale:].sum()
             tmp_event_points = event_mask[:, :nt//feature_scale+it].sum() + event_mask[:, it:].sum()
         if all([tmp_phase_points >= base_phase_points * phase_types, tmp_event_points >= base_phase_points // feature_scale]):
-            break
+            # at least one main event center in the range
+            if np.any((main_event_center_index > it) & (main_event_center_index < it + nt//feature_scale)):
+                #print(f"it={it}, main_event_center_index={main_event_center_index}")
+                break
 
     if not all([tmp_phase_points>=base_phase_points*phase_types, tmp_event_points>=base_phase_points//feature_scale]):
         rand_lower = max(0, min(p_start, event_start)-nt//feature_scale) if not if_reverse_roll else rand_lower // 2
         print(f"using smaller rand_upper={rand_upper}")
     
-        while any([tmp_phase_points < phase_points//2, tmp_event_points < event_points//2]):
+        while any([tmp_phase_points < phase_points//2, tmp_event_points < event_points//2]) and \
+            not np.any((main_event_center_index > it) & (main_event_center_index < it + nt//feature_scale)):
             it = random.randint(rand_lower, rand_upper)
             if it >= 0:
                 tmp_phase_points = phase_mask[:,1:, it*feature_scale:it*feature_scale+nt].sum()
@@ -286,7 +291,7 @@ def cut_data(meta, nt=8192, nt0=2560, feature_scale=16, base_phase_points=80, if
                 tmp_event_points = event_mask[:, :nt//feature_scale+it].sum() + event_mask[:, it:].sum()
             tries += 1
             if tries > max_tries:
-                print(f"cut data failed, tries={tries}, it={it}")
+                print(f"cut data failed, tries={tries}, it={it}", force=True)
                 break
 
     if it>=0 and it*feature_scale+nt<phase_mask.shape[-1]:
@@ -300,6 +305,7 @@ def cut_data(meta, nt=8192, nt0=2560, feature_scale=16, base_phase_points=80, if
         event_mask = meta["event_mask"][:, it:it+nt//feature_scale]
         event_location = meta["event_location"][:, :, it:it+nt//feature_scale]
         event_location_mask = meta["event_location_mask"][:, it:it+nt//feature_scale]
+        association_mask = meta["association_mask"][:, it:it+nt//feature_scale]
     else:
         waveforms = np.roll(meta["waveforms"], -it*feature_scale, axis=-1)[:, :, :nt]
         amplitude = np.roll(meta["amplitude"], -it*feature_scale, axis=-1)[:, :, :nt]
@@ -311,6 +317,9 @@ def cut_data(meta, nt=8192, nt0=2560, feature_scale=16, base_phase_points=80, if
         event_mask = np.roll(meta["event_mask"], -it, axis=-1)[:, :nt//feature_scale]
         event_location = np.roll(meta["event_location"], -it, axis=-1)[:, :, :nt//feature_scale]
         event_location_mask = np.roll(meta["event_location_mask"], -it, axis=-1)[:, :nt//feature_scale]
+        association_mask = np.roll(meta["association_mask"], -it, axis=-1)[:, :nt//feature_scale]
+    main_event_center = meta['main_event_center'][:meta["num_manual_stations"]] - np.array([[it, 0, 0]])
+    main_event_center = main_event_center[(main_event_center[:, 0] >= 0) & (main_event_center[:, 0] < nt//feature_scale)]
 
     return {
         "waveforms": waveforms,
@@ -323,6 +332,8 @@ def cut_data(meta, nt=8192, nt0=2560, feature_scale=16, base_phase_points=80, if
         "event_mask": event_mask,
         "event_location": event_location,
         "event_location_mask": event_location_mask,
+        "association_mask": association_mask,
+        "main_event_center": main_event_center,
     }, it*feature_scale
 
 def sample_by_magnitude(magnitude, critical_magnitude=3, sample_rate=0.7, min_magnitude=0.5):
@@ -656,7 +667,9 @@ def stack_event(
         "event_location_mask": event_location_mask1,
         "polarity": polarity1,
         "polarity_mask": polarity_mask1,
+        "association_mask": meta1["association_mask"],
         "station_location": meta1["station_location"],
+        "main_event_center": meta1["main_event_center"],
         "num_stations": meta1["num_stations"],
         "num_manual_stations": meta1["num_manual_stations"],
         "event_id": meta1["event_id"],
@@ -993,6 +1006,8 @@ class SeismicNetworkIterableDataset(IterableDataset):
         event_mask = np.zeros([len(station_ids), self.raw_feature_nt])
         event_location = np.zeros([len(station_ids), 7, self.raw_feature_nt])
         event_location_mask = np.zeros([len(station_ids), self.raw_feature_nt])
+        association_mask = np.zeros([len(station_ids), self.raw_feature_nt])
+        main_event_center = np.zeros([len(station_ids), 3])
         station_location = np.zeros([len(station_ids), 3])
         # reference_point = np.array([reference_longitude, reference_latitude])
         manual_stas = [] # index of stations with at least one manual pick pair 
@@ -1161,6 +1176,9 @@ class SeismicNetworkIterableDataset(IterableDataset):
                 # print(event_location[i, 1:, param_mask].shape, event_location.shape, event_location[i][1:, param_mask].shape)
                 event_location[i][1:, param_mask] = np.array([dist, azimuth, dz, magnitude, (c0-c0_int)[0], c0_width])[:, np.newaxis]
                 event_location_mask[i, :] = np.logical_or(event_location_mask[i, :], param_mask)
+                if e_id == event_id:
+                    main_event_center[i, :] = np.array([c0_int[0], round(attrs["longitude"], 4), round(attrs["latitude"], 4)])
+                    association_mask[i, max(0, c0_int[0]-self.event_width[0]) : min(self.raw_feature_nt, c0_int[0]+self.event_width[0])] = True
 
                 manual_event_ids.append(e_id)
                 p_pick_stas.append(p_picks)
@@ -1207,6 +1225,8 @@ class SeismicNetworkIterableDataset(IterableDataset):
         event_mask = event_mask[manual_cluster_index]
         event_location = event_location[manual_cluster_index]
         event_location_mask = event_location_mask[manual_cluster_index]
+        association_mask = association_mask[manual_cluster_index]
+        main_event_center = main_event_center[manual_cluster_index]
         station_location = station_location[manual_cluster_index]
         sta_ids = [station_ids[i] for i in manual_cluster_index]
         duration = [duration[i] for i in manual_cluster_index]
@@ -1223,8 +1243,10 @@ class SeismicNetworkIterableDataset(IterableDataset):
             "event_mask": event_mask,
             "event_location": event_location,
             "event_location_mask": event_location_mask,
+            "association_mask": association_mask,
             "station_location": station_location,
             "amplitude": amplitude,
+            "main_event_center": main_event_center,
             "num_stations": waveforms.shape[0],
             "num_manual_stations": len_manual,
             "event_id": event_id,
@@ -1255,11 +1277,11 @@ class SeismicNetworkIterableDataset(IterableDataset):
                 if not sample_by_magnitude(self.hdf5_fp[event_id].attrs["magnitude"], critical_magnitude=2, sample_rate=0.6, min_magnitude=0.3):
                     continue
             # if True:
-            try:
-                meta = self._read_training_h5(event_id, hdf5_fp)
-            except Exception as e:
-                print(f"Error reading {event_id}:\n{e}")
-                continue
+            #try:
+            meta = self._read_training_h5(event_id, hdf5_fp)
+            #except Exception as e:
+            #    print(f"Error reading {event_id}:\n{e}")
+            #    continue
 
             if meta is None:
                 continue
@@ -1279,8 +1301,10 @@ class SeismicNetworkIterableDataset(IterableDataset):
                     "event_mask": meta['event_mask'][idx],
                     "event_location": meta['event_location'][idx],
                     "event_location_mask": meta['event_location_mask'][idx],
+                    "association_mask": meta['association_mask'][idx],
                     "station_location": meta['station_location'][idx],
                     "amplitude": meta['amplitude'][idx],
+                    "main_event_center": meta['main_event_center'][idx],
                     "num_stations": meta['waveforms'].shape[0],
                     "num_manual_stations": min(meta['num_manual_stations'], self.num_stations),
                     "event_id": meta['event_id'],
@@ -1299,8 +1323,10 @@ class SeismicNetworkIterableDataset(IterableDataset):
                     "event_mask": meta['event_mask'][:self.num_stations],
                     "event_location": meta['event_location'][:self.num_stations],
                     "event_location_mask": meta['event_location_mask'][:self.num_stations],
+                    "association_mask": meta['association_mask'][:self.num_stations],
                     "station_location": meta['station_location'][:self.num_stations],
                     "amplitude": meta['amplitude'][:self.num_stations],
+                    "main_event_center": meta['main_event_center'][:self.num_stations],
                     "num_stations": meta['waveforms'].shape[0],
                     "num_manual_stations": min(meta['num_manual_stations'], self.num_stations),
                     "event_id": meta['event_id'],
@@ -1347,6 +1373,14 @@ class SeismicNetworkIterableDataset(IterableDataset):
             meta['phase_mask'] = add_random_negative_samples(meta['phase_mask'], random_mask_rate=0.1*negative_mask_ratio, random_mask_unit=32)
             meta['event_mask'] = add_random_negative_samples(meta['event_mask'], random_mask_rate=0.2*negative_mask_ratio, random_mask_unit=8)
             meta_cutted, it = cut_data(meta, nt=self.nt, feature_scale=self.feature_scale, if_reverse_roll=False, base_phase_points=int(64*(1+stack_times/8))) #TODO: allow reverse roll?
+            
+            # random selected one main event center as prompt
+            assert len(meta_cutted['main_event_center'])>0, f"{event_id} no main event center"
+            prompt = random.choice(meta_cutted['main_event_center'])
+            # add random time shift
+            prompt[0] = np.clip(prompt[0]+np.random.randint(-int(self.event_width[0]*0.5), int(self.event_width[0]*0.5)), 0, self.feature_nt-1)
+            prompt = np.concatenate([prompt, np.array([1])], axis=0) # 1 as positive point
+            prompt = prompt[np.newaxis, :]
 
             if self.sort:
                 D = np.sqrt(((meta["station_location"][:, np.newaxis, :2] -  meta["station_location"][np.newaxis, :, :2])**2).sum(axis=-1))
@@ -1372,6 +1406,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
                 meta_cutted['event_mask'] = np.concatenate([meta_cutted['event_mask'], np.zeros((lack_num, *meta_cutted['event_mask'].shape[1:]))], axis=0)
                 meta_cutted['event_location'] = np.concatenate([meta_cutted['event_location'], np.zeros((lack_num, *meta_cutted['event_location'].shape[1:]))], axis=0)
                 meta_cutted['event_location_mask'] = np.concatenate([meta_cutted['event_location_mask'], np.zeros((lack_num, *meta_cutted['event_location_mask'].shape[1:]))], axis=0)
+                meta_cutted['association_mask'] = np.concatenate([meta_cutted['association_mask'], np.zeros((lack_num, *meta_cutted['association_mask'].shape[1:]))], axis=0)
                 meta['station_location'] = np.concatenate([meta['station_location'], meta['station_location'][idx]], axis=0)
                 meta['num_stations'] = self.num_stations
             
@@ -1386,7 +1421,9 @@ class SeismicNetworkIterableDataset(IterableDataset):
                 "event_mask": torch.from_numpy(meta_cutted["event_mask"]).float(),
                 "event_location": torch.from_numpy(meta_cutted["event_location"]).float(),
                 "event_location_mask": torch.from_numpy(meta_cutted["event_location_mask"]).float(),
+                "association_mask": torch.from_numpy(meta_cutted["association_mask"]).unsqueeze(1).float(),
                 "station_location": torch.from_numpy(meta["station_location"]).float(),
+                "prompt": torch.from_numpy(prompt).float(),
                 "num_stations": meta['num_stations'],
                 "num_manual_stations": meta['num_manual_stations'],
                 "event_id": event_id,

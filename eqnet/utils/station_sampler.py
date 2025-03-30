@@ -216,6 +216,7 @@ def reorder_keys(example):
     example["event_mask"] = example["event_mask"].permute(1,0).contiguous()
     example["event_location"] = example["event_location"].permute(1,2,0).contiguous()
     example["event_location_mask"] = example["event_location_mask"].permute(1,0).contiguous()
+    example['association_mask'] = example["association_mask"].permute(1,2,0).contiguous()
     example["station_location"] = example["station_location"].contiguous()
     example["amplitude"] = example["amplitude"].permute(1,2,0).contiguous()
     return example

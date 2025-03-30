@@ -7,12 +7,24 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
-from .centernet import convolution
-from .losses import cross_entropy_loss, focal_loss, smooth_focal_loss, \
+from .losses import cross_entropy_loss, focal_loss, \
         smoothl1_reg_loss, weighted_l1_reg_loss, l1_reg_loss,\
         vector_l1_reg_loss,modulus_l1_reg_loss, balanced_l1_reg_loss
 from ..utils import CSLCoder, TrigonoCoder
 
+
+class convolution(nn.Module):
+    def __init__(self, inp_dim, out_dim, k, stride=1, dilation=1, with_bn=True, padding_mode='zeros', inplace=True, act='relu'):
+        super(convolution, self).__init__()
+
+        pad = ((k - 1)*dilation) // 2
+        self.conv = nn.Conv1d(inp_dim, out_dim, kernel_size=k, padding=pad, stride=stride, dilation=dilation, bias=not with_bn, padding_mode=padding_mode)
+        self.bn   = nn.BatchNorm1d(out_dim) if with_bn else nn.Sequential()
+        self.act = nn.ReLU(inplace=inplace) if act == 'relu' else nn.GELU()
+
+    def forward(self, x):
+        x = self.act(self.bn(self.conv(x)))
+        return x
 
 class Sample(nn.Module):
     def __init__(self, scale_factor=2, mode='linear', align_corners=False):
@@ -572,7 +584,7 @@ class EventHead(nn.Module):
         )
 
 
-        loss_factory = {"mse": F.mse_loss, "focal": focal_loss, "sfocal": smooth_focal_loss, \
+        loss_factory = {"mse": F.mse_loss, "focal": focal_loss, \
             "l1": l1_reg_loss, "sl1": smoothl1_reg_loss, "wl1": weighted_l1_reg_loss, \
             "vl1": vector_l1_reg_loss, "ml1": modulus_l1_reg_loss, \
             "bl1": balanced_l1_reg_loss, "cross_entropy": cross_entropy_loss}
@@ -982,7 +994,7 @@ class EventHead2(nn.Module):
         )
 
 
-        loss_factory = {"mse": F.mse_loss, "focal": focal_loss, "sfocal": smooth_focal_loss, \
+        loss_factory = {"mse": F.mse_loss, "focal": focal_loss, \
             "l1": l1_reg_loss, "sl1": smoothl1_reg_loss, "wl1": weighted_l1_reg_loss, \
             "vl1": vector_l1_reg_loss, "ml1": modulus_l1_reg_loss, \
             "bl1": balanced_l1_reg_loss, "cross_entropy": cross_entropy_loss}
@@ -1323,7 +1335,7 @@ class EventHead3(nn.Module):
         )
 
 
-        loss_factory = {"mse": F.mse_loss, "focal": focal_loss, "sfocal": smooth_focal_loss, \
+        loss_factory = {"mse": F.mse_loss, "focal": focal_loss, \
             "l1": l1_reg_loss, "sl1": smoothl1_reg_loss, "wl1": weighted_l1_reg_loss, \
             "vl1": vector_l1_reg_loss, "ml1": modulus_l1_reg_loss, \
             "bl1": balanced_l1_reg_loss, "cross_entropy": cross_entropy_loss}
