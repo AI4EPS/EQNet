@@ -719,7 +719,7 @@ def main(args):
                 #tasks = ["loss_phase", "loss_event", "loss_offset", "loss_hypocenter"]
                 tasks = ["loss_phase", "loss_event", "loss_offset", "loss_origin_time", "loss_x", "loss_y", "loss_depth", "loss_magnitude", "loss_polarity", "loss_focal", "loss_dice", "loss_iou"]
                 # pre_weight = args.pre_weight
-                pre_weight = model.phase_picker.weights+model.event_detector.weights+model.polarity_picker.weights + list(model.association.weights.values())
+                pre_weight = model.phase_picker.weights+model.event_detector.weights+model.polarity_picker.weights + list(model.phase_associator.weights.values())
                 print(f"{args.model}: {args.mtl} pre_weight: ", end="\t")
                 for i, k in enumerate(tasks):
                     print(f"{k}: {pre_weight[i]:.4f}", end="\t")
