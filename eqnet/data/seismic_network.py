@@ -57,10 +57,10 @@ class SeismicNetworkIterableDataset(IterableDataset):
             event_id = event_ids[idx]
             station_ids = list(self.hdf5_fp[event_id].keys())
             event_time_index = self.hdf5_fp[event_id].attrs["event_time_index"]
-            if len(station_ids) < num_station:
-                continue
-            else:
-                station_ids = np.random.choice(station_ids, num_station, replace=False)
+            # if len(station_ids) < num_station:
+            #     continue
+            # else:
+            station_ids = np.random.choice(station_ids, num_station, replace=True)
 
             data = np.zeros([3, self.nt0, len(station_ids)])
             phase_pick = np.zeros([3, self.nt0, len(station_ids)])

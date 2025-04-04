@@ -538,9 +538,23 @@ class PhaseNet(nn.Module):
             targets = batched_inputs["prompt_center"].float()
             mask = batched_inputs["prompt_mask"].float()
             inputs = low_res_masks.float()
+            # min_loss = -(targets * torch.nan_to_num(torch.log(targets)) + (1 - targets) * torch.nan_to_num(torch.log(1 - targets)))
+            # loss_prompt = torch.mean(F.binary_cross_entropy_with_logits(inputs, targets, reduction="none") - min_loss)
+
+            # ## focal loss
+            # bce_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction="none")
+            # pt = torch.exp(-bce_loss) # probability of the correct class
+            # focal_loss = (1 - pt) ** 2 * bce_loss # alpha=1, gamma=2
+            # loss_prompt = torch.mean(focal_loss) * 100
+
+            prob = inputs.sigmoid()
             min_loss = -(targets * torch.nan_to_num(torch.log(targets)) + (1 - targets) * torch.nan_to_num(torch.log(1 - targets)))
-            # loss_prompt = torch.sum((F.binary_cross_entropy_with_logits(inputs, targets, reduction="none") - min_loss) * mask) / mask.sum()
-            loss_prompt = torch.mean(F.binary_cross_entropy_with_logits(inputs, targets, reduction="none") - min_loss)
+            ce_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction="none") - min_loss
+            p_t = prob * targets + (1 - prob) * (1 - targets)
+            gamma=2.0
+            loss_prompt = ce_loss * ((1 - p_t) ** gamma)
+            loss_prompt = 10 * torch.mean(loss_prompt)
+
             output["loss_prompt"] = loss_prompt
             output["prompt_center"] = torch.sigmoid(low_res_masks)
             output["loss"] += loss_prompt
