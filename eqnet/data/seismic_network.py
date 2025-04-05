@@ -151,6 +151,19 @@ class SeismicNetworkIterableDataset(IterableDataset):
 
                 if i == 0:
                     prompt = np.array([c0, dx, dy]) # t, x, y
+                    prompt_location = np.array([self.hdf5_fp[trace_id].attrs["longitude"], self.hdf5_fp[trace_id].attrs["latitude"]])
+                # position.append([dx, dy])
+                dx = round(
+                    (prompt_location[0] - self.hdf5_fp[trace_id].attrs["longitude"])
+                    * np.cos(np.radians(prompt_location[1]))
+                    * self.degree2km,
+                    2,
+                )
+                dy = round(
+                    (prompt_location[1] - self.hdf5_fp[trace_id].attrs["latitude"])
+                    * self.degree2km,
+                    2,
+                )
                 position.append([dx, dy])
 
             std = np.std(data, axis=1, keepdims=True)
@@ -198,13 +211,13 @@ class SeismicNetworkIterableDataset(IterableDataset):
             event_time_new = event_time.copy()
             
             data += data_old
-            phase_pick[1, :, :] += phase_pick_old[1, :, :]
-            phase_pick[2, :, :] += phase_pick_old[2, :, :]
+            phase_pick[1, :, :] = np.clip(phase_pick[1, :, :] + phase_pick_old[1, :, :], 0, 1)
+            phase_pick[2, :, :] = np.clip(phase_pick[2, :, :] + phase_pick_old[2, :, :], 0, 1)
             phase_pick[0, :, :] = 1 - np.clip(phase_pick[1, :, :] + phase_pick[2, :, :], 0, 1)
             phase_mask = np.clip(phase_mask + phase_mask_old, 0, 1)
             polarity = (polarity - 0.5) + (polarity_old - 0.5) + 0.5
             polarity_mask = np.clip(polarity_mask + polarity_mask_old, 0, 1)
-            event_center += event_center_old
+            event_center = np.clip(event_center + event_center_old, 0, 1)
             event_time += event_time_old
             event_mask = np.clip(event_mask + event_mask_old, 0, 1)
 
