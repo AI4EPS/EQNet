@@ -1,13 +1,14 @@
 # %%
+import multiprocessing as mp
+import warnings
 from pathlib import Path
-from tqdm.auto import tqdm
+
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import pyproj
-import multiprocessing as mp
 from gamma.seismic_ops import initialize_eikonal, traveltime
-import warnings
+from tqdm.auto import tqdm
 
 warnings.filterwarnings("error", category=RuntimeWarning)
 
@@ -164,7 +165,7 @@ if __name__ == "__main__":
         # %% Match data format for GaMMA
         y0 = stations["latitude"].mean()
         x0 = stations["longitude"].mean()
-        proj = pyproj.Proj(f"+proj=sterea +lon_0={x0} +lat_0={y0} +units=km")
+        proj = pyproj.Proj(f"+proj=aeqd +lon_0={x0} +lat_0={y0} +units=km")
         stations[["x(km)", "y(km)"]] = stations.apply(
             lambda x: pd.Series(proj(longitude=x.longitude, latitude=x.latitude)), axis=1
         )

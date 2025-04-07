@@ -3,8 +3,8 @@ import multiprocessing as mp
 import warnings
 from pathlib import Path
 
-import matplotlib.pyplot as plt
 import matplotlib
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import pyproj
@@ -56,7 +56,7 @@ if __name__ == "__main__":
     stations["id"] = stations["index"]
     y0 = stations["latitude"].mean()
     x0 = stations["longitude"].mean()
-    proj = pyproj.Proj(f"+proj=sterea +lon_0={x0} +lat_0={y0} +units=km")
+    proj = pyproj.Proj(f"+proj=aeqd +lon_0={x0} +lat_0={y0} +units=km")
     xlim_km = proj(xlim_degree[0], y0)[0], proj(xlim_degree[1], y0)[0]
     ylim_km = proj(x0, ylim_degree[0])[1], proj(x0, ylim_degree[1])[1]
     stations[["x(km)", "y(km)"]] = stations.apply(

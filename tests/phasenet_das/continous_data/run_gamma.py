@@ -32,7 +32,7 @@ if not figures_path.exists():
 stations = pd.read_csv(data_path / "das_info.csv", index_col="index")
 y0 = stations["latitude"].mean()
 x0 = stations["longitude"].mean()
-proj = Proj(f"+proj=sterea +lon_0={x0} +lat_0={y0} +units=km")
+proj = Proj(f"+proj=aeqd +lon_0={x0} +lat_0={y0} +units=km")
 stations[["x(km)", "y(km)"]] = stations.apply(
     lambda x: pd.Series(proj(longitude=x.longitude, latitude=x.latitude)), axis=1
 )

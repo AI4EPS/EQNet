@@ -1,12 +1,13 @@
 # %%
-import matplotlib.pyplot as plt
-import pandas as pd
 from pathlib import Path
-import numpy as np
+
 import fsspec
 import matplotlib.patches as mpatches
-from sklearn.linear_model import RANSACRegressor
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
 import pyproj
+from sklearn.linear_model import RANSACRegressor
 from tqdm.auto import tqdm
 
 plt.rcParams["axes.xmargin"] = 0
@@ -382,7 +383,7 @@ for i, folder in enumerate(folders):
         das_info = pd.read_csv(f"{protocol}{bucket}/{folder}/das_info.csv")
         lat_0 = das_info["latitude"].mean()
         lon_0 = das_info["longitude"].mean()
-        proj = pyproj.Proj(f"+proj=sterea +lon_0={lon_0} +lat_0={lat_0} +units=km")
+        proj = pyproj.Proj(f"+proj=aeqd +lon_0={lon_0} +lat_0={lat_0} +units=km")
 
         catalog = pd.read_csv(f"{protocol}{bucket}/{folder}/catalog_data.csv")
         catalog["x_km"], catalog["y_km"] = proj(catalog["longitude"].values, catalog["latitude"].values)
@@ -442,7 +443,7 @@ for j, picker in enumerate(pickers):
     das_info = pd.read_csv(f"{protocol}{bucket}/{folder}/das_info.csv")
     lat_0 = das_info["latitude"].mean()
     lon_0 = das_info["longitude"].mean()
-    proj = pyproj.Proj(f"+proj=sterea +lon_0={lon_0} +lat_0={lat_0} +units=km")
+    proj = pyproj.Proj(f"+proj=aeqd +lon_0={lon_0} +lat_0={lat_0} +units=km")
 
     catalog = pd.read_csv(f"{protocol}{bucket}/{folder}/catalog_data.csv", parse_dates=["event_time"])
     catalog["x_km"], catalog["y_km"] = proj(catalog["longitude"].values, catalog["latitude"].values)
@@ -507,7 +508,7 @@ for i, folder in enumerate(folders):
     das_info = pd.read_csv(f"{protocol}{bucket}/{folder}/das_info.csv")
     lat_0 = das_info["latitude"].mean()
     lon_0 = das_info["longitude"].mean()
-    proj = pyproj.Proj(f"+proj=sterea +lon_0={lon_0} +lat_0={lat_0} +units=km")
+    proj = pyproj.Proj(f"+proj=aeqd +lon_0={lon_0} +lat_0={lat_0} +units=km")
 
     catalog = pd.read_csv(f"{protocol}{bucket}/{folder}/catalog_data.csv")
     catalog["x_km"], catalog["y_km"] = proj(catalog["longitude"].values, catalog["latitude"].values)
@@ -591,7 +592,7 @@ folder = "mammoth"
 das_info = pd.read_csv(f"{protocol}{bucket}/{folder}/das_info.csv")
 lat_0 = das_info["latitude"].mean()
 lon_0 = das_info["longitude"].mean()
-proj = pyproj.Proj(f"+proj=sterea +lon_0={lon_0} +lat_0={lat_0} +units=km")
+proj = pyproj.Proj(f"+proj=aeqd +lon_0={lon_0} +lat_0={lat_0} +units=km")
 
 catalog = pd.read_csv(f"{protocol}{bucket}/{folder}/catalog_data.csv", parse_dates=["event_time"])
 catalog["x_km"], catalog["y_km"] = proj(catalog["longitude"].values, catalog["latitude"].values)
