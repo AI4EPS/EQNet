@@ -238,7 +238,7 @@ def add_random_negative_samples(mask, random_mask_rate=0.1, random_mask_unit=32)
     
     return mask.astype(bool)
 
-def cut_data(meta, nt=8192, nt0=2560, feature_scale=16, base_phase_points=80, if_reverse_roll=False):
+def cut_data(meta, nt=8192, nt0=2960, feature_scale=16, base_phase_points=80, if_reverse_roll=False):
     tries = 0
     max_tries = 30
     base_phase_points = base_phase_points * meta["num_manual_stations"]
@@ -249,13 +249,14 @@ def cut_data(meta, nt=8192, nt0=2560, feature_scale=16, base_phase_points=80, if
     event_start = np.nonzero(event_mask.sum(axis=0))[0].min()
     s_end = np.nonzero(phase_mask[:, 2, :].sum(axis=0))[0].max() // feature_scale
     event_end = np.nonzero(event_mask.sum(axis=0))[0].max()
+    main_event_start = np.nonzero(meta["association_mask"].sum(axis=0))[0].min()
     if not if_reverse_roll:
-        rand_lower = max(0, min(p_start, event_start)-nt//feature_scale+10)
+        rand_lower = max(0, min(p_start, event_start)-nt//feature_scale+10, main_event_start-nt//feature_scale+10)
     else:
         rand_lower = -max(nt0//feature_scale, nt//feature_scale-10-max(s_end, event_end))
     #rand_upper = max(1, min(nt0//feature_scale, min(p_start, event_start)-5))
     #raw_rand_upper = max(1, nt0//feature_scale)
-    rand_upper = max(1, min(p_start, event_start)-5)
+    rand_upper = max(1, main_event_start-20)
     #raw_rand_upper = max(min(p_start, event_start)-10, nt0//feature_scale)
     raw_rand_upper = max(min(p_start, event_start), max(s_end, event_end)-nt//feature_scale+10, nt0//feature_scale)
     phase_points = phase_mask[:,1:, :nt].sum()
@@ -277,10 +278,10 @@ def cut_data(meta, nt=8192, nt0=2560, feature_scale=16, base_phase_points=80, if
                 break
 
     if not all([tmp_phase_points>=base_phase_points*phase_types, tmp_event_points>=base_phase_points//feature_scale]):
-        rand_lower = max(0, min(p_start, event_start)-nt//feature_scale) if not if_reverse_roll else rand_lower // 2
+        rand_lower = max(0, main_event_start-nt//feature_scale+10) if not if_reverse_roll else rand_lower // 2
         print(f"using smaller rand_upper={rand_upper}")
     
-        while any([tmp_phase_points < phase_points//2, tmp_event_points < event_points//2]) and \
+        while any([tmp_phase_points < phase_points//2, tmp_event_points < event_points//2]) or \
             not np.any((main_event_center_index > it) & (main_event_center_index < it + nt//feature_scale)):
             it = random.randint(rand_lower, rand_upper)
             if it >= 0:
@@ -291,7 +292,7 @@ def cut_data(meta, nt=8192, nt0=2560, feature_scale=16, base_phase_points=80, if
                 tmp_event_points = event_mask[:, :nt//feature_scale+it].sum() + event_mask[:, it:].sum()
             tries += 1
             if tries > max_tries:
-                print(f"cut data failed, tries={tries}, it={it}", force=True)
+                print(f"cut data failed, tries={tries}, it={it}")
                 break
 
     if it>=0 and it*feature_scale+nt<phase_mask.shape[-1]:
@@ -729,6 +730,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
         self.hdf5_fp = None
         if hdf5_file is not None:
             tmp_hdf5_keys = f"tmp/{'_'.join(hdf5_file.split('/'))}.txt"
+            #tmp_hdf5_keys = f"tmp/big_events.txt"
             if not os.path.exists(tmp_hdf5_keys) and (rank == 0):
                 with h5py.File(hdf5_file, "r", libver="latest", swmr=True) as fp:
                     self.data_list = []
@@ -1010,6 +1012,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
         main_event_center = np.zeros([len(station_ids), 3])
         station_location = np.zeros([len(station_ids), 3])
         # reference_point = np.array([reference_longitude, reference_latitude])
+        main_stas = [] # index of stations with main event
         manual_stas = [] # index of stations with at least one manual pick pair 
         auto_stas = [] # index of stations with only automatic picks
         duration = []
@@ -1178,7 +1181,9 @@ class SeismicNetworkIterableDataset(IterableDataset):
                 event_location_mask[i, :] = np.logical_or(event_location_mask[i, :], param_mask)
                 if e_id == event_id:
                     main_event_center[i, :] = np.array([c0_int[0], round(attrs["longitude"], 4), round(attrs["latitude"], 4)])
-                    association_mask[i, max(0, c0_int[0]-self.event_width[0]) : min(self.raw_feature_nt, c0_int[0]+self.event_width[0])] = True
+                    association_mask[i, max(0, c0_int[0]-self.event_width[0]//2) : min(self.raw_feature_nt, c0_int[0]+self.event_width[0]//2)] = 1.0
+                    #association_mask[i, :] = event_center_eid
+                    main_stas.append(i)
 
                 manual_event_ids.append(e_id)
                 p_pick_stas.append(p_picks)
@@ -1208,6 +1213,9 @@ class SeismicNetworkIterableDataset(IterableDataset):
         # std[std == 0] = 1.0
         # waveforms = (waveforms - np.mean(waveforms, axis=-1, keepdims=True)) / std
         # waveforms = waveforms.astype(np.float32)
+        if main_stas:
+            # first the index of main event, then the index of other manual events
+            manual_stas = main_stas + [x for x in manual_stas if x not in set(main_stas)]
         len_manual = len(manual_stas)
         assert len_manual>0, f"event {event_id} no manual picks"
         assert len_manual==np.any(event_location_mask>0, axis=1).sum(), f"{event_id} manual picks num don't match, len_manual:{len_manual}, manual_stas:{manual_stas}, event_location_mask:{np.any(event_location_mask>0, axis=1)}"
@@ -1277,11 +1285,11 @@ class SeismicNetworkIterableDataset(IterableDataset):
                 if not sample_by_magnitude(self.hdf5_fp[event_id].attrs["magnitude"], critical_magnitude=2, sample_rate=0.6, min_magnitude=0.3):
                     continue
             # if True:
-            #try:
-            meta = self._read_training_h5(event_id, hdf5_fp)
-            #except Exception as e:
-            #    print(f"Error reading {event_id}:\n{e}")
-            #    continue
+            try:
+                meta = self._read_training_h5(event_id, hdf5_fp)
+            except Exception as e:
+                print(f"Error reading {event_id}:\n{e}")
+                continue
 
             if meta is None:
                 continue
@@ -1372,13 +1380,18 @@ class SeismicNetworkIterableDataset(IterableDataset):
             negative_mask_ratio = self.negative_mask_ratio.value if not isinstance(self.negative_mask_ratio, float) else self.negative_mask_ratio
             meta['phase_mask'] = add_random_negative_samples(meta['phase_mask'], random_mask_rate=0.1*negative_mask_ratio, random_mask_unit=32)
             meta['event_mask'] = add_random_negative_samples(meta['event_mask'], random_mask_rate=0.2*negative_mask_ratio, random_mask_unit=8)
+            if not np.any(meta['association_mask']>0):
+                print(f"{event_id} no association mask {meta['main_event_center']=}")
+                continue
             meta_cutted, it = cut_data(meta, nt=self.nt, feature_scale=self.feature_scale, if_reverse_roll=False, base_phase_points=int(64*(1+stack_times/8))) #TODO: allow reverse roll?
             
             # random selected one main event center as prompt
-            assert len(meta_cutted['main_event_center'])>0, f"{event_id} no main event center"
+            if len(meta_cutted['main_event_center'])==0:
+                print(f"{event_id} no main event center")
+                continue
             prompt = random.choice(meta_cutted['main_event_center'])
             # add random time shift
-            prompt[0] = np.clip(prompt[0]+np.random.randint(-int(self.event_width[0]*0.5), int(self.event_width[0]*0.5)), 0, self.feature_nt-1)
+            prompt[0] = np.clip(prompt[0]+np.random.randint(-int(self.event_width[0]*0.3), int(self.event_width[0]*0.3)), 0, self.feature_nt-1)
             prompt = np.concatenate([prompt, np.array([1])], axis=0) # 1 as positive point
             prompt = prompt[np.newaxis, :]
 

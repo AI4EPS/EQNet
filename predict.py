@@ -617,6 +617,7 @@ def main(args):
         ## eqnet
         head=args.head,
         use_station_location=args.use_station_location,
+        prediction=True,
     )
     logger.info("Model:\n{}".format(model))
 

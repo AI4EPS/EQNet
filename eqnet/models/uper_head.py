@@ -213,7 +213,7 @@ class UPerNeck(nn.Module, metaclass=ABCMeta):
         ]
         # append psp feature
         fpn_outs.append(laterals[-1])
-        #outputs["ppm"] = fpn_outs[-1]
+        outputs["ppm"] = fpn_outs[-1]
         #outputs["fpn"] = fpn_outs[0]
 
         for i in range(used_backbone_levels - 1, 0, -1):
@@ -729,7 +729,7 @@ class EventHead2(nn.Module):
                  dilations=[1, 4, 8, 16],
                  kernel_size=7,
                  loss_dict: dict = {"hm_loss": "focal", "hw_loss": "wl1", "travel_time_loss": "sl1", "dist_loss": "sl1", "angle_loss": "sl1", "depth_loss": "bl1", "mag_loss": "bl1"},
-                 weights=[1.45, 0.018, 0.055],
+                 weights=[1.45, 0.018, 0.058],
                  offset_weight=[1, 1], 
                  reg_weight=[0.8,2,20,1.0, 0.5],
                  angle_coder="trigono",

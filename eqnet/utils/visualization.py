@@ -562,12 +562,13 @@ def plot_eqnet_train(meta, phase, event, polarity, association, epoch, figure_di
             axes[1].plot(meta["phase_pick"][i, 1, :, j] + j, "--C3")
             axes[1].plot(meta["phase_pick"][i, 2, :, j] + j, "--C0")
 
+            if association is not None:
+                axes[2].plot(association[i, 0, :, j] + j, "-C1", alpha=0.7)
+                axes[2].fill_between(np.arange(association.shape[2]), association[i, 0, :, j] + j, j, where=association[i, 0, :, j] > 0.1, color="C1", alpha=0.3)
             if event is not None:
                 axes[2].plot(event[i, :, j] + j, "b")
             axes[2].plot(meta["event_center"][i, :, j] + j, "--C0")
-            if association is not None:
-                axes[2].plot(association[i, 0, :, j] + j, ":C1", alpha=0.7)
-            axes[2].plot(meta["association_mask"][i, 0, :, j] + j, ":", color="gray")
+            axes[2].plot((meta["association_mask"][i, 0, :, j]>0.01).float() + j, ":", color="gray")
             
             polarity_number = 7 if flag else 3
             if polarity is not None:

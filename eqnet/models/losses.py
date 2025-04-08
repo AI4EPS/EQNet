@@ -8,7 +8,8 @@ def cross_entropy_loss(inputs, targets, mask):
     inputs = inputs.float()  # https://github.com/pytorch/pytorch/issues/48163
     targets = targets.float()
     num=mask.sum()
-    loss = (F.binary_cross_entropy_with_logits(inputs, targets, reduction='none') * mask).sum() / (num + 1e-4)
+    min_loss = -(targets * torch.nan_to_num(torch.log(targets)) + (1 - targets) * torch.nan_to_num(torch.log(1 - targets)))
+    loss = ((F.binary_cross_entropy_with_logits(inputs, targets, reduction='none') - min_loss) * mask).sum() / (num + 1e-4)
         
     return loss
 
@@ -69,20 +70,24 @@ def sigmoid_focal_loss(
     if mask is not None:
         mask = mask.float()
         if mask.dim() == 2:
-            inputs = inputs * mask.unsqueeze(1).unsqueeze(1)
-            targets = targets * mask.unsqueeze(1).unsqueeze(1)
+            mask = mask.unsqueeze(1).unsqueeze(1)
         elif mask.dim() == 3:
-            inputs = inputs * mask.unsqueeze(1)
-            targets = targets * mask.unsqueeze(1)
+            mask = mask.unsqueeze(1)
         else:
             raise ValueError("Mask dimension not supported")
+    else:
+        mask = 1.0
     if num_objects is None:
-        if mask is None:
-            num_objects = inputs.shape[0] * inputs.shape[1] * inputs.shape[2]
+        if mask is None or isinstance(mask, float): 
+            num_objects = inputs.shape[0] * inputs.shape[1] * inputs.shape[3]
         else:
             num_objects = mask.sum() * inputs.shape[1]
-    prob = inputs.sigmoid()
-    ce_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction="none")
+    inputs = inputs.float()
+    prob = inputs.sigmoid() * mask
+    targets = targets.float() * mask
+    min_loss = -(targets * torch.nan_to_num(torch.log(targets)) + (1 - targets) * torch.nan_to_num(torch.log(1 - targets)))
+    ce_loss = (F.binary_cross_entropy_with_logits(inputs, targets, reduction="none")-min_loss) * mask
+    #ce_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction="none") * mask
     p_t = prob * targets + (1 - prob) * (1 - targets)
     loss = ce_loss * ((1 - p_t) ** gamma)
 
@@ -352,23 +357,76 @@ def dice_loss(inputs, targets, mask=None, num_objects=None, loss_on_multimask=Fa
     if mask is not None:
         mask = mask.float()
         if mask.dim() == 2:
-            inputs = inputs * mask.unsqueeze(1).unsqueeze(1)
-            targets = targets * mask.unsqueeze(1).unsqueeze(1)
+            mask = mask.unsqueeze(1).unsqueeze(1)
         elif mask.dim() == 3:
-            inputs = inputs * mask.unsqueeze(1)
-            targets = targets * mask.unsqueeze(1)
+            mask = mask.unsqueeze(1)
         else:
             raise ValueError("Mask dimension not supported")
+    else:
+        mask = 1.0
     if num_objects is None:
         num_objects = inputs.shape[0] * inputs.shape[1]
+    ## TEMP
     inputs = inputs.sigmoid()
+    targets = targets > 0.0
+    
+    inputs = inputs.float() * mask
+    targets = targets.float() * mask
+    
     # inputs and targets are [N, M, H, W] where M corresponds to multiple predicted masks
     # flatten spatial dimension while keeping multimask channel dimension
     inputs = inputs.flatten(2)
     targets = targets.flatten(2)
     numerator = 2 * (inputs * targets).sum(-1)
     denominator = inputs.sum(-1) + targets.sum(-1)
-    loss = 1 - (numerator + 1) / (denominator + 1)
+    loss = 1 - (numerator + 1e-5) / (denominator + 1e-5)
+    if loss_on_multimask:
+        return loss / num_objects
+    return loss.sum() / num_objects
+
+
+def tversky_loss(inputs, targets, mask=None, num_objects=None, loss_on_multimask=False, alpha=0.7, beta=0.3, smooth=1e-3):
+    """
+    Compute the Tversky loss, similar to generalized IOU for masks
+    Args:
+        inputs: A float tensor of arbitrary shape.
+                The predictions for each example.
+        targets: A float tensor with the same shape as inputs. Stores the binary
+                 classification label for each element in inputs
+                (0 for the negative class and 1 for the positive class).
+        num_objects: Number of objects in the batch
+        loss_on_multimask: True if multimask prediction is enabled
+    Returns:
+        Tversky loss tensor
+    """
+    assert inputs.dim() == 4 and targets.dim() == 4
+    if mask is not None:
+        mask = mask.float()
+        if mask.dim() == 2:
+            mask = mask.unsqueeze(1).unsqueeze(1)
+        elif mask.dim() == 3:
+            mask = mask.unsqueeze(1)
+        else:
+            raise ValueError("Mask dimension not supported")
+    else:
+        mask = 1.0
+    if num_objects is None:
+        num_objects = inputs.shape[0] * inputs.shape[1]
+    ## TEMP
+    inputs = inputs.sigmoid()
+    targets = targets > 0.0
+    
+    inputs = inputs.float() * mask
+    targets = targets.float() * mask
+    
+    # inputs and targets are [N, M, H, W] where M corresponds to multiple predicted masks
+    # flatten spatial dimension while keeping multimask channel dimension
+    inputs = inputs.flatten(2)
+    targets = targets.flatten(2)
+    tp = (inputs * targets).sum(-1)
+    fp = (inputs * (1 - targets)).sum(-1)
+    fn = ((1 - inputs) * targets).sum(-1)
+    loss = 1 - (tp + smooth) / (tp + alpha * fp + beta * fn + smooth)
     if loss_on_multimask:
         return loss / num_objects
     return loss.sum() / num_objects
@@ -395,13 +453,16 @@ def iou_loss(
     if mask is not None:
         mask = mask.float()
         if mask.dim() == 2:
-            inputs = inputs * mask.unsqueeze(1).unsqueeze(1)
-            targets = targets * mask.unsqueeze(1).unsqueeze(1)
+            mask = mask.unsqueeze(1).unsqueeze(1)
         elif mask.dim() == 3:
-            inputs = inputs * mask.unsqueeze(1)
-            targets = targets * mask.unsqueeze(1)
+            mask = mask.unsqueeze(1)
         else:
             raise ValueError("Mask dimension not supported")
+    else:
+        mask = 1.0
+    inputs = inputs.float().sigmoid() * mask
+    targets = targets.float() * mask
+    pred_ious = pred_ious.float()
     pred_mask = inputs.flatten(2) > 0
     gt_mask = targets.flatten(2) > 0
     area_i = torch.sum(pred_mask & gt_mask, dim=-1).float()

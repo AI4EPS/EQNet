@@ -691,9 +691,9 @@ class EventMetric:
         self.epicenter_distance_pred = np.concatenate(self.epicenter_distance_pred)
         self.epicenter_distance_res = np.concatenate(self.epicenter_distance_res)
         self.azimuth_res = np.concatenate(self.azimuth_res)
-        assert all([len(self.event_stat)==self.num_event_picks, len(self.event_stat_label)==self.num_event_picks_label]), f"event_stat and num_event_picks have different length in {self.num_event_picks} {self.num_event_picks_label}"
-        self.event_stat = pd.DataFrame(self.event_stat)
-        self.event_stat_label = pd.DataFrame(self.event_stat_label)
+        #assert all([len(self.event_stat)==self.num_event_picks, len(self.event_stat_label)==self.num_event_picks_label]), f"event_stat and num_event_picks have different length in {self.num_event_picks} {self.num_event_picks_label}"
+        #self.event_stat = pd.DataFrame(self.event_stat)
+        #self.event_stat_label = pd.DataFrame(self.event_stat_label)
         
         return
     

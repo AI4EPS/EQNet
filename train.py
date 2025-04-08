@@ -314,8 +314,7 @@ def plot_results(meta, model, output, args, epoch, prefix=""):
                     )
                     eps = 1e-15
                     polarity = torch.clamp(link_mat, eps, 1 - eps)[:, [1,2,0]].cpu().float() # DNU -> NUD
-                association = output["association"].cpu().float()
-                association = association > 0
+                association = torch.sigmoid(output["association"]).cpu().float()
             except:
                 event = None
                 polarity = None
