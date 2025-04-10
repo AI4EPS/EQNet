@@ -17,7 +17,10 @@ import torch.nn.functional as F
 from scipy.interpolate import interp1d
 from torch.utils.data import Dataset, IterableDataset
 
+from .ForgeSegyReader import read as read_forge_segy
+
 # mp.set_start_method("spawn", force=True)
+
 
 def normalize(data: torch.Tensor):
     """channel-wise normalization
@@ -869,6 +872,16 @@ class DASIterableDataset(IterableDataset):
                 sample["begin_time"] = datetime.strptime(file.split("/")[-1].rstrip(".segy"), "%Y%m%d%H")
                 sample["dt_s"] = 1.0 / 250.0
                 sample["dx_m"] = 8.0
+
+            elif self.format == "forge_segy":
+                st = read_forge_segy(file)
+                st.decimate(3)
+                data = []
+                for tr in st:
+                    data.append(tr.data)
+                data = np.array(data)  # nx, nt
+                sample["begin_time"] = st[0].stats.starttime.datetime
+                sample["dt_s"] = st[0].stats.delta
             else:
                 raise (f"Unsupported format: {self.format}")
 
