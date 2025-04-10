@@ -197,6 +197,8 @@ class SeismicNetworkIterableDataset(IterableDataset):
             prompt[1] = prompt[1] / 100 # scale by 100 km
             prompt[2] = prompt[2] / 100 # scale by 100 km
             position[:, :, 0] = position[:, :, 0] / self.nt # [0 - 1]
+            position[:, :, 0] = position[:, :, 0] - prompt[0]
+            prompt[0] = 0
             position[:, :, 1] = position[:, :, 1] / 100 # scale by 100 km
             position[:, :, 2] = position[:, :, 2] / 100 # scale by 100 km
 

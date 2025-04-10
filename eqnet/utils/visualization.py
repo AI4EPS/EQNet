@@ -363,14 +363,17 @@ def plot_phasenet_prompt_train(
         axes[0, 0].grid("on")
 
 
-        t = torch.arange(nt_prompt) * dt_prompt
+        # t = torch.arange(nt_prompt) * dt_prompt
+        t = meta["position"][i, :, 0, 0]
         scale = meta["position"][i, -1, 0, 0] - meta["position"][i, 0, 0, 0] # B, T, S, 3
-        t_prompt = (meta["prompt"][i, 0] - meta["position"][i, 0, 0, 0]) * (t[-1]-t[0]) / scale + t[0]
+        # t_prompt = (meta["prompt"][i, 0] - meta["position"][i, 0, 0, 0]) * (t[-1]-t[0]) / scale + t[0]
+        t_prompt = meta["prompt"][i, 0]
         for j in range(ns):
             axes[0, 1].plot(t, prompt_center[i, 0, :, j] + j, "b")
             axes[0, 1].plot(t, meta["prompt_center"][i, 0, :, j] + j, "--C0")
             axes[0, 1].plot(t, meta["prompt_mask"][i, 0, :, j] + j, ":", color="gray")
-        axes[0, 1].axvline(t_prompt, color="r")
+        # axes[0, 1].axvline(t_prompt, color="r")
+        axes[0, 1].plot([t_prompt, t_prompt], [-0.05, 1.05], "r", linewidth=1.0)
         axes[0, 1].set_xlim(t[0], t[-1])
         axes[0, 1].set_xticklabels([])
         axes[0, 1].grid("on")
