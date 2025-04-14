@@ -730,7 +730,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
         self.hdf5_fp = None
         if hdf5_file is not None:
             tmp_hdf5_keys = f"tmp/{'_'.join(hdf5_file.split('/'))}.txt"
-            #tmp_hdf5_keys = f"tmp/big_events.txt"
+            #tmp_hdf5_keys = f"tmp/debug_2022_train.txt"
             if not os.path.exists(tmp_hdf5_keys) and (rank == 0):
                 with h5py.File(hdf5_file, "r", libver="latest", swmr=True) as fp:
                     self.data_list = []
@@ -1392,7 +1392,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
             prompt = random.choice(meta_cutted['main_event_center'])
             # add random time shift
             prompt[0] = np.clip(prompt[0]+np.random.randint(-int(self.event_width[0]*0.3), int(self.event_width[0]*0.3)), 0, self.feature_nt-1)
-            prompt = np.concatenate([prompt, np.array([1])], axis=0) # 1 as positive point
+            #prompt = np.concatenate([prompt, np.array([1])], axis=0) # 1 as positive point
             prompt = prompt[np.newaxis, :]
 
             if self.sort:
@@ -1439,6 +1439,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
                 "prompt": torch.from_numpy(prompt).float(),
                 "num_stations": meta['num_stations'],
                 "num_manual_stations": meta['num_manual_stations'],
+                #"station_ids": meta['station_ids'],
                 "event_id": event_id,
             })
             

@@ -597,7 +597,7 @@ class EventHead(nn.Module):
         self.depth_loss = loss_factory[loss_dict["depth_loss"]]
         self.mag_loss = loss_factory[loss_dict["mag_loss"]]
         
-    def forward(self, features, amplitude, event_center, event_location, event_location_mask):
+    def forward(self, features, amplitude, event_center=None, event_location=None, event_location_mask=None):
         """
         Forward pass of the EventHead module.
 
@@ -728,8 +728,8 @@ class EventHead2(nn.Module):
                  hidden_channels=[256, 128, 64, 32, 16],
                  dilations=[1, 4, 8, 16],
                  kernel_size=7,
-                 loss_dict: dict = {"hm_loss": "focal", "hw_loss": "wl1", "travel_time_loss": "sl1", "dist_loss": "sl1", "angle_loss": "sl1", "depth_loss": "bl1", "mag_loss": "bl1"},
-                 weights=[1.45, 0.018, 0.058],
+                 loss_dict: dict = {"hm_loss": "cross_entropy", "hw_loss": "wl1", "travel_time_loss": "sl1", "dist_loss": "sl1", "angle_loss": "sl1", "depth_loss": "bl1", "mag_loss": "bl1"},
+                 weights=[4, 0.018, 0.058],
                  offset_weight=[1, 1], 
                  reg_weight=[0.8,2,20,1.0, 0.5],
                  angle_coder="trigono",
@@ -1007,7 +1007,7 @@ class EventHead2(nn.Module):
         self.depth_loss = loss_factory[loss_dict["depth_loss"]]
         self.mag_loss = loss_factory[loss_dict["mag_loss"]]
         
-    def forward(self, features, amplitude, event_center, event_mask, event_location, event_location_mask):
+    def forward(self, features, amplitude, event_center=None, event_mask=None, event_location=None, event_location_mask=None):
         """
         Forward pass of the EventHead module.
 
@@ -1347,7 +1347,7 @@ class EventHead3(nn.Module):
         self.angle_loss = loss_factory[loss_dict["angle_loss"]]
         self.depth_loss = loss_factory[loss_dict["depth_loss"]]
         
-    def forward(self, features, event_center, event_location, event_location_mask):
+    def forward(self, features, event_center=None, event_location=None, event_location_mask=None):
         """
         Forward pass of the EventHead module.
 

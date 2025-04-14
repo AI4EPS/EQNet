@@ -72,7 +72,7 @@ class PhaseAssociator(nn.Module):
         point_embeddings = self.prompt_encoder(points=prompt)
         bt, ch, nt, nsta = waveform_embeddings.shape
         relative_location = station_location[..., :2] - prompt[:, 0:1, :2]
-        waveform_pe = self.prompt_encoder.get_dense_pe(time_size=nt, station_location=relative_location, dt_s=self.prompt_encoder.dt_s*4)
+        waveform_pe = self.prompt_encoder.get_dense_pe(time_size=nt, station_location=relative_location, reference_time=prompt[:, 0:1, 0:1], dt_s=self.prompt_encoder.dt_s*4)
         
         associated_masks, iou_pred = self.mask_decoder(
             waveform_embeddings=waveform_embeddings,
@@ -295,7 +295,7 @@ class PromptEncoder(nn.Module):
         self.point_embeddings = nn.ModuleList(point_embeddings)
         #self.not_a_point_embed = nn.Embedding(1, embed_dim)
 
-    def get_dense_pe(self, time_size: Tensor, station_location: Tensor, dt_s: float = None) -> Tensor:
+    def get_dense_pe(self, time_size: Tensor, station_location: Tensor, reference_time: Tensor = 0.5, dt_s: float = None) -> Tensor:
         """
         Returns the positional encoding used to encode point prompts,
         applied to a dense set of points the shape of the image encoding.
@@ -304,21 +304,21 @@ class PromptEncoder(nn.Module):
           Tensor: Positional encoding with shape
             1x(embed_dim)x(embedding_h)x(embedding_w)
         """
-        return self.pe_layer(time_size, station_location, dt_s=dt_s)
+        return self.pe_layer(time_size, station_location, reference_time=reference_time, dt_s=dt_s)
 
     def _embed_points(
         self,
         points: Tensor,
-        labels: Tensor,
+        #labels: Tensor,
         pad: bool = False,
     ) -> Tensor:
         """Embeds point prompts."""
         points[:, :, 0] += 0.5  # Shift to center of pixel
         if pad:
             padding_point = torch.zeros((points.shape[0], 1, 2), device=points.device)
-            padding_label = -torch.ones((labels.shape[0], 1), device=labels.device)
+            #padding_label = -torch.ones((labels.shape[0], 1), device=labels.device)
             points = torch.cat([points, padding_point], dim=1)
-            labels = torch.cat([labels, padding_label], dim=1)
+            #labels = torch.cat([labels, padding_label], dim=1)
         point_embedding = self.pe_layer.forward_with_coords(points)
         #point_embedding[labels == -1] = 0.0
         #point_embedding[labels == -1] += self.not_a_point_embed.weight
@@ -354,9 +354,10 @@ class PromptEncoder(nn.Module):
         bs = points.shape[0] if points is not None else 1
         sparse_embeddings = torch.empty((bs, 0, self.embed_dim), device=self._get_device())
         if points is not None:
-            coords = points[:,:, :3]
-            labels = points[:,:, 3]
-            point_embeddings = self._embed_points(coords, labels, pad=False)
+            #coords = points[:,:, :3]
+            #labels = points[:,:, 3]
+            #point_embeddings = self._embed_points(coords, labels, pad=False)
+            point_embeddings = self._embed_points(points, pad=False)
             sparse_embeddings = torch.cat([sparse_embeddings, point_embeddings], dim=1)
 
         return sparse_embeddings
@@ -388,7 +389,7 @@ class PositionEmbeddingRandom(nn.Module):
         # outputs d_1 x ... x d_n x C shape
         return torch.cat([torch.sin(coords), torch.cos(coords)], dim=-1)
     
-    def forward(self, time_size: int, station_location: Tensor, dt_s: float = None) -> Tensor:
+    def forward(self, time_size: int, station_location: Tensor, reference_time: Tensor = 0.5, dt_s: float = None) -> Tensor:
         """
         Generate positional encoding for a grid of the specified size.
         Args:
@@ -400,8 +401,9 @@ class PositionEmbeddingRandom(nn.Module):
         """
         device: Any = self.positional_encoding_gaussian_matrix.device
         dt_s = dt_s if dt_s is not None else self.dt_s
-        t_embed = torch.arange(0, time_size, device=device, dtype=torch.float32).unsqueeze(0).unsqueeze(2) + 0.5
-        t_embed = t_embed.repeat_interleave(station_location.shape[1], dim=1).repeat(station_location.shape[0], 1, 1) * dt_s
+        t_embed = torch.arange(1, time_size+1, device=device, dtype=torch.float32).unsqueeze(0).unsqueeze(2)
+        t_embed = t_embed.repeat(station_location.shape[0], 1, 1) - reference_time
+        t_embed = t_embed.repeat_interleave(station_location.shape[1], dim=1) * dt_s
         #assert torch.abs(t_embed.max() - 40.96) < 1, f"Invalid t_embed max: {t_embed.max()}, expected 40.96"
         x_embed = station_location[..., :2].repeat(1, time_size, 1)
         grid = torch.cat([t_embed, x_embed], dim=-1).view(-1, time_size, station_location.shape[1], 3)
@@ -449,7 +451,7 @@ class PositionEmbeddingFourier(nn.Module):
         # outputs d_1 x ... x d_n x C shape
         return torch.cat([torch.sin(coords), torch.cos(coords)], dim=-1)
     
-    def forward(self, time_size: int, station_location: Tensor, dt_s: float = None) -> Tensor:
+    def forward(self, time_size: int, station_location: Tensor, reference_time: Tensor = 0.5, dt_s: float = None) -> Tensor:
         """
         Generate positional encoding for a grid of the specified size.
         Args:
@@ -461,8 +463,9 @@ class PositionEmbeddingFourier(nn.Module):
         """
         device: Any = self.positional_encoding_gaussian_matrix.device
         dt_s = dt_s if dt_s is not None else self.dt_s
-        t_embed = torch.arange(0, time_size, device=device, dtype=torch.float32).unsqueeze(0).unsqueeze(2) + 0.5
-        t_embed = t_embed.repeat_interleave(station_location.shape[1], dim=1).repeat(station_location.shape[0], 1, 1) * dt_s
+        t_embed = torch.arange(1, time_size+1, device=device, dtype=torch.float32).unsqueeze(0).unsqueeze(2)
+        t_embed = t_embed.repeat(station_location.shape[0], 1, 1) - reference_time
+        t_embed = t_embed.repeat_interleave(station_location.shape[1], dim=1) * dt_s
         #assert torch.abs(t_embed.max() - 40.96) < 1, f"Invalid t_embed max: {t_embed.max()}, expected 40.96"
         x_embed = station_location[..., :2].repeat(1, time_size, 1)
         grid = torch.cat([t_embed, x_embed], dim=-1).view(-1, time_size, station_location.shape[1], 3)

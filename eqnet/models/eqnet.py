@@ -468,6 +468,7 @@ class EQNet(nn.Module):
 
         if "swin" in self.backbone_name:
             station_location = batched_inputs["station_location"].to(self.device)
+            sta_loc = station_location.clone()
             # features = self.backbone({"data": data, "station_location": station_location})
             features = self.backbone(data, station_location)
         else:
@@ -479,7 +480,7 @@ class EQNet(nn.Module):
         outputs_event, losses_event = self.event_detector(features, amplitude, event_center, event_mask, event_location, event_location_mask)
         output_polarity, loss_polarity = self.polarity_picker(features, self.polarity_stem(data), polarity, polarity_mask)
         if prompt is not None:
-            output_association, loss_association = self.phase_associator(features, station_location, prompt, association_mask)
+            output_association, loss_association = self.phase_associator(features, sta_loc, prompt, association_mask)
         else:
             output_association, loss_association = {}, {'loss': torch.tensor(0.0, device=self.device)}
 
@@ -504,48 +505,51 @@ class EQNetPredictor(EQNet):
             raise ValueError("EQNetPredictor currently only supports swin backbone")
         self.prompt_feature = prompt_feature
         
-    def forward(self, batched_inputs: Tensor, association_only=False) -> Dict[str, Tensor]:
-        if not association_only:
-            data = batched_inputs["data"].to(self.device)
-            amplitude = batched_inputs["amplitude"].to(self.device)
-            #assert data.shape[-1]==amplitude.shape[-1], f"data {data.shape}, amplitude {amplitude.shape}"
-            data = moving_normalize(data, filter=self.moving_norm[0], stride=self.moving_norm[1])
-            #assert not torch.any(torch.isnan(data)), f"nan in data {data}"
-            prompt = batched_inputs["prompt"].to(self.device) if "prompt" in batched_inputs else None
+    def forward(self, batched_inputs: Tensor) -> Dict[str, Tensor]:
+        data = batched_inputs["data"].to(self.device)
+        amplitude = batched_inputs["amplitude"].to(self.device)
+        #assert data.shape[-1]==amplitude.shape[-1], f"data {data.shape}, amplitude {amplitude.shape}"
+        data = moving_normalize(data, filter=self.moving_norm[0], stride=self.moving_norm[1])
+        #assert not torch.any(torch.isnan(data)), f"nan in data {data}"
+        prompt = batched_inputs["prompt"].to(self.device) if "prompt" in batched_inputs else None
 
-            station_location = batched_inputs["station_location"].to(self.device)
-            # features = self.backbone({"data": data, "station_location": station_location})
-            features = self.backbone(data, station_location)
+        station_location = batched_inputs["station_location"].to(self.device)
+        sta_loc = station_location.clone()
+        # features = self.backbone({"data": data, "station_location": station_location})
+        features = self.backbone(data, station_location)
 
-            features = self.neck(features)
+        features = self.neck(features)
 
-            output_phase, loss_phase = self.phase_picker(features)
-            outputs_event, losses_event = self.event_detector(features, amplitude)
-            output_polarity, loss_polarity = self.polarity_picker(features, self.polarity_stem(data))
-            
-            if prompt is not None:
-                output_association, loss_association = self.phase_associator(features, station_location, prompt)
-            else:
-                output_association, loss_association = {}, {}
-            
-            return {**output_phase, **outputs_event, **output_polarity, "feature": features[self.prompt_feature], **output_association}
+        output_phase, loss_phase = self.phase_picker(features)
+        outputs_event, losses_event = self.event_detector(features, amplitude)
+        output_polarity, loss_polarity = self.polarity_picker(features, self.polarity_stem(data))
+        
+        hidden = features[self.prompt_feature].clone().detach().float()# if prompt is None else None
+        if prompt is not None:
+            output_association, loss_association = self.phase_associator(features, sta_loc, prompt)
         else:
-            prompt = batched_inputs["prompt"].to(self.device)
-            feature = batched_inputs["feature"].to(self.device)
-            station_location = batched_inputs["station_location"].to(self.device)
-            
-            if feature.shape[0] != prompt.shape[0]:
-                assert feature.shape[0] == 1, f"The default setting for multi-prompt query only support one waveform embedding each time, but got {feature.shape}"
-                assert feature.shape[0] == station_location.shape[0], f"feature should be aligned with station_location, but got {feature.shape} and {station_location.shape}"
-                feature = feature.repeat_interleave(prompt.shape[0], dim=0)
-                station_location = station_location.repeat_interleave(prompt.shape[0], dim=0)
-            
-            output_association, loss_association = self.phase_associator({self.prompt_feature: feature}, station_location, prompt)
-            
-            return output_association
+            output_association, loss_association = {}, {}
+        
+        return {**output_phase, **outputs_event, **output_polarity, "feature": hidden, **output_association}
+    
+    def forward_association(self, batched_inputs: Tensor) -> Dict[str, Tensor]:
+        prompt = batched_inputs["prompt"].to(self.device)
+        feature = batched_inputs["feature"].to(self.device)
+        station_location = batched_inputs["station_location"].to(self.device)
+        
+        if feature.shape[0] != prompt.shape[0]:
+            assert feature.shape[0] == 1, f"The default setting for multi-prompt query only support one waveform embedding each time, but got {feature.shape}"
+            assert feature.shape[0] == station_location.shape[0], f"feature should be aligned with station_location, but got {feature.shape} and {station_location.shape}"
+            feature = feature.repeat_interleave(prompt.shape[0], dim=0)
+            station_location = station_location.repeat_interleave(prompt.shape[0], dim=0)
+        
+        output_association, loss_association = self.phase_associator({self.prompt_feature: feature}, station_location, prompt)
+        
+        return output_association
+        
 
 def build_model(backbone="resnet50", head="simple", use_station_location=True, prediction=False, **kwargs) -> EQNet:
     if prediction:
-        return EQNetPredictor(backbone=backbone, head=head, use_station_location=use_station_location, **kwargs)
+        return EQNetPredictor(backbone=backbone, head=head, use_station_location=use_station_location)
     else:
         return EQNet(backbone=backbone, head=head, use_station_location=use_station_location)

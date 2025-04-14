@@ -1040,7 +1040,7 @@ def get_args_parser(add_help=True):
     parser.add_argument("--sample-by-magnitude", action="store_true", help="Sample by magnitude")
     parser.add_argument("--sample-by-distance", action="store_true", help="Sample by distance")
     parser.add_argument("--resample-space", action="store_true", help="Resample space resolution")
-    parser.add_argument("--resample-time", action="store_true", help="Resample time  resolution")
+    parser.add_argument("--resample-time", action="store_true", help="Resample time resolution")
     parser.add_argument("--masking", action="store_true", help="Masking of the input data")
     parser.add_argument("--random-crop", action="store_true", help="Random size")
     parser.add_argument("--crop-nt", default=1024, type=int, help="Crop time samples")
