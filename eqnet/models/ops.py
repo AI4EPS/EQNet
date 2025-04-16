@@ -166,7 +166,7 @@ class ScalableSoftmax(nn.Module):
         - Output: Same shape as input
     """
 
-    def __init__(self, s: float = 0.43, learn_scaling: bool = True, bias: bool = False):
+    def __init__(self, s: float = 0.14427, learn_scaling: bool = True, bias: bool = False): # 1/math.log(16*64)
         super().__init__()
 
         # Initialize scaling parameter
@@ -247,7 +247,7 @@ class TwoWayTransformer(nn.Module):
             )
 
         self.final_attn_token_to_image = Attention(
-            embedding_dim, num_heads, downsample_rate=attention_downsample_rate
+            embedding_dim, num_heads, downsample_rate=attention_downsample_rate, scalable_softmax=True
         )
         self.norm_final_attn = nn.LayerNorm(embedding_dim)
 
@@ -326,8 +326,8 @@ class TwoWayAttentionBlock(nn.Module):
         self.norm1 = nn.LayerNorm(embedding_dim)
 
         self.cross_attn_token_to_image = Attention(
-            embedding_dim, num_heads, downsample_rate=attention_downsample_rate
-        )
+            embedding_dim, num_heads, downsample_rate=attention_downsample_rate, scalable_softmax=True
+        ) # image token number can be variable
         self.norm2 = nn.LayerNorm(embedding_dim)
 
         self.mlp = MLP(embedding_dim, [mlp_dim, embedding_dim], activation_layer=activation)
@@ -335,8 +335,8 @@ class TwoWayAttentionBlock(nn.Module):
 
         self.norm4 = nn.LayerNorm(embedding_dim)
         self.cross_attn_image_to_token = Attention(
-            embedding_dim, num_heads, downsample_rate=attention_downsample_rate
-        )
+            embedding_dim, num_heads, downsample_rate=attention_downsample_rate, scalable_softmax=False
+        ) # Token number is fixed
 
         self.skip_first_layer_pe = skip_first_layer_pe
 
@@ -385,6 +385,7 @@ class Attention(nn.Module):
         embedding_dim: int,
         num_heads: int,
         downsample_rate: int = 1,
+        scalable_softmax: bool = False,
     ) -> None:
         super().__init__()
         self.embedding_dim = embedding_dim
@@ -396,6 +397,11 @@ class Attention(nn.Module):
         self.k_proj = nn.Linear(embedding_dim, self.internal_dim)
         self.v_proj = nn.Linear(embedding_dim, self.internal_dim)
         self.out_proj = nn.Linear(self.internal_dim, embedding_dim)
+        
+        if scalable_softmax:
+            self.softmax = ScalableSoftmax()
+        else:
+            self.softmax = nn.Softmax(dim=-1)
 
     def _separate_heads(self, x: Tensor, num_heads: int) -> Tensor:
         b, n, c = x.shape
@@ -422,7 +428,8 @@ class Attention(nn.Module):
         _, _, _, c_per_head = q.shape
         attn = q @ k.permute(0, 1, 3, 2)  # B x N_heads x N_tokens x N_tokens
         attn = attn / math.sqrt(c_per_head)
-        attn = torch.softmax(attn, dim=-1)
+        #attn = torch.softmax(attn, dim=-1)
+        attn = self.softmax(attn)
 
         # Get output
         out = attn @ v
