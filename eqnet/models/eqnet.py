@@ -514,7 +514,7 @@ class EQNetPredictor(EQNet):
         prompt = batched_inputs["prompt"].to(self.device) if "prompt" in batched_inputs else None
 
         station_location = batched_inputs["station_location"].to(self.device)
-        sta_loc = station_location.clone()
+        # sta_loc = station_location.clone()
         # features = self.backbone({"data": data, "station_location": station_location})
         features = self.backbone(data, station_location)
 
@@ -526,7 +526,7 @@ class EQNetPredictor(EQNet):
         
         hidden = features[self.prompt_feature].clone().detach().float()# if prompt is None else None
         if prompt is not None:
-            output_association, loss_association = self.phase_associator(features, sta_loc, prompt)
+            output_association, loss_association = self.phase_associator(features, station_location, prompt)
         else:
             output_association, loss_association = {}, {}
         

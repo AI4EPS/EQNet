@@ -765,26 +765,26 @@ class ShiftedWindowAttentionV2(ShiftedWindowAttention):
             relative_position_index = relative_coords.sum(-1).flatten()  # Wh*Ww*Wh*Ww
             self.register_buffer("relative_position_index", relative_position_index)
 
-    def get_relative_position_bias(self, loc: Union[Tensor, None]) -> Tensor:
+    def get_relative_position_bias(self, loc_: Union[Tensor, None]) -> Tensor:
         if self.use_station_location:
-            #relative_coords_t = self.relative_coords_t.repeat(loc.shape[0], loc.shape[1], loc.shape[1], 1) # B, nt*nx, nt*nx, 1 #FIXME: this is wrong, causing mismatch in relative_position_coords
-            relative_coords_t = self.relative_coords_t.repeat(loc.shape[0], 1,1,1).repeat_interleave(loc.shape[1], dim=1).repeat_interleave(loc.shape[1], dim=2)*self.time_unit # B, nt*nx, nt*nx, 1
-            device = loc.device
-            dtype = loc.dtype
+            #relative_coords_t = self.relative_coords_t.repeat(loc_.shape[0], loc_.shape[1], loc_.shape[1], 1) # B, nt*nx, nt*nx, 1 #FIXME: this is wrong, causing mismatch in relative_position_coords
+            relative_coords_t = self.relative_coords_t.repeat(loc_.shape[0], 1,1,1).repeat_interleave(loc_.shape[1], dim=1).repeat_interleave(loc_.shape[1], dim=2)*self.time_unit # B, nt*nx, nt*nx, 1
+            device = loc_.device
+            dtype = loc_.dtype
             device = device if isinstance(device, str) and device != "mps" else "cpu"
             #TODO: IF we implement window for station here, more memory can be saved to deal with large number of stations ~300+  
             with torch.autocast(device_type=device, enabled=False):
                 # keep precision in small distance
-                loc = loc.float() # to avoid round error
+                loc = loc_.float().clone() # to avoid round error
                 loc[...,:2] = torch.deg2rad(loc[...,:2]) # to radians
                 # loc[:, :, None, :] station 1; loc[:, None, :, :] station 2
                 # from station 1 to station 2
                 relative_coords_sta = loc[:, None, :, :] - loc[:, :, None, :] # B, nx, nx, 3 (lon, lat, z)
                 a = torch.sin(relative_coords_sta[:, :, :, 1]/2)**2 + torch.cos(loc[:, :, None, 1]) * torch.cos(loc[:, None, :, 1]) * torch.sin(relative_coords_sta[:, :, :, 0]/2)**2
                 #NOTE: because of the precision, a may be slightly larger than 1, which will cause NaN in torch.sqrt
-                # assert torch.all(a <= 1), f"a is larger than 1: {a.max()}"
-                # assert torch.all(a >= 0), f"a is smaller than 0: {a.min()}"
-                # a = torch.clamp(a, 0, 1) # clamp to avoid NaN
+                assert torch.all(a <= 1), f"a is larger than 1: {a.max()}"
+                assert torch.all(a >= 0), f"a is smaller than 0: {a.min()}"
+                #a = torch.clamp(a, 0, 1) # clamp to avoid NaN
                 relative_dist = 2 * torch.atan2(torch.sqrt(a), torch.sqrt(1-a))*self.earth_radius # B, nx, nx
                 # y = torch.sin(relative_coords_sta[:, :, :, 0]) * torch.cos(loc[:, None, :, 1]) # B, nx, nx, 1
                 # x = torch.cos(loc[:, :, None, 1]) * torch.sin(loc[:, None, :, 1]) - torch.sin(loc[:, :, None, 1]) * torch.cos(loc[:, None, :, 1]) * torch.cos(relative_coords_sta[:, :, :, 0]) # B, nx, nx, 1
