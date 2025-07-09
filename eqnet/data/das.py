@@ -869,6 +869,23 @@ class DASIterableDataset(IterableDataset):
                 sample["begin_time"] = datetime.strptime(file.split("/")[-1].rstrip(".segy"), "%Y%m%d%H")
                 sample["dt_s"] = 1.0 / 250.0
                 sample["dx_m"] = 8.0
+
+
+            elif self.format == "tdms":
+                from nptdms import TdmsFile
+                tdms_file = TdmsFile.read(file) 
+                data = np.vstack(tdms_file['Measurement'].channels()[0 : len(tdms_file['Measurement'])])
+                print(data.shape)
+                dt = 1./tdms_file.properties['SamplingFrequency[Hz]']
+                dx = tdms_file.properties['SpatialResolution[m]']
+                nt = len(tdms_file['Measurement']['0'])
+                GL = tdms_file.properties['GaugeLength']
+
+                ## FIXME: hard code for Ridgecrest DAS
+                sample["begin_time"] = datetime.strptime(' '.join( file.split('_')[-2:]), '%Y%m%d %H%M%S.%f.tdms')
+                sample["dt_s"] = dt
+                sample["dx_m"] = dx
+
             else:
                 raise (f"Unsupported format: {self.format}")
 
@@ -1201,6 +1218,15 @@ class DASDataset(Dataset):
                     align_corners=False,
                 )
                 data = data.permute(0, 2, 1)
+
+        elif self.format == "tdms":
+            from nptdms import TdmsFile
+            tdms_file = TdmsFile.read(self.data_list[idx]) 
+            data = np.vstack(tdms_file['Measurement'].channels()[0 : len(tdms_file['Measurement'])])
+            data = torch.from_numpy(data.astype(np.float32))
+            print(data.shape)
+
+
         else:
             raise (f"Unsupported format: {self.format}")
 
