@@ -25,6 +25,7 @@ from scipy.optimize import linear_sum_assignment
 from sklearn.cluster import KMeans
 from scipy.interpolate import LSQUnivariateSpline
 from scipy.signal import butter, filtfilt
+from geographiclib.geodesic import Geodesic
 from tqdm import tqdm
 
 from ..utils.station_sampler import reorder_keys
@@ -244,7 +245,9 @@ def cut_data(meta, nt=8192, nt0=2960, feature_scale=16, base_phase_points=80, if
     base_phase_points = base_phase_points * meta["num_manual_stations"]
     phase_mask = (meta["phase_pick"] != 0).astype(np.float32)
     event_mask = (meta["event_location_mask"] != 0).astype(np.float32)
-    main_event_center_index = meta['main_event_center'][:meta["num_manual_stations"], 0]
+    #main_event_center_index = meta['main_event_center'][:meta["num_manual_stations"], 0]
+    main_event_center_index = meta['main_event_center'][:, 0]
+    main_event_center_index = main_event_center_index[main_event_center_index >= 0]
     p_start = np.nonzero(phase_mask[:, 1, :].sum(axis=0))[0].min() // feature_scale
     event_start = np.nonzero(event_mask.sum(axis=0))[0].min()
     s_end = np.nonzero(phase_mask[:, 2, :].sum(axis=0))[0].max() // feature_scale
@@ -319,7 +322,8 @@ def cut_data(meta, nt=8192, nt0=2960, feature_scale=16, base_phase_points=80, if
         event_location = np.roll(meta["event_location"], -it, axis=-1)[:, :, :nt//feature_scale]
         event_location_mask = np.roll(meta["event_location_mask"], -it, axis=-1)[:, :nt//feature_scale]
         association_mask = np.roll(meta["association_mask"], -it, axis=-1)[:, :nt//feature_scale]
-    main_event_center = meta['main_event_center'][:meta["num_manual_stations"]] - np.array([[it, 0, 0]])
+    #main_event_center = meta['main_event_center'][:meta["num_manual_stations"]] - np.array([[it, 0, 0]])
+    main_event_center = meta['main_event_center'] - np.array([[it, 0, 0]])
     main_event_center = main_event_center[(main_event_center[:, 0] >= 0) & (main_event_center[:, 0] < nt//feature_scale)]
 
     return {
@@ -442,7 +446,6 @@ def sample_event_for_stacking(event_ids, e2sta_dict, sta2e_dict, events_dict, e2
         candidate_events.remove(event_id)
         sta_ids_2 = e2sta_dict[event_id]
         # prefer events in the close years
-        # TODO: better solution needed
         # if i<=max_tries//2 and abs(year0-events_dict[event_id]['year'])>1:
         #     continue
         # check if at least given number stations are shared
@@ -494,8 +497,8 @@ def stack_event(
     station_ids1 = meta1["station_ids"]
     station_ids2 = meta2["station_ids"]
 
-    first_arrival1 = meta1["first_arrival"]
-    first_arrival2 = meta2["first_arrival"]
+    first_arrival1 = meta1["first_arrival"] // feature_scale
+    #first_arrival2 = meta2["first_arrival"] // feature_scale
     #amp_noise1 = meta1["amp_noise"]
     #amp_noise2 = meta2["amp_noise"]
     #amp_signal1 = meta1["amp_signal"]
@@ -505,10 +508,7 @@ def stack_event(
     other_sta_idx = []
     for i, sta_id1 in enumerate(station_ids1):
         if sta_id1 in station_ids2:
-            for j, sta_id2 in enumerate(station_ids2):
-                if sta_id1 == sta_id2:
-                    shared_sta_idx.append(j)
-                    break
+            shared_sta_idx.append(station_ids2.index(sta_id1))
         else:
             other_sta_idx.append(i)
             shared_sta_idx.append(0)
@@ -540,6 +540,24 @@ def stack_event(
     station_ids2 = [station_ids2[i] for i in shared_sta_idx]
     duration2 = meta2["duration"]
     duration2 = [duration2[i] for i in shared_sta_idx]
+    try:
+        first_arrival2 = np.nonzero(phase_mask2.sum(axis=0))[0].min() // feature_scale
+    except:
+        first_arrival2 = meta2["first_arrival"] // feature_scale
+    
+    switch_prompt = False
+    if not is_extra and len(other_sta_idx) < len(station_ids1) // 3:
+        # we only select the events with enough shared stations
+        valid_stations2 = meta2["valid_stations"][shared_sta_idx]
+        valid_stations2[other_sta_idx] = 0
+        if (valid_stations2.sum()>=3 and random.random()<0.15) or (valid_stations2.sum()>=3 and len(other_sta_idx) >= 3 and random.random()<0.2): # enough labels
+            switch_prompt = True
+            num_manual_stations2 = valid_stations2.sum()
+            valid_stations2[other_sta_idx] = 1 # we can confirm that no event is in the other stations
+            association_mask2 = meta2["association_mask"][shared_sta_idx]
+            association_mask2[other_sta_idx] = 0
+            main_event_center2 = meta2["main_event_center"][shared_sta_idx]
+            main_event_center2[other_sta_idx] = -1000
 
     nx, nch, nt, = waveform1.shape  # nx, nch, nt
     duration_mask1 = np.zeros([nx, nt])
@@ -572,7 +590,7 @@ def stack_event(
     failed = True
     tries = 0
     for i in range(1 if random.random() < 0.8 else 2 if random.random() < 0.5 else 3):
-    #for i in range(1):
+        last_shift = first_arrival1 - first_arrival2 if i == 0 else shift
         while tries < max_tries:
             if i == 0 and tries > max_tries // 2:
                 break
@@ -582,7 +600,11 @@ def stack_event(
             #    # print(f"min_ratio2 > max_ratio2: {min_ratio2} > {max_ratio2}, {amp_noise1 = }, {amp_signal1 = }, {amp_noise2 = }, {amp_signal2 = }")
             #    break
 
-            shift = random.randint(-max_shift, max_shift) + first_arrival1 - first_arrival2
+            shift_range = max_shift if (is_extra or (tries > max_tries//4)) else max(48, int(max_shift/1.5))
+            if i == 0 and last_shift != 0:
+                shift = random.randint(-shift_range, shift_range) + last_shift
+            else:
+                shift = random.sample([-1, 1], 1)[0] * random.randint(max(max_shift//16, 20), max(max_shift//4, 64)) + last_shift
             long_shift = shift * feature_scale
             tmp_mask2 = np.roll(phase_mask2, long_shift, axis=-1)
             if np.max(phase_mask1 + tmp_mask2) >= 2.0:
@@ -608,6 +630,17 @@ def stack_event(
             polarity2_ = np.roll(polarity2, long_shift, axis=-1)
             polarity_mask2_ = np.roll(polarity_mask2, long_shift, axis=-1)
             duration_mask2_ = np.roll(duration_mask2, long_shift, axis=-1)
+            try:
+                main_event_start1 = np.nonzero(meta1["association_mask"].sum(axis=0))[0].min()
+                main_event_start2 = np.nonzero(association_mask2.sum(axis=0))[0].min() + shift
+                if main_event_start2 < 80 or (abs(main_event_start2 - main_event_start1) > 128) or (abs(main_event_start2 - main_event_start1) < 24):
+                    switch_prompt = False
+            except:
+                switch_prompt = False
+            if switch_prompt:
+                association_mask2_ = np.roll(association_mask2, shift, axis=-1)
+                main_event_center2_ = main_event_center2.copy()
+                main_event_center2_[:, 0] += shift
 
             #ratio2 = 10 ** (random.uniform(max(-3, min_ratio2), min(3, max_ratio2)))
             #flip = random.choice([-1.0, 1.0])  ## flip waveform2 polarity
@@ -668,17 +701,124 @@ def stack_event(
         "event_location_mask": event_location_mask1,
         "polarity": polarity1,
         "polarity_mask": polarity_mask1,
-        "association_mask": meta1["association_mask"],
+        "association_mask": meta1["association_mask"] if ((not switch_prompt) or failed) else association_mask2_,
         "station_location": meta1["station_location"],
-        "main_event_center": meta1["main_event_center"],
+        "main_event_center": meta1["main_event_center"] if ((not switch_prompt) or failed) else main_event_center2_,
         "num_stations": meta1["num_stations"],
-        "num_manual_stations": meta1["num_manual_stations"],
+        "num_manual_stations": meta1["num_manual_stations"] if ((not switch_prompt) or failed) else num_manual_stations2,
         "event_id": meta1["event_id"],
         "station_ids": meta1["station_ids"],
         "duration": meta1["duration"],
         "duration_mask": duration_mask1,
-        "first_arrival": np.min([meta1["first_arrival"], meta2["first_arrival"]]) if not failed else meta1["first_arrival"],
+        "first_arrival": np.min([first_arrival1, first_arrival2]) if not failed else first_arrival1,
+        "valid_stations": meta1["valid_stations"] if ((not switch_prompt) or failed) else valid_stations2,
     }, failed
+
+
+def concatenate_event(
+    meta1,
+    meta2,
+    event_attrs1,
+    event_attrs2,
+    time_shift_range=(0.0, 4.8), # second
+    space_shift_range=(0.0, 40), # km
+    trunc_stations=(6, 15),
+    num_stations=16,
+    feature_scale=16,
+    sampling_rate=100,
+):
+    event_index1 = event_attrs1["event_time_index"]
+    event_index2 = event_attrs2["event_time_index"]
+    #event_location1 = np.array([event_attrs1["longitude"], event_attrs1["latitude"], 0])
+    event_location2 = np.array([event_attrs2["longitude"], event_attrs2["latitude"], 0])
+    
+    time_shift = (event_index2 - event_index1) // feature_scale
+    #space_shift = event_location2 - event_location1
+    
+    trunc_station_index = random.randint(trunc_stations[0], trunc_stations[1])
+    station_shift = random.randint(0, min(10, trunc_station_index))
+    time_shift += random.choice([-1, 1]) * random.randint(time_shift_range[0]//(feature_scale/sampling_rate), time_shift_range[1]//(feature_scale/sampling_rate))
+    geod = Geodesic.WGS84
+    tmp_dict = geod.Direct(event_attrs1["latitude"], event_attrs1["longitude"], random.uniform(0, 360), 1000*random.uniform(*space_shift_range))
+    target_location1 = np.array([tmp_dict['lon2'], tmp_dict['lat2'], 0])
+    space_shift = event_location2 - target_location1
+    #space_shift[0] += random.choice([-1, 1]) * random.uniform(*space_shift_range)
+    #space_shift[1] += random.choice([-1, 1]) * random.uniform(*space_shift_range)
+
+    waveforms = np.zeros((num_stations, *meta1['waveforms'].shape[1:]))
+    amplitude = np.zeros((num_stations, *meta1['amplitude'].shape[1:]))
+    phase_pick = np.zeros((num_stations, *meta1['phase_pick'].shape[1:]))
+    phase_mask = np.zeros((num_stations, *meta1['phase_mask'].shape[1:]))
+    polarity = np.zeros((num_stations, *meta1['polarity'].shape[1:]))
+    polarity_mask = np.zeros((num_stations, *meta1['polarity_mask'].shape[1:]))
+    event_center = np.zeros((num_stations, *meta1['event_center'].shape[1:]))
+    event_mask = np.zeros((num_stations, *meta1['event_mask'].shape[1:]))
+    event_location = np.zeros((num_stations, *meta1['event_location'].shape[1:]))
+    event_location_mask = np.zeros((num_stations, *meta1['event_location_mask'].shape[1:]))
+    association_mask = np.zeros((num_stations, *meta1['association_mask'].shape[1:]))
+    station_location = np.zeros((num_stations, 3))
+    main_event_center = np.zeros((num_stations, 3))
+    valid_stations = np.zeros(num_stations)
+    
+    waveforms[:trunc_station_index] = meta1['waveforms'][:trunc_station_index]
+    waveforms[trunc_station_index:] = np.roll(meta2['waveforms'][station_shift:num_stations-trunc_station_index+station_shift], shift=-time_shift*feature_scale, axis=-1)
+    amplitude[:trunc_station_index] = meta1['amplitude'][:trunc_station_index]
+    amplitude[trunc_station_index:] = np.roll(meta2['amplitude'][station_shift:num_stations-trunc_station_index+station_shift], shift=-time_shift*feature_scale, axis=-1)
+    phase_pick[:trunc_station_index] = meta1['phase_pick'][:trunc_station_index]
+    phase_pick[trunc_station_index:] = np.roll(meta2['phase_pick'][station_shift:num_stations-trunc_station_index+station_shift], shift=-time_shift*feature_scale, axis=-1)
+    phase_mask[:trunc_station_index] = meta1['phase_mask'][:trunc_station_index]
+    phase_mask[trunc_station_index:] = np.roll(meta2['phase_mask'][station_shift:num_stations-trunc_station_index+station_shift], shift=-time_shift*feature_scale, axis=-1)
+    polarity[:trunc_station_index] = meta1['polarity'][:trunc_station_index]
+    polarity[trunc_station_index:] = np.roll(meta2['polarity'][station_shift:num_stations-trunc_station_index+station_shift], shift=-time_shift*feature_scale, axis=-1)
+    polarity_mask[:trunc_station_index] = meta1['polarity_mask'][:trunc_station_index]
+    polarity_mask[trunc_station_index:] = np.roll(meta2['polarity_mask'][station_shift:num_stations-trunc_station_index+station_shift], shift=-time_shift*feature_scale, axis=-1)
+    event_center[:trunc_station_index] = meta1['event_center'][:trunc_station_index]
+    event_center[trunc_station_index:] = np.roll(meta2['event_center'][station_shift:num_stations-trunc_station_index+station_shift], shift=-time_shift, axis=-1)
+    event_mask[:trunc_station_index] = meta1['event_mask'][:trunc_station_index]
+    event_mask[trunc_station_index:] = np.roll(meta2['event_mask'][station_shift:num_stations-trunc_station_index+station_shift], shift=-time_shift, axis=-1)
+    event_location[:trunc_station_index] = meta1['event_location'][:trunc_station_index]
+    event_location[trunc_station_index:] = np.roll(meta2['event_location'][station_shift:num_stations-trunc_station_index+station_shift], shift=-time_shift, axis=-1)
+    event_location_mask[:trunc_station_index] = meta1['event_location_mask'][:trunc_station_index]
+    event_location_mask[trunc_station_index:] = np.roll(meta2['event_location_mask'][station_shift:num_stations-trunc_station_index+station_shift], shift=-time_shift, axis=-1)
+    association_mask[:trunc_station_index] = meta1['association_mask'][:trunc_station_index]
+    association_mask[trunc_station_index:] = 0#np.roll(meta2['association_mask'][station_shift:num_stations-trunc_station_index+station_shift], shift=-time_shift, axis=-1)
+    
+    station_location[:trunc_station_index] = meta1['station_location'][:trunc_station_index]
+    station_location[trunc_station_index:] = meta2['station_location'][station_shift:num_stations-trunc_station_index+station_shift] - space_shift
+    
+    main_event_center[:trunc_station_index] = meta1['main_event_center'][:trunc_station_index]
+    main_event_center[trunc_station_index:] = -1000
+    valid_stations[:trunc_station_index] = meta1['valid_stations'][:trunc_station_index]
+    #label_nums = int(np.sum(meta1['valid_stations'][:trunc_station_index]))
+    #random_idx = random.sample(range(trunc_station_index, num_stations), min(label_nums, num_stations-trunc_station_index))
+    #valid_stations[random_idx] = 1 # for label balance
+    valid_stations[trunc_station_index:] = 1
+    station_ids = [*meta1['station_ids'][:trunc_station_index], *meta2['station_ids'][station_shift:num_stations-trunc_station_index+station_shift]]
+    # NOTE: here the duration for meta2 needs to be shifted, but it is not used later, so we didn't do this
+    duration = [*meta1['duration'][:trunc_station_index], *meta2['duration'][station_shift:num_stations-trunc_station_index+station_shift]]
+    
+    return {
+        "waveforms": waveforms,
+        "amplitude": amplitude,
+        "phase_pick": phase_pick,
+        "phase_mask": phase_mask,
+        "polarity": polarity,
+        "polarity_mask": polarity_mask,
+        "event_center": event_center,
+        "event_mask": event_mask,
+        "event_location": event_location,
+        "event_location_mask": event_location_mask,
+        "association_mask": association_mask,
+        "station_location": station_location,
+        "main_event_center": main_event_center,
+        "num_stations": num_stations,
+        "num_manual_stations": min(trunc_station_index, meta1["num_manual_stations"]) + max(5, min(num_stations-trunc_station_index, max(meta2["num_manual_stations"]-station_shift, 0))),
+        "event_id": meta1["event_id"],
+        "station_ids": station_ids,
+        "duration": duration,
+        "valid_stations": valid_stations,
+    }
+
 
 class SeismicNetworkIterableDataset(IterableDataset):
     degree2km = 111.32
@@ -703,6 +843,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
         sample_by_magnitude=False,
         sample_by_distance=False,
         stack_event=False,
+        concatenate_event=False,
         drop_channel=False,
         ## for training
         huggingface_cache=None,
@@ -730,7 +871,6 @@ class SeismicNetworkIterableDataset(IterableDataset):
         self.hdf5_fp = None
         if hdf5_file is not None:
             tmp_hdf5_keys = f"tmp/{'_'.join(hdf5_file.split('/'))}.txt"
-            #tmp_hdf5_keys = f"tmp/debug_2022_train.txt"
             if not os.path.exists(tmp_hdf5_keys) and (rank == 0):
                 with h5py.File(hdf5_file, "r", libver="latest", swmr=True) as fp:
                     self.data_list = []
@@ -803,10 +943,11 @@ class SeismicNetworkIterableDataset(IterableDataset):
         self.polarity_width = polarity_width
         self.event_width = event_width
         self.stack_event = stack_event
+        self.concatenate_event = concatenate_event
         self.drop_channel = drop_channel
         self.sample_by_magnitude = sample_by_magnitude
         self.sample_by_distance = sample_by_distance
-        if self.stack_event:
+        if self.stack_event or self.concatenate_event:
             #TODO: temp
             # base_dir is the directory of hdf5_file
             if self.hdf5_file is not None:
@@ -1009,7 +1150,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
         event_location = np.zeros([len(station_ids), 7, self.raw_feature_nt])
         event_location_mask = np.zeros([len(station_ids), self.raw_feature_nt])
         association_mask = np.zeros([len(station_ids), self.raw_feature_nt])
-        main_event_center = np.zeros([len(station_ids), 3])
+        main_event_center = np.zeros([len(station_ids), 3])-1000
         station_location = np.zeros([len(station_ids), 3])
         # reference_point = np.array([reference_longitude, reference_latitude])
         main_stas = [] # index of stations with main event
@@ -1217,6 +1358,8 @@ class SeismicNetworkIterableDataset(IterableDataset):
             # first the index of main event, then the index of other manual events
             manual_stas = main_stas + [x for x in manual_stas if x not in set(main_stas)]
         len_manual = len(manual_stas)
+        if len_manual > self.num_stations:
+            random.shuffle(manual_stas)
         assert len_manual>0, f"event {event_id} no manual picks"
         assert len_manual==np.any(event_location_mask>0, axis=1).sum(), f"{event_id} manual picks num don't match, len_manual:{len_manual}, manual_stas:{manual_stas}, event_location_mask:{np.any(event_location_mask>0, axis=1)}"
         assert first_arrival!=1e10, f"{event_id} first_arrival not set"
@@ -1238,6 +1381,8 @@ class SeismicNetworkIterableDataset(IterableDataset):
         station_location = station_location[manual_cluster_index]
         sta_ids = [station_ids[i] for i in manual_cluster_index]
         duration = [duration[i] for i in manual_cluster_index]
+        valid_stations = np.zeros(waveforms.shape[0])
+        valid_stations[:len_manual] = 1
 
         assert np.any(phase_pick[:, 1:, :]>0), f"{event_id} no manual phase picks"
         assert np.any(event_center>0), f"{event_id} no manual event picks"
@@ -1261,7 +1406,8 @@ class SeismicNetworkIterableDataset(IterableDataset):
             "station_ids": sta_ids,
             "duration": duration,
             "first_arrival": first_arrival,
-            "distance": np.array([event[sta_id].attrs["distance_km"] for sta_id in sta_ids])
+            "distance": np.array([event[sta_id].attrs["distance_km"] for sta_id in sta_ids]),
+            "valid_stations": valid_stations,
         }
         
         return meta
@@ -1319,6 +1465,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
                     "station_ids": [meta['station_ids'][i] for i in idx],
                     "duration": [meta['duration'][i] for i in idx],
                     "first_arrival": meta['first_arrival'],
+                    "valid_stations": meta['valid_stations'][idx],
                 }
             else:
                 meta = {
@@ -1341,14 +1488,11 @@ class SeismicNetworkIterableDataset(IterableDataset):
                     "station_ids": meta['station_ids'][:self.num_stations],
                     "duration": meta['duration'][:self.num_stations],
                     "first_arrival": meta['first_arrival'],
+                    "valid_stations": meta['valid_stations'][:self.num_stations],
                 }
             
             if self.stack_event and random.random() < 0.9:
                 try:
-                    #if random.random() < 0.4:
-                    #    # copy the meta into meta2
-                    #    meta2 = copy.deepcopy(meta)
-                    #else:
                     selected_event_ids = sample_event_for_stacking(
                         event_ids = event_id,
                         e2sta_dict = self.e2sta_dict,
@@ -1361,10 +1505,14 @@ class SeismicNetworkIterableDataset(IterableDataset):
                     meta2 = None
                     stack_times = 0
                     max_stack_times = random.choice([1]*4 + [2]*3 + [3]*2 + [4])#np.random.choice([1, 2, 3, 4], p=[0.4, 0.3, 0.2, 0.1])#
+                    cat_event = self.concatenate_event and (random.random()<0.2) and (max_stack_times <= 2)
                     for e_id in selected_event_ids:
-                        meta2 = self._read_training_h5(e_id, hdf5_fp)
+                        if stack_times == 0 and ((meta['num_manual_stations'] > 3 and random.random() < 0.05+0.01*min(6, meta['num_manual_stations']))):
+                            meta2 = copy.deepcopy(meta)
+                        else:
+                            meta2 = self._read_training_h5(e_id, hdf5_fp)
                         if meta2 is not None:
-                            meta, is_failed = stack_event(meta, meta2, max_shift=64*4, feature_scale=self.feature_scale, is_extra=stack_times>0)
+                            meta, is_failed = stack_event(meta, meta2, max_shift=3*64, feature_scale=self.feature_scale, is_extra=(stack_times>0) or cat_event)
                             stack_times += 1 if not is_failed else 0
                             if stack_times >= max_stack_times:
                                 break
@@ -1372,10 +1520,39 @@ class SeismicNetworkIterableDataset(IterableDataset):
                     #else:
                     #    print(f"event {event_id} no valid meta2")
                 except Exception as e:
+                    cat_event = self.concatenate_event and (random.random()<0.2)
                     print(f"Error stacking {event_id}:\n{e}")
             else:
                 stack_times = 0
+                cat_event = self.concatenate_event and (random.random()<0.2)
             #    print(f"event {event_id} not stacked")
+            
+            if cat_event:
+                event_attrs1 = hdf5_fp[event_id].attrs
+                snr_median0 = self.events_dict[event_id]['snr_median']
+                mag0 = self.events_dict[event_id]['magnitude']
+                for iii, e_id in enumerate(random.sample(data_list, 50)):
+                    event_attrs2 = hdf5_fp[e_id].attrs
+                    if len(hdf5_fp[e_id].keys()) < self.num_stations:
+                        continue
+                    if abs(event_attrs1["event_time_index"] - event_attrs2["event_time_index"]) > 1024:
+                        continue
+                    snr_median1 = self.events_dict[e_id]['snr_median']
+                    mag1 = self.events_dict[e_id]['magnitude']
+                    if not (snr_median0 > 5 and snr_median1 > 5):
+                        if abs(snr_median0 - snr_median1) > 2.5:
+                            continue
+                    if iii < 30 and (abs(mag0-mag1)>1.0):
+                        continue
+                    #if iii < 20 and (abs(event_attrs1['latitude'] - event_attrs2['latitude']) > 3 or abs(event_attrs1['longitude'] - event_attrs2['longitude']) > 3):
+                    #    continue
+                    meta2 = self._read_training_h5(e_id, hdf5_fp)
+                    if meta2 is not None:
+                        meta = concatenate_event(meta, meta2, event_attrs1, event_attrs2,
+                                                 time_shift_range=(0., 2.6), space_shift_range=(5., 35.),
+                                                 trunc_stations=(8, 2), num_stations=self.num_stations,
+                                                 feature_scale=self.feature_scale, sampling_rate=self.sampling_rate)
+                        break
             
             negative_mask_ratio = self.negative_mask_ratio.value if not isinstance(self.negative_mask_ratio, float) else self.negative_mask_ratio
             meta['phase_mask'] = add_random_negative_samples(meta['phase_mask'], random_mask_rate=0.1*negative_mask_ratio, random_mask_unit=32)
@@ -1384,7 +1561,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
                 print(f"{event_id} no association mask {meta['main_event_center']=}")
                 continue
             meta_cutted, it = cut_data(meta, nt=self.nt, feature_scale=self.feature_scale, if_reverse_roll=False, base_phase_points=int(64*(1+stack_times/8))) #TODO: allow reverse roll?
-            
+
             # random selected one main event center as prompt
             if len(meta_cutted['main_event_center'])==0:
                 print(f"{event_id} no main event center")
@@ -1422,6 +1599,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
                 meta_cutted['association_mask'] = np.concatenate([meta_cutted['association_mask'], np.zeros((lack_num, *meta_cutted['association_mask'].shape[1:]))], axis=0)
                 meta['station_location'] = np.concatenate([meta['station_location'], meta['station_location'][idx]], axis=0)
                 meta['num_stations'] = self.num_stations
+                meta['valid_stations'] = np.concatenate([meta['valid_stations'], np.zeros(lack_num)], axis=0)
             
             meta = reorder_keys({
                 "data": torch.from_numpy(meta_cutted["waveforms"]).float(),
@@ -1437,6 +1615,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
                 "association_mask": torch.from_numpy(meta_cutted["association_mask"]).unsqueeze(1).float(),
                 "station_location": torch.from_numpy(meta["station_location"]).float(),
                 "prompt": torch.from_numpy(prompt).float(),
+                "valid_stations": torch.from_numpy(meta['valid_stations']).float(),
                 "num_stations": meta['num_stations'],
                 "num_manual_stations": meta['num_manual_stations'],
                 #"station_ids": meta['station_ids'],
@@ -1747,7 +1926,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
                 _, nt, nx = meta["data"].shape
                 for i in list(range(0, nt, self.nt_cut)):
                     for j in list(range(0, nx, self.nx)):
-                        if nt - i <=32:
+                        if nt - i <= 256:
                             continue # too short
                         assert meta["data"][:, i : i + self.nt_cut, j : j + self.nx].shape[1] > 256, f"Error: {fname} i:{i} j:{j}, nt:{nt}, nt_cut:{self.nt_cut}, too short {meta['data'][:, i : i + self.nt_cut, j : j + self.nx].shape[1]}, please check the data or adjust cut_patch parameters"
                         yield {
