@@ -460,7 +460,7 @@ def iou_loss(
             raise ValueError("Mask dimension not supported")
     else:
         mask = 1.0
-    inputs = inputs.float().sigmoid() * mask
+    inputs = inputs.float() * mask
     targets = targets.float() * mask
     pred_ious = pred_ious.float()
     pred_mask = inputs.flatten(2) > 0

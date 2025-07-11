@@ -166,6 +166,10 @@ class UPerNeck(nn.Module, metaclass=ABCMeta):
             inp_dim=len(self.in_channels) * self.channels,
             out_dim=self.channels,
             k=kernel_size,)
+        #self.asso_bottleneck = convolution(
+        #    inp_dim=len(self.in_channels) * self.channels,
+        #    out_dim=self.channels,
+        #    k=kernel_size,)
         
 
     def psp_forward(self, inputs):
@@ -214,7 +218,8 @@ class UPerNeck(nn.Module, metaclass=ABCMeta):
         # append psp feature
         fpn_outs.append(laterals[-1])
         outputs["ppm"] = fpn_outs[-1]
-        #outputs["fpn"] = fpn_outs[0]
+        outputs["midlower"] = fpn_outs[-2]
+        outputs["midupper"] = fpn_outs[-3]
 
         for i in range(used_backbone_levels - 1, 0, -1):
             fpn_outs[i] = F.interpolate(
@@ -753,7 +758,7 @@ class EventHead2(nn.Module):
             self.angle_dims = 360 // self.omega
             self.angle_coder = CSLCoder(self.omega)
         elif angle_coder == "trigono":
-            self.angle_dims = 2
+            self.angle_dims = 2 # 1
             self.angle_coder = TrigonoCoder()
         
         #TODO: subhead layers? dilation?
@@ -934,7 +939,7 @@ class EventHead2(nn.Module):
                 self.angle_dims,
                 kernel_size=1,
             ),
-            Sine(),
+            #Sine(),
         )
         # first channel is sin, second channel is cos
         # so the initial bias should be 0 and pi/2
@@ -1091,6 +1096,7 @@ class EventHead2(nn.Module):
             loss = {}
             if event_center is not None:
                 loss = self.losses({"event": heatmap, "offset": offset, "hypocenter": hypocenter}, event_center, event_mask, event_location, event_location_mask)
+            #hypocenter = torch.cat([hypocenter[:, :2, :, :], hypocenter[:, 2:(2+self.angle_dims), :, :],
             hypocenter = torch.cat([hypocenter[:, :2, :, :], self.angle_coder.decode(hypocenter[:, 2:(2+self.angle_dims), :, :]),
                                     hypocenter[:, (2+self.angle_dims):, :, :]], dim=1)
             return {"event": heatmap, "offset": offset, "hypocenter": hypocenter}, loss
@@ -1117,6 +1123,7 @@ class EventHead2(nn.Module):
         
         travel_time_loss = self.travel_time_loss(outputs["hypocenter"][:, :1, :, :], event_location[:, :1, :, :], event_location_mask)
         dist_loss = self.dist_loss(outputs["hypocenter"][:, 1:2, :, :], event_location[:, 1:2, :, :], event_location_mask)
+        #angle_loss = self.angle_loss(self.angle_coder.encode(outputs["hypocenter"][:, 2:(2+self.angle_dims), :, :]),# torch.cat([torch.sin(outputs["hypocenter"][:, 2:3, :, :]), torch.cos(outputs["hypocenter"][:, 2:3, :, :]),], dim=1),
         angle_loss = self.angle_loss(outputs["hypocenter"][:, 2:(2+self.angle_dims), :, :],# torch.cat([torch.sin(outputs["hypocenter"][:, 2:3, :, :]), torch.cos(outputs["hypocenter"][:, 2:3, :, :]),], dim=1),
                                         #torch.cat([torch.sin(event_location[:, 2:3, :, :]), torch.cos(event_location[:, 2:3, :, :]),], dim=1),
                                         self.angle_coder.encode(event_location[:, 2:3, :, :]),
