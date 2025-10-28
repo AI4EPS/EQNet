@@ -108,6 +108,7 @@ def train_one_epoch(
     epoch,
     total_samples,
     balancer=None,
+    freeze_batchnorm=False,
 ):
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter("lr", utils.SmoothedValue(window_size=1, fmt="{value}"))
@@ -127,16 +128,20 @@ def train_one_epoch(
         metric_logger.add_meter("loss_depth", utils.SmoothedValue(window_size=1, fmt="{value}"))
         metric_logger.add_meter("loss_magnitude", utils.SmoothedValue(window_size=1, fmt="{value}"))
         metric_logger.add_meter("loss_polarity", utils.SmoothedValue(window_size=1, fmt="{value}"))
-        metric_logger.add_meter("loss_focal", utils.SmoothedValue(window_size=1, fmt="{value}"))
-        metric_logger.add_meter("loss_dice", utils.SmoothedValue(window_size=1, fmt="{value}"))
-        metric_logger.add_meter("loss_iou", utils.SmoothedValue(window_size=1, fmt="{value}"))
+        if not args.no_prompt:
+            metric_logger.add_meter("loss_focal", utils.SmoothedValue(window_size=1, fmt="{value}")) 
+            metric_logger.add_meter("loss_dice", utils.SmoothedValue(window_size=1, fmt="{value}"))
+            metric_logger.add_meter("loss_iou", utils.SmoothedValue(window_size=1, fmt="{value}"))
         
     header = f"Epoch: [{epoch}]"
     
     if balancer is not None:
         print(header, end="\t")
         for i, k in enumerate(balancer.tasks):
-            print(f"{k}: {balancer.batch_weight[epoch,i]:.4f}", end="\t")
+            try:
+                print(f"{k}: {balancer.batch_weight[epoch,i]:.4f}", end="\t")
+            except:
+                print(f"{k}: {balancer.pre_weight[i]:.4f}", end="\t")
         print()
 
     ctx = (
@@ -145,6 +150,8 @@ def train_one_epoch(
         else torch.amp.autocast(device_type=args.device, dtype=args.ptdtype)
     )
     model.train()
+    if freeze_batchnorm:
+        model.apply(lambda m: m.eval() if isinstance(m, nn.modules.batchnorm._BatchNorm) else None)
     processed_samples = 0
     accumulation_counter = 0
     accumulation_steps = args.grad_accum
@@ -521,9 +528,11 @@ def main(args):
                 format="h5",
                 training=True,
                 stack_event=args.stack_event,
+                concatenate_event=args.cat_event,
                 drop_channel=args.drop_channel,
                 sample_by_magnitude=args.sample_by_magnitude,
                 sample_by_distance=args.sample_by_distance,
+                attribute_cache=args.attr_cache,
                 huggingface_cache=args.huggingface_cache,
                 rank=rank,
                 world_size=world_size,
@@ -544,9 +553,11 @@ def main(args):
             test_sampler = None
             
             negative_mask_ratio = Value("d", 1.0)
-            def worker_init_fn(negative_mask_ratio, worker_id):
+            cat_event_ratio = Value("d", 0.04)
+            def worker_init_fn(negative_mask_ratio, cat_event_ratio, worker_id):
                 info = torch.utils.data.get_worker_info()
                 info.dataset.negative_mask_ratio = negative_mask_ratio
+                info.dataset.cat_event_ratio = cat_event_ratio
                 #print(f"Worker {worker_id} negative_mask_ratio: {negative_mask_ratio}")
     else:
         raise NotImplementedError(f"Invalid model {args.model}. Only phasenet, phasenet_das, autoencoder and eqnet are supported.")
@@ -577,8 +588,8 @@ def main(args):
             drop_last=True,
             #prefetch_factor=3,
             #pin_memory=True,
-            #persistent_workers=True,
-            worker_init_fn=partial(worker_init_fn, negative_mask_ratio) if args.model == "eqnet" else None,
+            persistent_workers=True,
+            worker_init_fn=partial(worker_init_fn, negative_mask_ratio, cat_event_ratio) if args.model == "eqnet" else None,
         )
 
         data_loader_test = torch.utils.data.DataLoader(
@@ -597,6 +608,7 @@ def main(args):
         ## eqnet
         head=args.head,
         use_station_location=args.use_station_location,
+        add_prompt=(not args.no_prompt),
     )
     logger.info("Model:\n{}".format(model))
 
@@ -715,10 +727,13 @@ def main(args):
     if args.mtl is not None:
         if args.mtl == "dwa" or args.mtl == "dwa_inverse":
             if args.model == "eqnet":
-                #tasks = ["loss_phase", "loss_event", "loss_offset", "loss_hypocenter"]
-                tasks = ["loss_phase", "loss_event", "loss_offset", "loss_origin_time", "loss_x", "loss_y", "loss_depth", "loss_magnitude", "loss_polarity", "loss_focal", "loss_dice", "loss_iou"]
-                # pre_weight = args.pre_weight
-                pre_weight = model.phase_picker.weights+model.event_detector.weights+model.polarity_picker.weights + list(model.phase_associator.weights.values())
+                tasks = ["loss_phase", "loss_event", "loss_offset", "loss_origin_time", "loss_x", "loss_y", "loss_depth", "loss_magnitude", "loss_polarity"]
+                    # pre_weight = args.pre_weight
+                pre_weight = model.phase_picker.weights+model.event_detector.weights+model.polarity_picker.weights
+                
+                if not args.no_prompt:
+                    tasks += ["loss_focal", "loss_dice", "loss_iou"]
+                    pre_weight += list(model.phase_associator.weights.values())
                 print(f"{args.model}: {args.mtl} pre_weight: ", end="\t")
                 for i, k in enumerate(tasks):
                     print(f"{k}: {pre_weight[i]:.4f}", end="\t")
@@ -768,12 +783,12 @@ def main(args):
         
     if args.resume:
         checkpoint = None
-        if os.path.isfile(args.resume):
+        if isinstance(args.resume, str) and os.path.isfile(args.resume):
             print(f"Loading model and optimizer from checkpoint '{args.resume}'")
-            checkpoint = torch.load(args.resume, map_location="cpu")
+            checkpoint = torch.load(args.resume, map_location="cpu", weights_only=False)
         elif os.path.isfile(args.output_dir + "/checkpoint.pth"):
             print(f"Loading model and optimizer from checkpoint '{args.output_dir}/checkpoint.pth'")
-            checkpoint = torch.load(args.output_dir + "/checkpoint.pth", map_location="cpu")
+            checkpoint = torch.load(args.output_dir + "/checkpoint.pth", map_location="cpu", weights_only=False)
         else:
             print(f"No checkpoint found")
         if checkpoint is not None:
@@ -792,7 +807,10 @@ def main(args):
         if epoch%5==0 and epoch >= 5 and args.model == "eqnet" and not args.huggingface_dataset:
             #negative_mask_ratio = max(1.0 - 0.03 * epoch, 0.3)
             with negative_mask_ratio.get_lock():
-                negative_mask_ratio.value = max(1.0 - 0.010 * epoch, 0.4)
+                negative_mask_ratio.value = max(1.0 - 0.006 * epoch, 0.40)
+        if epoch>args.epochs//3 and args.model == "eqnet" and not args.huggingface_dataset:
+            with cat_event_ratio.get_lock():
+                cat_event_ratio.value = 0.08 if epoch<2*args.epochs//3 else 0.16
         if args.distributed and (train_sampler is not None):
             train_sampler.set_epoch(epoch)
 
@@ -820,7 +838,7 @@ def main(args):
 
         tmp_time = time.time()
         checkpoint = {
-            "model": model_without_ddp.state_dict(),
+            "model": getattr(model_without_ddp, '_orig_mod', model_without_ddp).state_dict(),
             "optimizer": optimizer.state_dict(),
             "lr_scheduler": lr_scheduler.state_dict(),
             "epoch": epoch,
@@ -874,6 +892,7 @@ def get_args_parser(add_help=True):
     parser.add_argument("--backbone", default="unet", type=str, help="model backbone")
     parser.add_argument("--head", default="simple", type=str, help="model head")
     parser.add_argument("--use-station-location", action="store_true", help="use station location")
+    parser.add_argument("--no-prompt", action="store_true", help="remove prompt")
     parser.add_argument(
         "--device",
         default="cuda",
@@ -971,7 +990,7 @@ def get_args_parser(add_help=True):
     parser.add_argument("--lr-min", default=0.0, type=float, help="minimum lr of lr schedule (default: 0.0)")
     parser.add_argument("--print-freq", default=10, type=int, help="print frequency")
     parser.add_argument("--output-dir", default="./output", type=str, help="path to save outputs")
-    parser.add_argument("--resume", default="", type=str, help="path of checkpoint")
+    parser.add_argument("--resume", action="store_true", help="resume automatically")
     parser.add_argument("--resume_wandb", action="store_true", help="resume from wandb")
     parser.add_argument("--pretrained", default="", type=str, help="path to pre-trained model")
     parser.add_argument("--start-epoch", default=0, type=int, metavar="N", help="start epoch")
@@ -1033,8 +1052,10 @@ def get_args_parser(add_help=True):
     parser.add_argument("--phases", default=["P", "S"], type=str, nargs="+", help="phases to use")
     parser.add_argument("--nt", default=1024 * 3, type=int, help="number of time samples")
     parser.add_argument("--nx", default=1024 * 5, type=int, help="number of space samples")
+    parser.add_argument("--attr-cache", default=None, type=str, help="attribute cache path")
     parser.add_argument("--stack-noise", action="store_true", help="Stack noise")
     parser.add_argument("--stack-event", action="store_true", help="Stack event")
+    parser.add_argument("--cat-event", action="store_true", help="Concatenate event")
     parser.add_argument("--flip-polarity", action="store_true", help="Flip polarity")
     parser.add_argument("--drop-channel", action="store_true", help="Drop channel")
     parser.add_argument("--sample-by-magnitude", action="store_true", help="Sample by magnitude")
