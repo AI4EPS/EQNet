@@ -721,11 +721,14 @@ def plot_eqnet_train(meta, phase, event, polarity, association, epoch, figure_di
             #axes[8].set_title("hypocenter dz")
         fig.suptitle(f"{meta['event_id'][i]}")
         fig.subplots_adjust(hspace=0.5, bottom=0.05, top=0.95)
-        if "LOCAL_RANK" in os.environ:
-            local_rank = int(os.environ["LOCAL_RANK"])
-            fig.savefig(f"{figure_dir}/{prefix}{epoch:02d}_{i:02d}_{local_rank}.png", dpi=300)
-        else:
-            fig.savefig(f"{figure_dir}/{prefix}{epoch:02d}_{i:02d}.png", dpi=300)
+        try:
+            if "LOCAL_RANK" in os.environ:
+                local_rank = int(os.environ["LOCAL_RANK"])
+                fig.savefig(f"{figure_dir}/{prefix}{epoch:02d}_{i:02d}_{local_rank}.png", dpi=300)
+            else:
+                fig.savefig(f"{figure_dir}/{prefix}{epoch:02d}_{i:02d}.png", dpi=300)
+        except Exception as e:
+            print(f"Error saving figure: {e}")
 
 
 def plot_das(data, pred, picks=None, phases=["P", "S"], file_name=None, figure_dir="./figures", epoch=0, **kwargs):

@@ -260,7 +260,7 @@ class PhasePicker(nn.Module):
 
 
 class EQNet(nn.Module):
-    def __init__(self, backbone="resnet50", head="simple", use_station_location=True, moving_norm=(1024, 128),) -> None:
+    def __init__(self, backbone="resnet50", head="simple", use_station_location=True, moving_norm=(1024, 128), add_prompt=True) -> None:
         super().__init__()
         self.backbone_name = backbone
         self.head_name = head
@@ -304,6 +304,21 @@ class EQNet(nn.Module):
                 decoupled_relative_position_bias=False,
                 sampling_rate=sampling_rate,
             )
+        elif backbone == "swin_single":
+            out_indices = [0, 1, 2, 3] if "upernet" in head else [3]
+            self.backbone = SwinTransformer(
+                patch_size=[4, 1],
+                embed_dim=embed_dim,
+                depths=[2, 2, 6, 2],
+                num_heads=[2, 4, 8, 16],
+                window_size=[16, 1],
+                stochastic_depth_prob=0.15,
+                block_name="SwinTransformerBlockV2",
+                out_indices=out_indices,
+                use_station_location=use_station_location,
+                decoupled_relative_position_bias=False,
+                sampling_rate=sampling_rate,
+            )
         elif backbone == "swin_rope_axial":
             out_indices = [0, 1, 2, 3] if "upernet" in head else [3]
             self.backbone = SwinTransformer(
@@ -312,13 +327,13 @@ class EQNet(nn.Module):
                 depths=[2, 2, 6, 2],
                 #num_heads=[3, 6, 12, 24],
                 num_heads=[2, 4, 8, 16],
-                window_size=[8, 10],
+                window_size=[16, 16],
                 #stochastic_depth_prob=0.2,
                 stochastic_depth_prob=0.15,
                 block_name="RotarySwinBlock",
                 out_indices=out_indices,
                 use_station_location=use_station_location,
-                use_relative_position_bias=True,
+                use_relative_position_bias=False,
                 use_rope=True,
                 use_rope_mixed=False,
             )
@@ -330,13 +345,13 @@ class EQNet(nn.Module):
                 depths=[2, 2, 6, 2],
                 #num_heads=[3, 6, 12, 24],
                 num_heads=[2, 4, 8, 16],
-                window_size=[8, 10],
+                window_size=[16, 16],
                 #stochastic_depth_prob=0.2,
                 stochastic_depth_prob=0.15,
                 block_name="RotarySwinBlock",
                 out_indices=out_indices,
                 use_station_location=use_station_location,
-                use_relative_position_bias=True,
+                use_relative_position_bias=False,
                 use_rope=True,
                 use_rope_mixed=True,
             )
@@ -412,7 +427,7 @@ class EQNet(nn.Module):
         
         self.polarity_picker = PolarityHead(channels=neck_channels, stem_channels=embed_dim)
         
-        self.phase_associator = PhaseAssociator(feature_dim=neck_channels, prompt_embed_dim=prompt_embed_dim, event_scale=16, sampling_rate=100.0)
+        self.phase_associator = PhaseAssociator(feature_dim=neck_channels, prompt_embed_dim=prompt_embed_dim, event_scale=16, sampling_rate=100.0) if add_prompt else lambda *args, **kwargs: ({name: None for name in ["association", "iou"]}, {name: torch.tensor(0.0, device=self.device) for name in ["loss", "loss_focal", "loss_dice", "loss_iou"]})
 
     @property
     def device(self):
@@ -500,8 +515,8 @@ class EQNet(nn.Module):
 
 
 class EQNetPredictor(EQNet):
-    def __init__(self, backbone="resnet50", head="simple", use_station_location=True, moving_norm=(1024, 128), prompt_features=['ppm', 'midupper', 'midlower']) -> None:
-        super().__init__(backbone=backbone, head=head, use_station_location=use_station_location, moving_norm=moving_norm)
+    def __init__(self, backbone="resnet50", head="simple", use_station_location=True, moving_norm=(1024, 128), prompt_features=['ppm', 'midupper', 'midlower'], add_prompt=True) -> None:
+        super().__init__(backbone=backbone, head=head, use_station_location=use_station_location, moving_norm=moving_norm, add_prompt=add_prompt)
         if 'swin' not in backbone:
             raise ValueError("EQNetPredictor currently only supports swin backbone")
         self.prompt_features = prompt_features
@@ -567,8 +582,8 @@ class EQNetPredictor(EQNet):
         return output_association
         
 
-def build_model(backbone="resnet50", head="simple", use_station_location=True, prediction=False, **kwargs) -> EQNet:
+def build_model(backbone="resnet50", head="simple", use_station_location=True, prediction=False, add_prompt=True, **kwargs) -> EQNet:
     if prediction:
-        return EQNetPredictor(backbone=backbone, head=head, use_station_location=use_station_location)
+        return EQNetPredictor(backbone=backbone, head=head, use_station_location=use_station_location, add_prompt=add_prompt)
     else:
-        return EQNet(backbone=backbone, head=head, use_station_location=use_station_location)
+        return EQNet(backbone=backbone, head=head, use_station_location=use_station_location, add_prompt=add_prompt)

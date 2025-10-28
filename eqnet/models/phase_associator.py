@@ -45,10 +45,10 @@ class PhaseAssociator(nn.Module):
         )
         self.conv_s0 = nn.Conv2d(feature_dim, prompt_embed_dim//4, kernel_size=1, stride=1)
         self.conv_s1 = nn.Conv2d(feature_dim, prompt_embed_dim, kernel_size=1, stride=1)
-        self.bottleneck = nn.Sequential(
-            nn.Conv2d(2*prompt_embed_dim, prompt_embed_dim, kernel_size=1),
-            nn.GELU(),
-        )
+        #self.bottleneck = nn.Sequential(
+        #    nn.Conv2d(2*prompt_embed_dim, prompt_embed_dim, kernel_size=1),
+        #    nn.GELU(),
+        #)
         
         self.prompt_encoder = PromptEncoder(
             embed_dim=prompt_embed_dim,
@@ -75,7 +75,7 @@ class PhaseAssociator(nn.Module):
         #waveform_embeddings = self.feature_downscaling(waveform_embeddings)
         waveform_embeddings = self.feature_upscaling(waveform_embeddings)
         feat_s0, feat_s1 = self.conv_s0(features['midupper'].permute(0, 2, 3, 1).contiguous()), self.conv_s1(features['midlower'].permute(0, 2, 3, 1).contiguous())
-        waveform_embeddings = self.bottleneck(torch.cat([waveform_embeddings, feat_s1], dim=1))
+        #waveform_embeddings = self.bottleneck(torch.cat([waveform_embeddings, feat_s1], dim=1))
         bt, ch, nt, nsta = waveform_embeddings.shape
         relative_location = station_location[..., :2] - prompt[:, 0:1, 1:]
         waveform_pe = self.prompt_encoder.get_dense_pe(time_size=nt, station_location=relative_location, reference_time=prompt[:, 0:1, 0:1]/4, dt_s=self.prompt_encoder.dt_s*4)
@@ -276,7 +276,7 @@ class MLPHead(nn.Module):
 
     def forward(self, x):
         for i, layer in enumerate(self.layers):
-            x = F.relu(layer(x)) if i < self.num_layers - 1 else layer(x)
+            x = F.gelu(layer(x)) if i < self.num_layers - 1 else layer(x)
         if self.sigmoid_output:
             x = F.sigmoid(x)
         return x

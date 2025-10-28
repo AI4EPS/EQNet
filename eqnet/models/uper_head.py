@@ -166,10 +166,6 @@ class UPerNeck(nn.Module, metaclass=ABCMeta):
             inp_dim=len(self.in_channels) * self.channels,
             out_dim=self.channels,
             k=kernel_size,)
-        #self.asso_bottleneck = convolution(
-        #    inp_dim=len(self.in_channels) * self.channels,
-        #    out_dim=self.channels,
-        #    k=kernel_size,)
         
 
     def psp_forward(self, inputs):

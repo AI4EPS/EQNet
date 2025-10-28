@@ -8,6 +8,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn, Tensor
 from torch.fx import wrap
+from torch.utils.checkpoint import checkpoint
 
 from .ops import MLP, Permute, StochasticDepth
 
@@ -36,6 +37,18 @@ def _patch_merging_pad(x):
     x = torch.cat([x0, x1], -1)  # ... H/2 W 2*C 
     
     return x
+
+class checkpoint_wrapper(nn.Module):
+    def __init__(self, module: nn.Module, use_checkpoint: bool):
+        super().__init__()
+        self.module = module
+        self.use_checkpoint = use_checkpoint
+
+    def forward(self, *args, **kwargs):
+        if self.use_checkpoint and self.training:
+            return checkpoint(self.module, *args, **kwargs)
+        else:
+            return self.module(*args, **kwargs)
 
 
 class PatchMerging(nn.Module):
@@ -74,7 +87,7 @@ class PatchReduction(nn.Module):
     """
 
     def __init__(self, dim: int, norm_layer: Callable[..., nn.Module] = nn.LayerNorm, 
-                 k=(7, 1), s=(4, 1)):
+                 k=(8, 1), s=(4, 1)):
         super().__init__()
         self.dim = dim
         self.reduction = nn.Conv2d(dim, 2*dim, kernel_size=k, stride=s, 
@@ -197,7 +210,7 @@ def shifted_window_attention(
     qkv = qkv.reshape(x.size(0), x.size(1), 3, num_heads, C // num_heads).permute(2, 0, 3, 1, 4) # 3, B*nW, nH, Ws*Ws, C//nH
     q, k, v = qkv[0], qkv[1], qkv[2]
     if use_rope and freq_cis is not None:
-        freq_cis = F.pad(freq_cis, (0, 0, 0, pad_r))
+        freq_cis = F.pad(freq_cis, (0, 0, 0, pad_r)) # B, nt, nx, nH* C//nH//2
         freq_cis = freq_cis.view(B, 1, window_size[0], pad_W // window_size[1], window_size[1], -1).repeat(1, pad_H // window_size[0], 1, 1, 1, 1).permute(0, 1, 3, 2, 4, 5)
         freq_cis = freq_cis.reshape(B * num_windows, window_size[0] * window_size[1], num_heads, -1).permute(0, 2, 1, 3)  # B*nW, nH, Ws*Ws, C//nH//2
         #assert torch.allclose(freq_cis[:,0,:,:], freq_cis[:,1,:,:], atol=1e-6)
@@ -892,14 +905,14 @@ class ShiftedWindowAttentionV2(ShiftedWindowAttention):
         self.decoupled_relative_position_bias = decoupled_relative_position_bias
         if not decoupled_relative_position_bias:
             self.cpb_mlp = nn.Sequential(nn.Linear(coords_dim, 512, bias=True),
-                                         nn.ReLU(inplace=True),
+                                         nn.ReLU(inplace=True),#checkpoint_wrapper(nn.GELU(), use_checkpoint=True),#nn.ReLU(inplace=True),
                                          nn.Linear(512, num_heads, bias=False))
         else:
             self.cpb_mlp_time = nn.Sequential(nn.Linear(1, 128, bias=True),
-                                                nn.ReLU(inplace=True),
+                                                nn.ReLU(inplace=True),#checkpoint_wrapper(nn.GELU(), use_checkpoint=True),#nn.ReLU(inplace=True),
                                                 nn.Linear(128, num_heads, bias=False))
             self.cpb_mlp_space = nn.Sequential(nn.Linear(coords_dim-1, 512, bias=True),
-                                                nn.ReLU(inplace=True),
+                                                nn.ReLU(inplace=True),#checkpoint_wrapper(nn.GELU(), use_checkpoint=True),#nn.ReLU(inplace=True),
                                                 nn.Linear(512, num_heads, bias=False))
         if qkv_bias:
             length = self.qkv.bias.numel() // 3
@@ -1151,11 +1164,16 @@ class RotaryAxialWindowAttention(ShiftedWindowAttentionV2):
         proj_bias: bool = True,
         attention_dropout: float = 0.0,
         dropout: float = 0.0,
-        theta_t: float = 100.0,
-        freq_horizon: Tuple[float, float] = (-6.0, 12.0),
+        theta_t: float = 10000.0,
+        freq_lon: Tuple = (0, 14), 
+        freq_lat: Tuple = (0, 13),
         freq_vertical: Tuple[float, float] = (-2.0, 8.0),
         use_station_location: bool = True,
         use_relative_position_bias: bool = False,
+        decoupled_relative_position_bias: bool = False,
+        time_unit: float = 1.0,
+        use_cos_attention: bool = False,
+        **kwargs,
     ):
         super().__init__(
             dim,
@@ -1167,12 +1185,15 @@ class RotaryAxialWindowAttention(ShiftedWindowAttentionV2):
             attention_dropout=attention_dropout,
             dropout=dropout,
             use_station_location=use_station_location,
+            decoupled_relative_position_bias=decoupled_relative_position_bias,
+            time_unit=time_unit,
         )
         
         self.dim = dim
         self.use_rope = True
         self.theta_t = theta_t
-        self.freq_horizon = freq_horizon
+        self.freq_lon = freq_lon
+        self.freq_lat = freq_lat
         self.freq_vertical = freq_vertical
         self.use_relative_position_bias = use_relative_position_bias
         if not self.use_relative_position_bias:
@@ -1182,6 +1203,8 @@ class RotaryAxialWindowAttention(ShiftedWindowAttentionV2):
                 self.relative_coords_table = None
                 self.relative_position_index = None
             self.cpb_mlp = None
+        if not use_cos_attention:
+            self.logit_scale = None
                 
         self.init_freqs()
         
@@ -1191,9 +1214,10 @@ class RotaryAxialWindowAttention(ShiftedWindowAttentionV2):
         self.register_buffer("rope_t_t", rope_t_t)
         freqs_t = 1.0 / (self.theta_t ** (torch.arange(0, dim, 8)[: (dim // 8)].float() / dim))
         self.register_buffer("freqs_t", freqs_t)
-        freqs_xy = 2.**torch.linspace(self.freq_horizon[0], self.freq_horizon[1], dim // 8)
-        #freqs_xy = 2.**torch.linspace(self.freq_horizon[0], self.freq_horizon[1], dim // 4)
-        self.register_buffer("freqs_xy", freqs_xy)
+        freqs_x = (1/360 * 2. ** torch.linspace(self.freq_lon[1], self.freq_lon[0], dim // 8))
+        self.register_buffer("freqs_x", freqs_x)
+        freqs_y = (1/360 * 2. ** torch.linspace(self.freq_lat[1], self.freq_lat[0], dim // 8))
+        self.register_buffer("freqs_y", freqs_y)
         freqs_z = 2.**torch.linspace(self.freq_vertical[0], self.freq_vertical[1], dim // 8)
         self.register_buffer("freqs_z", freqs_z)
         
@@ -1265,11 +1289,15 @@ class RotaryMixedWindowAttention(RotaryAxialWindowAttention):
         proj_bias: bool = True,
         attention_dropout: float = 0.0,
         dropout: float = 0.0,
-        theta_t: float = 10.0,
-        freq_horizon: Tuple[float, float] = (-6.0, 12.0),
+        theta_t: float = 10000.0,
+        freq_lon: Tuple = (0, 14), 
+        freq_lat: Tuple = (0, 13),
         freq_vertical: Tuple[float, float] = (-2.0, 8.0),
         use_station_location: bool = True,
         use_relative_position_bias: bool = False,
+        decoupled_relative_position_bias: bool = False,
+        time_unit: float = 1.0,
+        use_cos_attention: bool = False,
     ):
         super().__init__(
             dim,
@@ -1281,32 +1309,38 @@ class RotaryMixedWindowAttention(RotaryAxialWindowAttention):
             attention_dropout=attention_dropout,
             dropout=dropout,
             theta_t=theta_t,
-            freq_horizon=freq_horizon,
+            freq_lon=freq_lon,
+            freq_lat=freq_lat,
             freq_vertical=freq_vertical,
             use_station_location=use_station_location,
             use_relative_position_bias=use_relative_position_bias,
+            decoupled_relative_position_bias=decoupled_relative_position_bias,
+            time_unit=time_unit,
+            use_cos_attention=use_cos_attention,
         )
         
-    def init_freqs(self):
-        rope_t_t = torch.arange(self.window_size[0], dtype=torch.float32)
+    def init_freqs(self, dt_s = 0.04):
+        rope_t_t = torch.arange(self.window_size[0], dtype=torch.float32)*self.time_unit
         self.register_buffer("rope_t_t", rope_t_t)
         head_dim = self.dim // self.num_heads
         freqs_t = []
         freqs_x = []
         freqs_y = []
         freqs_z = []
-        mag_t = 1 / (self.theta_t ** (torch.arange(0, head_dim, 4)[: (head_dim // 4)].float() / head_dim))
+        mag_t = 1 / (self.theta_t ** (torch.arange(0, head_dim, 4)[: (head_dim // 4)].float() / head_dim)) / dt_s
+        mag_x = (1/360 * 2. ** torch.linspace(self.freq_lon[1], self.freq_lon[0], head_dim // 4))
+        mag_y = (1/180 * 2. ** torch.linspace(self.freq_lat[1], self.freq_lat[0], head_dim // 4))
         # +1 because cos(angle) will downscale the frequency
-        mag_xy = 2.**torch.linspace(self.freq_horizon[0]+1, self.freq_horizon[1]+1, head_dim // 4)
+        #mag_xy = 2.**torch.linspace(self.freq_horizon[0]+1, self.freq_horizon[1]+1, head_dim // 4)
         mag_z = 2.**torch.linspace(self.freq_vertical[0]+1, self.freq_vertical[1]+1, head_dim // 4)
         
         for _ in range(self.num_heads):
             angles = torch.rand(1) * 2 * torch.pi
             ft = torch.cat([mag_t * torch.cos(angles), mag_t * torch.cos(angles + torch.pi/2)], dim=-1)
             freqs_t.append(ft)
-            fx = torch.cat([mag_xy * torch.cos(angles), mag_xy * torch.cos(angles + torch.pi/2)], dim=-1)
+            fx = torch.cat([mag_x * torch.cos(angles), mag_x * torch.cos(angles + torch.pi/2)], dim=-1)
             freqs_x.append(fx)
-            fy = torch.cat([mag_xy * torch.sin(angles), mag_xy * torch.sin(angles + torch.pi/2)], dim=-1)
+            fy = torch.cat([mag_y * torch.sin(angles), mag_y * torch.sin(angles + torch.pi/2)], dim=-1)
             freqs_y.append(fy)
             fz = torch.cat([mag_z * torch.sin(angles), mag_z * torch.sin(angles + torch.pi/2)], dim=-1)
             freqs_z.append(fz)
@@ -1482,6 +1516,8 @@ class RotarySwinBlock(SwinTransformerBlockV2):
         attn_layer: Callable[..., nn.Module] = RotaryAxialWindowAttention,
         use_station_location: bool = True,
         use_relative_position_bias: bool = False,
+        decoupled_relative_position_bias: bool = False,
+        time_unit: float = 1.0,
         use_rope: bool = True,
         use_rope_mixed: bool = False,
     ):
@@ -1498,6 +1534,8 @@ class RotarySwinBlock(SwinTransformerBlockV2):
             attn_layer=RotaryAxialWindowAttention if not use_rope_mixed else RotaryMixedWindowAttention,
             use_station_location=use_station_location,
             use_relative_position_bias=use_relative_position_bias,
+            decoupled_relative_position_bias=decoupled_relative_position_bias,
+            time_unit=time_unit,
         )
 
 
@@ -1528,7 +1566,7 @@ class SwinTransformer(nn.Module):
         depths: List[int],
         num_heads: List[int],
         window_size: List[int],
-        patchify_kernel: Optional[List[int]] = [31, 1],
+        patchify_kernel: Optional[List[int]] = [32, 1],
         mlp_ratio: float = 4.0,
         dropout: float = 0.0,
         attention_dropout: float = 0.0,
