@@ -16,8 +16,9 @@ import obspy
 from collections import OrderedDict
 from tqdm import tqdm
 import itertools
-from collections import defaultdict, deque
+from collections import defaultdict, deque, Counter
 from sklearn.cluster import DBSCAN
+from pyproj import Transformer
 
 import datasets
 import torch
@@ -25,6 +26,13 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 sns.set_theme(style="whitegrid")
+
+lat0, lon0 = 35.705, -117.504  # Center point for Ridgecrest
+transformer = Transformer.from_crs(
+    f"+proj=latlong +datum=WGS84",
+    f"+proj=tmerc +lat_0={lat0} +lon_0={lon0} +k=1 +x_0=0 +y_0=0 +datum=WGS84",
+    always_xy=True
+)
 
 # %%
 class EventMetric:
@@ -385,7 +393,7 @@ def link_picks_to_events(phase_picks, event_picks, VPVS_RATIO=1.73):
         event = group.copy()
         event = event[event['event_index'] != -1]  # Filter out events with event_index == -1
         if len(event) == 0:
-            return pd.DataFrame(columns=phase_picks.columns)
+            return phase_picks.iloc[0:0]  # Return empty DataFrame if no valid events
         
         station_id = event['station_id'].iloc[0]  # The station_id for this group
         # travel time tt = (tp + ts) / 2 = (1 + ps_ratio)/2 * tp => tp = tt * 2 / (1 + ps_ratio)
@@ -403,8 +411,8 @@ def link_picks_to_events(phase_picks, event_picks, VPVS_RATIO=1.73):
             picks_for_station = phase_picks.loc[station_id].copy()  # or picks.loc[station_id].copy()
             #picks.loc[station_id].copy()
         except KeyError:
-            # If no picks for this station, just return empty or do nothing
-            return pd.DataFrame(columns=phase_picks.columns)
+            # If no picks for this station, just return empty DataFrame
+            return phase_picks.iloc[0:0]  # Return empty DataFrame if no picks for this station
 
         # We have shape (n_events, ) and picks_for_station has shape (n_picks_for_station, ...).
         # Let's match them up by broadcast.
@@ -428,6 +436,9 @@ def link_picks_to_events(phase_picks, event_picks, VPVS_RATIO=1.73):
     updated_picks_list = event_picks.groupby("station_id").parallel_apply(process_group)
     updated_picks_list.index = updated_picks_list.index.droplevel(0)
     updated_picks_list = updated_picks_list.reset_index()
+    if 'index' in updated_picks_list.columns:
+        # rename the 'index' column to 'station_id'
+        updated_picks_list.rename(columns={'index': 'station_id'}, inplace=True)
     
     return updated_picks_list
 
@@ -610,6 +621,10 @@ if not args.test_only:
     events['phase_time'] = pd.to_datetime(events['phase_time'])
     picks = picks.sort_values(by="phase_time", ascending=True)
     events = events.sort_values(by="event_time", ascending=True)
+    events['event_location_x'], events['event_location_y'] = transformer.transform(
+        events['event_longitude'], events['event_latitude'])
+    events['event_location_x'] = events['event_location_x'].apply(lambda x: x/1000)
+    events['event_location_y'] = events['event_location_y'].apply(lambda x: x/1000)
     picks = picks[picks["phase_score"] >= args.score_threshold]
     events = events[events["event_score"] >= args.score_threshold]
 
@@ -662,13 +677,14 @@ if not args.test_only:
         slided_time = [t0 + slide*j for j in range(int((t1-t0)//slide) + 1)]+[t1] if slide > 0 else [t0, t1]
         t00, t11, x00, x11, y00, y11 = [], [], [], [], [], []
         print(f"Sliding window: {slided_time}")
+        #TODO: could use larger time radius to first scan roughly, then extract active time windows to do fine clustering
         for t_left, t_right in tqdm(zip(slided_time[:-1], slided_time[1:])):
             #t = np.arange(t0, t1, DT)
             t_pad = ((KT-2)//2 + (KT)//2)
             #t = np.arange(t_left, t_right, DT)
             t = np.arange(t_left-t_pad*DT, t_right+t_pad*DT, DT)
             #if len(t) <= 1:
-            if len(t) <= 1+t_pad:
+            if len(t) <= 1+2*t_pad:
                 continue
             x_min, x_max = events["event_location_x"].min(), events["event_location_x"].max()
             y_min, y_max = events["event_location_y"].min(), events["event_location_y"].max()
@@ -688,7 +704,6 @@ if not args.test_only:
             y_centers = (edges[2][:-1] + edges[2][1:]) / 2
             #z_centers = (edges[3][:-1] + edges[3][1:]) / 2
 
-            # 将直方图转换为张量
             #histdd = torch.from_numpy(hist).float()
             #nt, nx, ny, nz = histdd.shape
             #nt, nx, ny = histdd.shape
@@ -741,18 +756,18 @@ if not args.test_only:
             topk_score = topk_score.numpy()
             #num_events = len(topk_index)
             num_events += len(topk_index)
-            #t00 = t_centers[np.clip(topk_index//(nx*ny)-KT//2, 0, nt-2)]
-            #t11 = t_centers[np.clip(topk_index//(nx*ny)+KT//2, 0, nt-2)]
-            #x00 = x_centers[np.clip((topk_index//ny)%nx-KXY//2, 0, nx-2)]
-            #x11 = x_centers[np.clip((topk_index//ny)%nx+KXY//2, 0, nx-2)]
-            #y00 = y_centers[np.clip(topk_index%ny-KXY//2, 0, ny-2)]
-            #y11 = y_centers[np.clip(topk_index%ny+KXY//2, 0, ny-2)]
-            t00.append(t_centers[np.clip(topk_index//(nx*ny)-KT//2, 0, nt-2)])
-            t11.append(t_centers[np.clip(topk_index//(nx*ny)+KT//2, 0, nt-2)])
-            x00.append(x_centers[np.clip((topk_index//ny)%nx-KXY//2, 0, nx-2)])
-            x11.append(x_centers[np.clip((topk_index//ny)%nx+KXY//2, 0, nx-2)])
-            y00.append(y_centers[np.clip(topk_index%ny-KXY//2, 0, ny-2)])
-            y11.append(y_centers[np.clip(topk_index%ny+KXY//2, 0, ny-2)])
+            #t00 = t_centers[np.clip(topk_index//(nx*ny)-KT//2, 0, nt-1)]
+            #t11 = t_centers[np.clip(topk_index//(nx*ny)+KT//2, 0, nt-1)]
+            #x00 = x_centers[np.clip((topk_index//ny)%nx-KXY//2, 0, nx-1)]
+            #x11 = x_centers[np.clip((topk_index//ny)%nx+KXY//2, 0, nx-1)]
+            #y00 = y_centers[np.clip(topk_index%ny-KXY//2, 0, ny-1)]
+            #y11 = y_centers[np.clip(topk_index%ny+KXY//2, 0, ny-1)]
+            t00.append(t_centers[np.clip(topk_index//(nx*ny)-KT//2, 0, nt-1)])
+            t11.append(t_centers[np.clip(topk_index//(nx*ny)+KT//2, 0, nt-1)])
+            x00.append(x_centers[np.clip((topk_index//ny)%nx-KXY//2, 0, nx-1)])
+            x11.append(x_centers[np.clip((topk_index//ny)%nx+KXY//2, 0, nx-1)])
+            y00.append(y_centers[np.clip(topk_index%ny-KXY//2, 0, ny-1)])
+            y11.append(y_centers[np.clip(topk_index%ny+KXY//2, 0, ny-1)])
             #z00 = z_centers[topk_index - 1]
             #z11 = z_centers[topk_index + 1]
 
@@ -768,6 +783,25 @@ if not args.test_only:
         for i in tqdm(range(num_events), desc="Assigning event index"):
             mask = (timestamp >= t00[i]) & (timestamp <= t11[i]) & (x_km >= x00[i]) & (x_km <= x11[i]) & (y_km >= y00[i]) & (y_km <= y11[i])# & (z_km >= z00[i]) & (z_km <= z11[i])
             events.loc[mask, "event_index"] = i
+    elif args.cluster_method == "associator":
+        total_scores = events.groupby('event_id')['event_score'].sum()
+        freq2idx = defaultdict(lambda: -1)
+        valid_ids = total_scores[total_scores >= MIN_STATION].index.to_list()
+        for idx, e_id in enumerate(valid_ids):
+            freq2idx[e_id] = idx
+        #labels = list(events['event_id'].values)
+        #id2freq = Counter(labels)
+        #freq2idx = defaultdict(lambda: -1)
+        #idxx = 0
+        #for id, freq in id2freq.items():
+        #    if freq >= 5:
+        #        freq2idx[id] = idxx
+        #        idxx += 1
+        print(f"Assigning event index: {len(freq2idx)}")
+        try:
+            events['event_index'] = events['event_id'].parallel_apply(lambda x: freq2idx[x])
+        except AttributeError:
+            events['event_index'] = events['event_id'].apply(lambda x: freq2idx[x])
     else:
         raise ValueError(f"Cluster method {args.cluster_method} not supported")
     
@@ -835,12 +869,14 @@ if not args.test_only:
     }, inplace=True)
     events_catalog['z_km'] = events_catalog['depth_km']
     events_catalog = events_catalog[events_catalog['event_index'] != -1]
-    events_catalog = events_catalog[events_catalog['event_score'] >= MIN_STATION//2]
+    discarded_indexes = set(events_catalog[events_catalog['event_score'] < MIN_STATION/2]['event_index'].to_list())
+    print(f"Removing {len(events_catalog[events_catalog['event_score'] < MIN_STATION/2])} events with too few picks")
+    events_catalog = events_catalog[events_catalog['event_score'] >= MIN_STATION/2]
     print(f"Calculating association ratio for {len(events_catalog)} events")
     thld = 0.08
     events_catalog = calc_association_ratio(events_catalog, stations, weight_ratio=0)
     print(f"Removing {len(events_catalog[events_catalog['association_ratio'] < thld])} events with association ratio < {thld}")
-    discarded_indexes = set(events_catalog[events_catalog['association_ratio'] < thld]['event_index'].values.tolist())
+    discarded_indexes = set(events_catalog[events_catalog['association_ratio'] < thld]['event_index'].to_list()) | discarded_indexes
     print(f"{discarded_indexes=}")
     events_catalog = events_catalog[events_catalog['association_ratio'] >= thld]
     print(f"Assigning unassociated event picks using origin time prediction and travel time prediction")
@@ -945,10 +981,16 @@ catalog_pred = catalog_pred.sort_values(by='time', ascending=True)
 groups_pred = catalog_pred.groupby(pd.Grouper(key='time', freq='3h', origin=pd.to_datetime('2019-07-04 00:00:00.000000+00:00')))
 counts_pred = groups_pred.size()
 
-catalog['proj_x'] = catalog['longitude'] * degree2km * np.cos(np.radians(catalog['latitude']))
-catalog['proj_y'] = catalog['latitude'] * degree2km
-catalog_pred['x_km'] = catalog_pred['longitude'] * degree2km * np.cos(np.radians(catalog_pred['latitude']))
-catalog_pred['y_km'] = catalog_pred['latitude'] * degree2km
+#catalog['proj_x'] = catalog['longitude'] * degree2km * np.cos(np.radians(catalog['latitude']))
+#catalog['proj_y'] = catalog['latitude'] * degree2km
+catalog['proj_x'], catalog['proj_y'] = transformer.transform(catalog['longitude'], catalog['latitude'])
+catalog['proj_x'] = catalog['proj_x'].apply(lambda x: x / 1000)  # convert to km
+catalog['proj_y'] = catalog['proj_y'].apply(lambda x: x / 1000)  # convert to km
+#catalog_pred['x_km'] = catalog_pred['longitude'] * degree2km * np.cos(np.radians(catalog_pred['latitude']))
+#catalog_pred['y_km'] = catalog_pred['latitude'] * degree2km
+catalog_pred['x_km'], catalog_pred['y_km'] = transformer.transform(catalog_pred['longitude'], catalog_pred['latitude'])
+catalog_pred['x_km'] = catalog_pred['x_km'].apply(lambda x: x / 1000)  # convert to km
+catalog_pred['y_km'] = catalog_pred['y_km'].apply(lambda x: x / 1000)  # convert to km
 catalog_pred['z_km'] = catalog_pred['depth_km']
 
 # select rows with 'ci' in 'event_id'

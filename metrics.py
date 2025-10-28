@@ -43,6 +43,7 @@ parser.add_argument('--suffix', type=str, default="", help='suffix of the pics')
 parser.add_argument('--model', type=str, default="eqnet", help='the model that performed prediction')
 parser.add_argument('--score_threshold', type=float, default=0.3, help='the threshold of phase score')
 parser.add_argument('--polarity_threshold', type=float, default=0.3, help='the threshold of polarity score')
+parser.add_argument('--association_method', type=str, default="dbscan", help='the method to associate the picks')
 parser.add_argument('--save_path', type=str, default=None, help='the path to save the metric pickle file')
 parser.add_argument('--main_event_only', action='store_true', help='exclude the picks not in the main event duration')
 parser.add_argument('--filter_events', type=str, default=None, help='the path to the file containing the events to be filtered out')
@@ -69,6 +70,7 @@ station_threshold = 10
 event_dt_bar = 3 # s
 dbscan_epsilon = 16
 time_space_weight = [1, 0.8, 0.8, 2]
+MIN_STATIONS = 3
 
 sample_rate = 100
 feature_scale = 16
@@ -83,7 +85,7 @@ if args.model == "eqnet":
     pick_files = [os.path.join(pick_dir, f) for f in os.listdir(pick_dir) if f.endswith(".csv")]
 elif args.model == "phasenet_plus":
     pick_files = [os.path.join(pick_dir, f) for f in os.listdir(pick_dir) if os.path.isdir(os.path.join(pick_dir, f))]
-
+#TODO: could just use phase score weighted time residual to match picks and labels, so that it's faster
 class PickMetric:
     def __init__(self, sample_rate=100):
         self.num_p_picks = 0
@@ -932,15 +934,26 @@ with h5py.File(h5_file, "r") as fp:
         hypoparameters[:,7] = df["azimuth"].values
         hypoparameters[:,8] = df["magnitude"].values
         
-        labels = dbscan.fit_predict(hypoparameters[:,:4]*np.array(time_space_weight)[None,:]) # weighted
-        classes, counts = np.unique(labels, return_counts=True)
-        if len(classes) > 1:
-            if classes[0] == -1:
-                classes = classes[1:]
-                counts = counts[1:]
-            #classes = classes[counts>1]
-            classes = classes[counts>=3]
-            
+        if args.association_method == "dbscan":
+            labels = dbscan.fit_predict(hypoparameters[:,:4]*np.array(time_space_weight)[None,:]) # weighted
+            classes, counts = np.unique(labels, return_counts=True)
+            if len(classes) > 1:
+                if classes[0] == -1:
+                    classes = classes[1:]
+                    counts = counts[1:]
+                #classes = classes[counts>1]
+                if len(hypoparameters) > 5:
+                    classes = classes[counts>=MIN_STATIONS]
+        elif args.association_method == "associator":
+            try:
+                labels = df['event_id'].values
+            except:
+                print(f"event_id not in {event_id}.columns")
+                continue
+            classes, counts = np.unique(labels, return_counts=True)
+            if len(hypoparameters) > 5:
+                classes = classes[counts>=MIN_STATIONS]
+        
         event_metric.num_event_picks += len(classes)
         event_metric_thld.num_event_picks += len(classes) if num_stations>=station_threshold else 0
         num_event_center_picks += len(df)
