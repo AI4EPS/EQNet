@@ -5,6 +5,7 @@ import pickle
 import time
 import math
 import copy
+import signal, functools
 
 import h5py
 import numpy as np
@@ -29,6 +30,25 @@ from geographiclib.geodesic import Geodesic
 from tqdm import tqdm
 
 from ..utils.station_sampler import reorder_keys
+from .utils import AttrCache
+
+class TimeoutError(RuntimeError): ...
+
+def func_timeout(seconds):
+    def deco(fn):
+        @functools.wraps(fn)
+        def wrapped(*a, **k):
+            def _raise(*_): raise TimeoutError(f"{fn.__name__} timed out after {seconds}s")
+            old = signal.signal(signal.SIGALRM, _raise)
+            signal.siginterrupt(signal.SIGALRM, True)
+            signal.setitimer(signal.ITIMER_REAL, seconds)
+            try:
+                return fn(*a, **k)
+            finally:
+                signal.setitimer(signal.ITIMER_REAL, 0.0)
+                signal.signal(signal.SIGALRM, old)
+        return wrapped
+    return deco
 
 def optimal_transport_clustering(points, k):
     # 使用K-means获取初始中心
@@ -356,6 +376,7 @@ def sample_by_distance(distances, num_stations, num_manual_stations, critical_di
         raise ValueError("num_manual_stations should be greater than 0")
     if num_manual_stations >= num_stations:
         prob = 1 - ((1-sample_rate) / (10 ** ((distances[:num_manual_stations] - min_distance)/(critical_distance - min_distance))))
+        prob[prob < 0.1] = 0.1
         prob = prob / prob.sum()
         idxs = np.random.choice(np.arange(num_manual_stations), num_stations, replace=False, p=prob)
         
@@ -458,7 +479,7 @@ def sample_event_for_stacking(event_ids, e2sta_dict, sta2e_dict, events_dict, e2
             continue
         # check if the snrs are compatible
         if not (snr_median0>snr_bar and events_dict[event_id]['snr_median']>snr_bar):
-            if abs(snr_median0-events_dict[event_id]['snr_median'])>snr_bar:
+            if abs(snr_median0-events_dict[event_id]['snr_median'])>max(8, snr_bar):
                 continue
         
         results.append(event_id)
@@ -466,12 +487,14 @@ def sample_event_for_stacking(event_ids, e2sta_dict, sta2e_dict, events_dict, e2
             break
     return results
 
+@func_timeout(30)
 def stack_event(
     meta1,
     meta2,
     max_shift=64 * 4,
     feature_scale=16,
     is_extra=False,
+    shift_bias=0,
 ):
     prefix = "extra_" if is_extra else ""
     waveform1 = meta1["waveforms"]
@@ -550,7 +573,7 @@ def stack_event(
         # we only select the events with enough shared stations
         valid_stations2 = meta2["valid_stations"][shared_sta_idx]
         valid_stations2[other_sta_idx] = 0
-        if (valid_stations2.sum()>=3 and random.random()<0.15) or (valid_stations2.sum()>=3 and len(other_sta_idx) >= 3 and random.random()<0.2): # enough labels
+        if valid_stations2.sum()>=max(3, meta1["valid_stations"].sum()) and (random.random()<(0.2-min(0.02*len(other_sta_idx), 0.1))): # enough labels
             switch_prompt = True
             num_manual_stations2 = valid_stations2.sum()
             valid_stations2[other_sta_idx] = 1 # we can confirm that no event is in the other stations
@@ -588,9 +611,10 @@ def stack_event(
     max_tries = 40
     # while random.random() < 0.5:
     failed = True
+    shift = 0
     tries = 0
     for i in range(1 if random.random() < 0.8 else 2 if random.random() < 0.5 else 3):
-        last_shift = first_arrival1 - first_arrival2 if i == 0 else shift
+        last_shift = first_arrival1 - first_arrival2 if (i == 0 or (not switch_prompt)) else shift
         while tries < max_tries:
             if i == 0 and tries > max_tries // 2:
                 break
@@ -600,9 +624,18 @@ def stack_event(
             #    # print(f"min_ratio2 > max_ratio2: {min_ratio2} > {max_ratio2}, {amp_noise1 = }, {amp_signal1 = }, {amp_noise2 = }, {amp_signal2 = }")
             #    break
 
-            shift_range = max_shift if (is_extra or (tries > max_tries//4)) else max(48, int(max_shift/1.5))
+            #shift_range = max_shift if (is_extra or (tries > max_tries//4)) else max(48, int(max_shift/1.5))
+            shift_upper = max_shift if (is_extra or (tries > max_tries//4)) else max(48, int(max_shift/1.5))
+            #shift_range = (-shift_upper, shift_upper)
+            if shift_bias == 0:
+                shift_range = (-shift_upper, shift_upper)
+            elif shift_bias > 0:
+                shift_range = (-int(shift_upper/1.5), shift_upper)
+            else:
+                shift_range = (-shift_upper, int(shift_upper/1.5))
+            
             if i == 0 and last_shift != 0:
-                shift = random.randint(-shift_range, shift_range) + last_shift
+                shift = random.randint(*shift_range) + last_shift
             else:
                 shift = random.sample([-1, 1], 1)[0] * random.randint(max(max_shift//16, 20), max(max_shift//4, 64)) + last_shift
             long_shift = shift * feature_scale
@@ -712,9 +745,9 @@ def stack_event(
         "duration_mask": duration_mask1,
         "first_arrival": np.min([first_arrival1, first_arrival2]) if not failed else first_arrival1,
         "valid_stations": meta1["valid_stations"] if ((not switch_prompt) or failed) else valid_stations2,
-    }, failed
+    }, failed, shift
 
-
+@func_timeout(30)
 def concatenate_event(
     meta1,
     meta2,
@@ -726,25 +759,36 @@ def concatenate_event(
     num_stations=16,
     feature_scale=16,
     sampling_rate=100,
+    ill_case_ratio=0.4,
+    VP=6.0,
+    VPVS_RATIO=1.73,
 ):
     event_index1 = event_attrs1["event_time_index"]
     event_index2 = event_attrs2["event_time_index"]
+    geod = Geodesic.WGS84
     #event_location1 = np.array([event_attrs1["longitude"], event_attrs1["latitude"], 0])
     event_location2 = np.array([event_attrs2["longitude"], event_attrs2["latitude"], 0])
     
-    time_shift = (event_index2 - event_index1) // feature_scale
-    #space_shift = event_location2 - event_location1
-    
-    trunc_station_index = random.randint(trunc_stations[0], trunc_stations[1])
-    station_shift = random.randint(0, min(10, trunc_station_index))
-    time_shift += random.choice([-1, 1]) * random.randint(time_shift_range[0]//(feature_scale/sampling_rate), time_shift_range[1]//(feature_scale/sampling_rate))
-    geod = Geodesic.WGS84
     tmp_dict = geod.Direct(event_attrs1["latitude"], event_attrs1["longitude"], random.uniform(0, 360), 1000*random.uniform(*space_shift_range))
     target_location1 = np.array([tmp_dict['lon2'], tmp_dict['lat2'], 0])
     space_shift = event_location2 - target_location1
     #space_shift[0] += random.choice([-1, 1]) * random.uniform(*space_shift_range)
     #space_shift[1] += random.choice([-1, 1]) * random.uniform(*space_shift_range)
 
+    trunc_station_index = min(random.randint(trunc_stations[0], trunc_stations[1]), meta1['num_stations'])
+    station_shift = random.randint(0, trunc_station_index//2)
+    if random.random() < ill_case_ratio:
+        selected_event2_station_location = meta2['station_location'][station_shift:num_stations-trunc_station_index+station_shift].copy()
+        dist_1 = np.array([geod.Inverse(event_attrs1["latitude"], event_attrs1["longitude"], loc[1]-space_shift[1], loc[0]-space_shift[0])['s12']/1e3 for loc in selected_event2_station_location])
+        dist_2 = np.array([geod.Inverse(event_attrs2["latitude"], event_attrs2["longitude"], loc[1], loc[0])['s12']/1e3 for loc in selected_event2_station_location])
+        event_center_index1 = event_index1 + np.median((dist_1/VP + dist_1/(VP/VPVS_RATIO))/2) * sampling_rate
+        event_center_index2 = event_index2 + np.median((dist_2/VP + dist_2/(VP/VPVS_RATIO))/2) * sampling_rate
+        time_shift = int((event_center_index2 - event_center_index1) / feature_scale)    
+    else:
+        time_shift = int((event_index2 - event_index1) / feature_scale)
+    #space_shift = event_location2 - event_location1
+    time_shift += random.choice([-1, 1]) * random.randint(time_shift_range[0]//(feature_scale/sampling_rate), time_shift_range[1]//(feature_scale/sampling_rate))
+    
     waveforms = np.zeros((num_stations, *meta1['waveforms'].shape[1:]))
     amplitude = np.zeros((num_stations, *meta1['amplitude'].shape[1:]))
     phase_pick = np.zeros((num_stations, *meta1['phase_pick'].shape[1:]))
@@ -846,6 +890,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
         concatenate_event=False,
         drop_channel=False,
         ## for training
+        attribute_cache=None,#'/tmp/quakeflow_dataset_metadata',#'/pscratch/sd/w/whaoyu/quakeflow_dataset/NC/quakeflow_dataset_metadata',
         huggingface_cache=None,
         phase_width=[100],
         polarity_width=[20],
@@ -871,6 +916,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
         self.hdf5_fp = None
         if hdf5_file is not None:
             tmp_hdf5_keys = f"tmp/{'_'.join(hdf5_file.split('/'))}.txt"
+            #tmp_hdf5_keys = f"tmp/test_event_ids.txt"
             if not os.path.exists(tmp_hdf5_keys) and (rank == 0):
                 with h5py.File(hdf5_file, "r", libver="latest", swmr=True) as fp:
                     self.data_list = []
@@ -896,6 +942,11 @@ class SeismicNetworkIterableDataset(IterableDataset):
                 self.e2idx_dict = {event_id: idx for idx, event_id in enumerate(self.huggingface_dataset["event_id"])}
             else:
                 self.huggingface_cache = False
+            if (attribute_cache is not None) and training:
+                print(f"Loading attribute cache from {attribute_cache}")
+                self.attribute_cache = AttrCache(attribute_cache)
+            else:
+                self.attribute_cache = None
         elif data_list is not None:
             with open(data_list, "r") as f:
                 self.data_list = f.read().splitlines()
@@ -915,7 +966,10 @@ class SeismicNetworkIterableDataset(IterableDataset):
         else:
             self.data_list = None
         if self.data_list is not None:
+            target_len = len(self.data_list) // world_size
             self.data_list = self.data_list[rank::world_size]
+            if training:
+                self.data_list = self.data_list[:target_len]
         
         if station_file is not None:
             #self.station_info = json.load(open(station_file, "r"))
@@ -975,6 +1029,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
             
             self.e2sta_dict = self.picks_dict.groupby('event_id')['station_id'].apply(list).to_dict()
             self.sta2e_dict = self.picks_dict.groupby('station_id')['event_id'].apply(list).to_dict()
+            self.e_ids = list(self.e2sta_dict.keys())
             del self.picks_dict
 
         ## prediction
@@ -995,6 +1050,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
 
         self._data_len = self._count()
         self.negative_mask_ratio = 1.0
+        self.cat_event_ratio = 0.16
 
     def __iter__(self):
         worker_info = torch.utils.data.get_worker_info()
@@ -1006,6 +1062,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
             worker_id = worker_info.id
         data_list = self.data_list[worker_id::num_workers]
         if self.training:
+            data_list = data_list[:len(self.data_list)//num_workers]
             return iter(self.sample_train(data_list))
         else:
             return iter(self.sample_test(data_list))
@@ -1046,8 +1103,8 @@ class SeismicNetworkIterableDataset(IterableDataset):
         else:
             return self._data_len
     
-    
-    def _read_training_h5(self, event_id, hdf5_fp):
+    @func_timeout(20)
+    def _read_training_h5(self, event_id, hdf5_fp, max_stations_ratio=None):
         if event_id in self.ill_event_ids:
             return None
         if self.huggingface_cache:
@@ -1071,18 +1128,29 @@ class SeismicNetworkIterableDataset(IterableDataset):
         except KeyError:
             self.ill_event_ids.add(event_id)
             return None
-        station_ids = list(event.keys())
+
+        if self.attribute_cache:
+            station_ids = self.attribute_cache.event2stations[event_id]
+            if station_ids is None:
+                station_ids = list(event.keys())
+        else:
+            station_ids = list(event.keys())
         if num_stations is not None and len(station_ids) < self.at_least_stations:
             self.ill_event_ids.add(event_id)
             return None  
         #else:
         #    station_ids = np.random.choice(station_ids, num_stations, replace=False)
-        event_attrs = event.attrs
+        if self.attribute_cache:
+            event_attrs = self.attribute_cache.event_attrs[event_id]
+            if event_attrs is None:
+                event_attrs = dict(event.attrs)
+        else:
+            event_attrs = dict(event.attrs)
         
         # exclude ridgecrest earthquake sequence
-        event_time0 = datetime.fromisoformat(event.attrs["event_time"])
+        event_time0 = datetime.fromisoformat(event_attrs["event_time"])
         if event_time0 >= datetime(2019,7,4,0,0,0) and event_time0 <= datetime(2019,7,10,0,0,0):
-            if event.attrs["latitude"] >= 35.2 and event.attrs["latitude"] <= 36.2 and event.attrs["longitude"] >= -118.0 and event.attrs["longitude"] <= -117.0:
+            if event_attrs["latitude"] >= 35.2 and event_attrs["latitude"] <= 36.2 and event_attrs["longitude"] >= -118.0 and event_attrs["longitude"] <= -117.0:
                 return None
         #if event_time0 >= datetime(2019,7,4,0,0,0) and event_time0 <= datetime(2019,7,20,0,0,0):
         #    if event.attrs["latitude"] >= 35.0 and event.attrs["latitude"] <= 36.5 and event.attrs["longitude"] >= -118.5 and event.attrs["longitude"] <= -116.5:
@@ -1091,12 +1159,22 @@ class SeismicNetworkIterableDataset(IterableDataset):
         # avoid stations with P arrival equals S arrival
         is_sick = False
         auto_count = 0
+        manual_station_ids = []
+        auto_station_ids = []
+        station_attrs = {}
         for sta_id in station_ids:
-            if len(np.unique(mapping_phase_type(event[sta_id].attrs["phase_type"]))) < 2:
+            if self.attribute_cache:
+                attrs = self.attribute_cache.station_attrs[f"{event_id}/{sta_id}"]
+                if attrs is None:
+                    attrs = dict(event[sta_id].attrs)
+            else:
+                attrs = dict(event[sta_id].attrs)
+            station_attrs[f"{event_id}/{sta_id}"] = attrs.copy()
+            if len(np.unique(mapping_phase_type(attrs["phase_type"]))) < 2:
                 auto_count += 1
+                auto_station_ids.append(sta_id)
                 continue # only one phase type indicates automatic picks
             valid_manual_events = 0
-            attrs = event[sta_id].attrs
             sta_phase_type = mapping_phase_type(attrs["phase_type"])
             for e_id in [event_id]:#sorted(np.unique(event[sta_id].attrs["event_id"])):
                 if len(np.unique(sta_phase_type[attrs["event_id"]==e_id])) < 2:
@@ -1122,6 +1200,9 @@ class SeismicNetworkIterableDataset(IterableDataset):
                 break    
             if valid_manual_events == 0:
                 auto_count += 1
+                auto_station_ids.append(sta_id)
+            else:
+                manual_station_ids.append(sta_id)
         if auto_count >= len(station_ids):
             is_sick = True
             print(f"\nevent {event_id} all auto picks")
@@ -1129,6 +1210,15 @@ class SeismicNetworkIterableDataset(IterableDataset):
             self.ill_event_ids.add(event_id)
             return None
         
+        if max_stations_ratio: # avoid reading too many stations
+            desired_num = int(self.num_stations * max_stations_ratio)
+            if len(station_ids) <= desired_num:
+                pass
+            elif len(manual_station_ids) >= desired_num:
+                station_ids = random.sample(manual_station_ids, desired_num)
+            else:
+                station_ids = manual_station_ids + random.sample(auto_station_ids, desired_num - len(manual_station_ids))
+
         #reference_latitude = 0
         #reference_longitude = 0
         #for sta_id in station_ids:
@@ -1163,7 +1253,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
             # trace_id = event_id + "/" + sta_id
             waveforms[i, :, :] = event[sta_id][:, :]
             amplitude[i, :, :] = event[sta_id][:, :]
-            attrs = event[sta_id].attrs
+            attrs = station_attrs[f"{event_id}/{sta_id}"]
             sta_phase_type = mapping_phase_type(attrs["phase_type"])
             if attrs["unit"][-6:] == "m/s**2":
                 # integrate acceleration to velocity
@@ -1212,10 +1302,14 @@ class SeismicNetworkIterableDataset(IterableDataset):
             dn_pick_stas = []
             duration_sta = []   
 
-            event_time0 = datetime.fromisoformat(event_attrs["event_time"])
             for e_id in sorted(np.unique(attrs["event_id"])):
                 try: # skip the event_id not in the dataset
-                    e_attrs = hdf5_fp[e_id].attrs
+                    if self.attribute_cache:
+                        e_attrs = self.attribute_cache.event_attrs[e_id]
+                        if e_attrs is None:
+                            e_attrs = dict(hdf5_fp[e_id].attrs)
+                    else:
+                        e_attrs = dict(hdf5_fp[e_id].attrs)
                 except KeyError:
                     continue
                 if len(np.unique(sta_phase_type[attrs["event_id"]==e_id])) < 2:
@@ -1406,13 +1500,13 @@ class SeismicNetworkIterableDataset(IterableDataset):
             "station_ids": sta_ids,
             "duration": duration,
             "first_arrival": first_arrival,
-            "distance": np.array([event[sta_id].attrs["distance_km"] for sta_id in sta_ids]),
+            "distance": np.array([station_attrs[f"{event_id}/{sta_id}"]["distance_km"] for sta_id in sta_ids]),
             "valid_stations": valid_stations,
         }
         
         return meta
 
-
+    @func_timeout(120)
     def sample_train(self, data_list):
         if self.format == "h5":
             hdf5_fp = h5py.File(self.hdf5_file, "r", libver="latest", swmr=True, locking=False)
@@ -1428,19 +1522,19 @@ class SeismicNetworkIterableDataset(IterableDataset):
                 event_id = data_list[next(random_idx)]
             
             if self.sample_by_magnitude:
-                if not sample_by_magnitude(self.hdf5_fp[event_id].attrs["magnitude"], critical_magnitude=2, sample_rate=0.6, min_magnitude=0.3):
+                if not sample_by_magnitude(hdf5_fp[event_id].attrs["magnitude"], critical_magnitude=2, sample_rate=0.6, min_magnitude=0.3):
                     continue
             # if True:
             try:
-                meta = self._read_training_h5(event_id, hdf5_fp)
+                meta = self._read_training_h5(event_id, hdf5_fp, max_stations_ratio=6)
             except Exception as e:
-                print(f"Error reading {event_id}:\n{e}")
+                print(f"Error reading {event_id}:\n{e}", force=True)
                 continue
 
             if meta is None:
                 continue
             
-            if self.sample_by_distance:
+            if self.sample_by_distance and meta['num_stations'] > self.num_stations:
                 idx = sample_by_distance(meta['distance'], num_stations=self.num_stations, num_manual_stations=meta['num_manual_stations'],
                                          critical_distance=50, min_distance=5, sample_rate=0.5)
                 assert len(idx) == self.num_stations, f"{event_id} sample_by_distance failed"
@@ -1491,6 +1585,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
                     "valid_stations": meta['valid_stations'][:self.num_stations],
                 }
             
+            cat_event_ratio = self.cat_event_ratio if isinstance(self.cat_event_ratio, float) else self.cat_event_ratio.value
             if self.stack_event and random.random() < 0.9:
                 try:
                     selected_event_ids = sample_event_for_stacking(
@@ -1500,38 +1595,47 @@ class SeismicNetworkIterableDataset(IterableDataset):
                         events_dict = self.events_dict,
                         min_shared_sta=3,
                         magnitude_range=None,
+                        snr_bar=5.0,
                         returns=7,
                     )
                     meta2 = None
                     stack_times = 0
+                    shift_bias = 0
                     max_stack_times = random.choice([1]*4 + [2]*3 + [3]*2 + [4])#np.random.choice([1, 2, 3, 4], p=[0.4, 0.3, 0.2, 0.1])#
-                    cat_event = self.concatenate_event and (random.random()<0.2) and (max_stack_times <= 2)
+                    cat_event = self.concatenate_event and (random.random()<cat_event_ratio) and (max_stack_times <= 2)
+                    #cat_event = self.concatenate_event and (random.random()<0.04) and (max_stack_times <= 2)
                     for e_id in selected_event_ids:
-                        if stack_times == 0 and ((meta['num_manual_stations'] > 3 and random.random() < 0.05+0.01*min(6, meta['num_manual_stations']))):
+                        #if stack_times == 0 and ((meta['num_manual_stations'] > 3 and random.random() < 0.03+0.01*min(5, meta['num_manual_stations']))):
+                        if stack_times == 0 and (random.random() < 0.03+0.01*min(5, meta['num_manual_stations'])):
                             meta2 = copy.deepcopy(meta)
                         else:
-                            meta2 = self._read_training_h5(e_id, hdf5_fp)
+                            try:
+                                meta2 = self._read_training_h5(e_id, hdf5_fp, max_stations_ratio=3)
+                            except Exception as e:
+                                print(f"Error reading {e_id}:\n{e} during stacking", force=True)
+                                meta2 = None
                         if meta2 is not None:
-                            meta, is_failed = stack_event(meta, meta2, max_shift=3*64, feature_scale=self.feature_scale, is_extra=(stack_times>0) or cat_event)
+                            meta, is_failed, shift = stack_event(meta, meta2, max_shift=3*64, feature_scale=self.feature_scale, is_extra=(stack_times>0) or cat_event, shift_bias=shift_bias)
                             stack_times += 1 if not is_failed else 0
+                            shift_bias = shift if (stack_times==1) and (not is_failed) else shift_bias
                             if stack_times >= max_stack_times:
                                 break
                             #print(f"event {event_id} succeed")
                     #else:
                     #    print(f"event {event_id} no valid meta2")
                 except Exception as e:
-                    cat_event = self.concatenate_event and (random.random()<0.2)
-                    print(f"Error stacking {event_id}:\n{e}")
+                    cat_event = self.concatenate_event and (random.random()<(cat_event_ratio*0.5))
+                    print(f"Error stacking {event_id}:\n{e}", force=True)
             else:
                 stack_times = 0
-                cat_event = self.concatenate_event and (random.random()<0.2)
+                cat_event = self.concatenate_event and (random.random()<(cat_event_ratio*0.5))
             #    print(f"event {event_id} not stacked")
             
             if cat_event:
                 event_attrs1 = hdf5_fp[event_id].attrs
                 snr_median0 = self.events_dict[event_id]['snr_median']
                 mag0 = self.events_dict[event_id]['magnitude']
-                for iii, e_id in enumerate(random.sample(data_list, 50)):
+                for iii, e_id in enumerate(random.sample(self.e_ids, 50)):
                     event_attrs2 = hdf5_fp[e_id].attrs
                     if len(hdf5_fp[e_id].keys()) < self.num_stations:
                         continue
@@ -1540,18 +1644,25 @@ class SeismicNetworkIterableDataset(IterableDataset):
                     snr_median1 = self.events_dict[e_id]['snr_median']
                     mag1 = self.events_dict[e_id]['magnitude']
                     if not (snr_median0 > 5 and snr_median1 > 5):
-                        if abs(snr_median0 - snr_median1) > 2.5:
+                        if abs(snr_median0 - snr_median1) > 5:
                             continue
                     if iii < 30 and (abs(mag0-mag1)>1.0):
                         continue
                     #if iii < 20 and (abs(event_attrs1['latitude'] - event_attrs2['latitude']) > 3 or abs(event_attrs1['longitude'] - event_attrs2['longitude']) > 3):
                     #    continue
-                    meta2 = self._read_training_h5(e_id, hdf5_fp)
+                    try:
+                        meta2 = self._read_training_h5(e_id, hdf5_fp, max_stations_ratio=3)
+                    except Exception as e:
+                        print(f"Error reading {e_id}:\n{e} during concatenation", force=True)
+                        meta2 = None
                     if meta2 is not None:
-                        meta = concatenate_event(meta, meta2, event_attrs1, event_attrs2,
-                                                 time_shift_range=(0., 2.6), space_shift_range=(5., 35.),
-                                                 trunc_stations=(8, 2), num_stations=self.num_stations,
-                                                 feature_scale=self.feature_scale, sampling_rate=self.sampling_rate)
+                        try:
+                            meta = concatenate_event(meta, meta2, event_attrs1, event_attrs2,
+                                                 time_shift_range=(0., 3.2), space_shift_range=(5., 35.),
+                                                 trunc_stations=(6, self.num_stations-4), num_stations=self.num_stations,
+                                                 feature_scale=self.feature_scale, sampling_rate=self.sampling_rate, ill_case_ratio=0.3)#min(0.25, max(0.001, cat_event_ratio*2)))
+                        except Exception as e:
+                            print(f"Error concatenating events {event_id} and {e_id}:\n{e}", force=True)
                         break
             
             negative_mask_ratio = self.negative_mask_ratio.value if not isinstance(self.negative_mask_ratio, float) else self.negative_mask_ratio
@@ -1623,7 +1734,6 @@ class SeismicNetworkIterableDataset(IterableDataset):
             })
             
             yield meta
-            
     
     def read_mseed(self, fname, response_path=None, response_xml=None, highpass_filter=0.0, sampling_rate=100):
         try:
@@ -1647,6 +1757,8 @@ class SeismicNetworkIterableDataset(IterableDataset):
         for trace in stream:
             if len(trace.data) < 10:
                 continue
+            #if trace.stats['channel'][:2] not in ['BH', 'EH']:
+            #    continue
 
             ## interpolate to 100 Hz
             if trace.stats.sampling_rate != sampling_rate:
