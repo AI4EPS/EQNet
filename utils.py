@@ -514,8 +514,32 @@ def MTLBalance(type, tasks, pre_weight, temp, epochs, device):
         return DWA(tasks, pre_weight, temp, epochs, device)
     elif type == "dwa_inverse":
         return DWAInverse(tasks, pre_weight, temp, epochs, device)
+    elif type == "constant":
+        return ConstantBalance(tasks, pre_weight, temp, epochs, device)
     else:
         return None
+    
+class ConstantBalance:
+    r"""Constant Balance.
+    This method keeps the task weights constant throughout training.
+    """
+    def __init__(self, tasks, pre_weight, temp=1.0, epochs=100, device="cpu"):
+        self.tasks=tasks
+        self.task_num = len(tasks)
+        self.temp = temp
+        self.epochs = epochs
+        self.pre_weight = pre_weight
+        
+    def balance(self, output, **kwargs):
+        loss = 0
+        for i, k in enumerate(self.tasks):
+            if self.pre_weight[i] > 0:
+                loss += output[k]*self.pre_weight[i]
+        
+        return loss
+    
+    def update(self, **kwargs):
+        pass
     
 class DWA:
     r"""Dynamic Weight Average (DWA).
@@ -584,7 +608,7 @@ class DWAInverse:
             self.train_loss_buffer[i, epoch] = meters[k].global_avg
                 
         if epoch > 0:
-            w_i = self.train_loss_buffer[:,epoch]/self.train_loss_buffer[:,epoch-1]
+            w_i = self.train_loss_buffer[:,epoch]/self.train_loss_buffer[:,epoch-1] if torch.all(self.train_loss_buffer[:,epoch-1]>0) else torch.ones_like(self.train_loss_buffer[:,epoch])
             if epoch==1:
                 self.batch_weight[epoch+1] = 1./(self.task_num*torch.nn.functional.softmax(w_i/2.0, dim=-1))
                 if delay is not None:
@@ -594,3 +618,11 @@ class DWAInverse:
                                 self.batch_weight[epoch+1, i] = 1.0
             else:
                 self.batch_weight[epoch+1] = 1./(self.task_num*torch.nn.functional.softmax(w_i/self.temp, dim=-1))
+                if (delay is not None) and (epoch > self.epochs//4):
+                    if len(delay)>0:
+                        for i, k in enumerate(self.tasks):
+                            if k in delay:
+                                slope = 0.03 if k=='loss_phase' else 0.02
+                                self.batch_weight[epoch+1, i] = 1 - slope*(epoch/(self.epochs//4))
+            # replace nan with 1.0
+            self.batch_weight[epoch+1] = torch.where(torch.isnan(self.batch_weight[epoch+1]), torch.ones_like(self.batch_weight[epoch+1]), self.batch_weight[epoch+1])
