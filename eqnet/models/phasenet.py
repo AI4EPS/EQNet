@@ -17,6 +17,7 @@ from torch.nn import functional as F
 
 from .prompt import MaskDecoder, PromptEncoder, TwoWayTransformer
 from .unet import Unet
+from .unet2018 import UNet2018
 
 
 # =============================================================================
@@ -39,7 +40,7 @@ SEISMIC_UNET_CONFIG = dict(
 # Loss Functions
 # =============================================================================
 
-def kl_divergence_loss(inputs: Tensor, targets: Tensor, mask: Tensor = None, num_classes: int = 3) -> Tensor:
+def kl_divergence_loss(inputs: Tensor, targets: Tensor, mask: Tensor = None, num_classes: int = 3) -> Tensor | None:
     """KL divergence loss with optional masking.
 
     Uses cross-entropy minus minimum entropy for numerical stability.
@@ -51,7 +52,7 @@ def kl_divergence_loss(inputs: Tensor, targets: Tensor, mask: Tensor = None, num
         num_classes: Number of output classes (1 for binary, >1 for multiclass)
 
     Returns:
-        Scalar loss value
+        Scalar loss value, or None if mask is entirely zero.
     """
     inputs = inputs.float()
     log_targets = torch.nan_to_num(torch.log(targets))
@@ -71,9 +72,12 @@ def kl_divergence_loss(inputs: Tensor, targets: Tensor, mask: Tensor = None, num
             loss = F.cross_entropy(inputs, targets, reduction="none") - min_loss
         return loss.mean()
 
-    # Masked loss
+    # Masked loss — skip if mask is entirely zero (no valid labels in batch)
     mask = mask.float()
-    mask_sum = mask.sum().clamp(min=1.0)
+    mask_sum = mask.sum()
+    if mask_sum == 0:
+        return None
+    mask_sum = mask_sum.clamp(min=1.0)
 
     if num_classes == 1:
         min_loss = -(targets * log_targets + (1 - targets) * torch.nan_to_num(torch.log(1 - targets)))
@@ -87,7 +91,7 @@ def kl_divergence_loss(inputs: Tensor, targets: Tensor, mask: Tensor = None, num
         return (loss * mask).sum() / mask_sum
 
 
-def regression_loss(inputs: Tensor, targets: Tensor, mask: Tensor = None, scaling: float = 1000.0) -> Tensor:
+def regression_loss(inputs: Tensor, targets: Tensor, mask: Tensor = None, scaling: float = 1000.0) -> Tensor | None:
     """L1 regression loss with optional masking and scaling.
 
     Args:
@@ -97,7 +101,7 @@ def regression_loss(inputs: Tensor, targets: Tensor, mask: Tensor = None, scalin
         scaling: Scale factor for loss normalization
 
     Returns:
-        Scalar loss value
+        Scalar loss value, or None if mask is entirely zero.
     """
     inputs = inputs.float()
 
@@ -107,8 +111,12 @@ def regression_loss(inputs: Tensor, targets: Tensor, mask: Tensor = None, scalin
     if mask is None:
         return F.mse_loss(inputs, targets) / scaling
 
+    # Skip if mask is entirely zero (no valid labels in batch)
     mask = mask.float()
-    mask_sum = mask.sum().clamp(min=1.0)
+    mask_sum = mask.sum()
+    if mask_sum == 0:
+        return None
+    mask_sum = mask_sum.clamp(min=1.0)
     return (F.l1_loss(inputs, targets, reduction="none") * mask).sum() / mask_sum / scaling
 
 
@@ -295,8 +303,14 @@ class PhaseNet(nn.Module):
 
         if backbone == "unet":
             self.backbone = Unet(**backbone_kwargs)
+        elif backbone == "unet2018":
+            # Original PhaseNet architecture (Zhu & Beroza 2019).
+            # Does not support add_stft / add_polarity / add_event / add_prompt.
+            unet2018_keys = {"depths", "filters_root", "kernel_size", "pool_size", "n_channel", "n_class"}
+            unet2018_kwargs = {k: v for k, v in kwargs.items() if k in unet2018_keys}
+            self.backbone = UNet2018(**unet2018_kwargs)
         else:
-            raise ValueError(f"Unknown backbone: {backbone}. Use 'unet'.")
+            raise ValueError(f"Unknown backbone: {backbone}. Use 'unet' or 'unet2018'.")
 
         # Compute embed_dim from dim_mults
         dim = backbone_kwargs.get("dim", 16)
