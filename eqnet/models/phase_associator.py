@@ -18,6 +18,7 @@ class PhaseAssociator(nn.Module):
         prompt_embed_dim: int = 64,
         iou_head_depth: int = 3,
         iou_head_hidden_dim: int = 16,
+        position_bias_dim: int = 512,
         event_scale: int = 16,
         sampling_rate: float = 100.0,
         weights: dict = {'focal': 1.5, 'dice': 0.4, 'iou': 1},
@@ -45,13 +46,14 @@ class PhaseAssociator(nn.Module):
         )
         self.conv_s0 = nn.Conv2d(feature_dim, prompt_embed_dim//4, kernel_size=1, stride=1)
         self.conv_s1 = nn.Conv2d(feature_dim, prompt_embed_dim, kernel_size=1, stride=1)
-        #self.bottleneck = nn.Sequential(
-        #    nn.Conv2d(2*prompt_embed_dim, prompt_embed_dim, kernel_size=1),
-        #    nn.GELU(),
-        #)
+        self.bottleneck = nn.Sequential(
+            nn.Conv2d(2*prompt_embed_dim, prompt_embed_dim, kernel_size=1),
+            nn.GELU(),
+        )
         
         self.prompt_encoder = PromptEncoder(
             embed_dim=prompt_embed_dim,
+            position_bias_dim=position_bias_dim,
             event_scale=event_scale,
             sampling_rate=sampling_rate,
         )
@@ -75,10 +77,9 @@ class PhaseAssociator(nn.Module):
         #waveform_embeddings = self.feature_downscaling(waveform_embeddings)
         waveform_embeddings = self.feature_upscaling(waveform_embeddings)
         feat_s0, feat_s1 = self.conv_s0(features['midupper'].permute(0, 2, 3, 1).contiguous()), self.conv_s1(features['midlower'].permute(0, 2, 3, 1).contiguous())
-        #waveform_embeddings = self.bottleneck(torch.cat([waveform_embeddings, feat_s1], dim=1))
+        waveform_embeddings = self.bottleneck(torch.cat([waveform_embeddings, feat_s1], dim=1))
         bt, ch, nt, nsta = waveform_embeddings.shape
-        relative_location = station_location[..., :2] - prompt[:, 0:1, 1:]
-        waveform_pe = self.prompt_encoder.get_dense_pe(time_size=nt, station_location=relative_location, reference_time=prompt[:, 0:1, 0:1]/4, dt_s=self.prompt_encoder.dt_s*4)
+        waveform_pe = self.prompt_encoder.get_dense_pe(time_size=nt, station_location=station_location[..., :2], reference_location=prompt[:, 0:1, 1:], reference_time=prompt[:, 0:1, 0:1]/4, dt_s=self.prompt_encoder.dt_s*4)
         point_embeddings = self.prompt_encoder(points=prompt*0)
         
         associated_masks, iou_pred = self.mask_decoder(
@@ -108,6 +109,9 @@ class PhaseAssociator(nn.Module):
         
         return {"loss": loss, "loss_focal": loss_focal, "loss_dice": loss_dice, "loss_iou": loss_iou}
 
+    @torch.jit.ignore
+    def no_weight_decay_keywords(self):
+        return {"cpb_mlp"}
 
 class MaskDecoder(nn.Module):
     def __init__(
@@ -286,6 +290,7 @@ class PromptEncoder(nn.Module):
     def __init__(
         self,
         embed_dim: int,
+        position_bias_dim: int = 512,
         event_scale: int = 16,
         sampling_rate: float = 100.0,
     ) -> None:
@@ -306,7 +311,7 @@ class PromptEncoder(nn.Module):
         super().__init__()
         self.embed_dim = embed_dim
         self.dt_s = 1 / sampling_rate * event_scale # time unit
-        self.pe_layer = PositionEmbeddingPolarMLP(embed_dim // 2, event_scale=event_scale, sampling_rate=sampling_rate)
+        self.pe_layer = PositionEmbeddingPolarMLP(embed_dim // 2, position_bias_dim=position_bias_dim, event_scale=event_scale, sampling_rate=sampling_rate)
 
         #self.num_point_embeddings: int = 2  # pos/neg point
         self.num_point_embeddings: int = 1  # pos/neg point
@@ -314,7 +319,7 @@ class PromptEncoder(nn.Module):
         self.point_embeddings = nn.ModuleList(point_embeddings)
         #self.not_a_point_embed = nn.Embedding(1, embed_dim)
 
-    def get_dense_pe(self, time_size: Tensor, station_location: Tensor, reference_time: Tensor = 0.5, dt_s: float = None) -> Tensor:
+    def get_dense_pe(self, time_size: Tensor, station_location: Tensor, reference_location: Tensor = None, reference_time: Tensor = 0.5, dt_s: float = None) -> Tensor:
         """
         Returns the positional encoding used to encode point prompts,
         applied to a dense set of points the shape of the image encoding.
@@ -323,7 +328,7 @@ class PromptEncoder(nn.Module):
           Tensor: Positional encoding with shape
             1x(embed_dim)x(embedding_h)x(embedding_w)
         """
-        return self.pe_layer(time_size, station_location, reference_time=reference_time, dt_s=dt_s)
+        return self.pe_layer(time_size, station_location, reference_location=reference_location, reference_time=reference_time, dt_s=dt_s)
 
     def _embed_points(
         self,
@@ -408,12 +413,13 @@ class PositionEmbeddingRandom(nn.Module):
         # outputs d_1 x ... x d_n x C shape
         return torch.cat([torch.sin(coords), torch.cos(coords)], dim=-1)
     
-    def forward(self, time_size: int, station_location: Tensor, reference_time: Tensor = 0.5, dt_s: float = None) -> Tensor:
+    def forward(self, time_size: int, station_location: Tensor, reference_location: Tensor = None, reference_time: Tensor = 0.5, dt_s: float = None) -> Tensor:
         """
         Generate positional encoding for a grid of the specified size.
         Args:
             time_size (int): The time size of the image embedding, as (H, W).
             station_location (Tensor): The location of the station.
+            reference_location (Tensor): Unused, for interface compatibility.
         Returns:
             Tensor: Positional encoding with shape
                 1x(embed_dim)x(embedding_h)x(embedding_w)
@@ -423,19 +429,17 @@ class PositionEmbeddingRandom(nn.Module):
         t_embed = torch.arange(1, time_size+1, device=device, dtype=torch.float).unsqueeze(0).unsqueeze(2)
         t_embed = t_embed.repeat(station_location.shape[0], 1, 1) - reference_time
         t_embed = t_embed.repeat_interleave(station_location.shape[1], dim=1) * dt_s
-        #assert torch.abs(t_embed.max() - 40.96) < 1, f"Invalid t_embed max: {t_embed.max()}, expected 40.96"
         x_embed = station_location[..., :2].repeat(1, time_size, 1)
         grid = torch.cat([t_embed, x_embed], dim=-1).view(-1, time_size, station_location.shape[1], 3)
-        
+
         pe = self._pe_encoding(grid)
         return pe.permute(0, 3, 1, 2).contiguous()  # B x C x T x X
 
     def forward_with_coords(
-        self, coords_input: Tensor
+        self, coords_input: Tensor, reference_location: Tensor = None
     ) -> Tensor:
         """Positionally encode points that are converted to physical coordinates."""
         coords = coords_input.float()
-        #coords[:, :, 0] = coords[:, :, 0] * self.dt_s
         return self._pe_encoding(coords.to(torch.float))  # B x N x C
 
 
@@ -472,12 +476,13 @@ class PositionEmbeddingFourier(nn.Module):
         # outputs d_1 x ... x d_n x C shape
         return torch.cat([torch.sin(coords), torch.cos(coords)], dim=-1)
     
-    def forward(self, time_size: int, station_location: Tensor, reference_time: Tensor = 0.5, dt_s: float = None) -> Tensor:
+    def forward(self, time_size: int, station_location: Tensor, reference_location: Tensor = None, reference_time: Tensor = 0.5, dt_s: float = None) -> Tensor:
         """
         Generate positional encoding for a grid of the specified size.
         Args:
             time_size (int): The time size of the image embedding, as (H, W).
             station_location (Tensor): The location of the station.
+            reference_location (Tensor): Unused, for interface compatibility.
         Returns:
             Tensor: Positional encoding with shape
                 1x(embed_dim)x(embedding_h)x(embedding_w)
@@ -487,19 +492,17 @@ class PositionEmbeddingFourier(nn.Module):
         t_embed = torch.arange(1, time_size+1, device=device, dtype=torch.float).unsqueeze(0).unsqueeze(2)
         t_embed = t_embed.repeat(station_location.shape[0], 1, 1) - reference_time
         t_embed = t_embed.repeat_interleave(station_location.shape[1], dim=1) * dt_s
-        #assert torch.abs(t_embed.max() - 40.96) < 1, f"Invalid t_embed max: {t_embed.max()}, expected 40.96"
         x_embed = station_location[..., :2].repeat(1, time_size, 1)
         grid = torch.cat([t_embed, x_embed], dim=-1).view(-1, time_size, station_location.shape[1], 3)
-        
+
         pe = self._pe_encoding(grid)
         return pe.permute(0, 3, 1, 2).contiguous()  # B x C x T x X
 
     def forward_with_coords(
-        self, coords_input: Tensor
+        self, coords_input: Tensor, reference_location: Tensor = None
     ) -> Tensor:
         """Positionally encode points that are converted to physical coordinates."""
         coords = coords_input.float()
-        #coords[:, :, 0] = coords[:, :, 0] * self.dt_s
         return self._pe_encoding(coords.to(torch.float))  # B x N x C
 
 
@@ -529,25 +532,34 @@ class PositionEmbeddingPolar(nn.Module):
             scale * torch.cat([t_freq, dist_freq], dim=0),
         )
     
-    def calc_distazi(self, relative_coords):
+    def calc_distazi(self, station_coords, reference_coords):
         """
-        The input coords are already relative to the prompt (dlon, dlat)
-        
-        """
-        rel_loc = torch.deg2rad(relative_coords.float())
-        a = torch.sin(rel_loc[..., 1] / 2) ** 2 \
-            + torch.cos(rel_loc[..., 1]) * 1 * torch.sin(rel_loc[..., 0] / 2) ** 2 # 1 is torch.cos(0)
-        dist = 2 * torch.atan2(torch.sqrt(a), torch.sqrt(1 - a)) * 6371
-        # azimuth = torch.atan2(
-        #     torch.sin(rel_loc[..., 0]) * torch.cos(0),
-        #     torch.cos(rel_loc[..., 1]) * torch.sin(0) - torch.sin(rel_loc[..., 1]) * torch.cos(0) * torch.cos(rel_loc[..., 0])
-        # )
-        azimuth = torch.atan2(
-            torch.sin(rel_loc[..., 0]),
-            -torch.sin(rel_loc[..., 1]) * torch.cos(rel_loc[..., 0])
-        )
+        Compute great-circle distance and azimuth using correct haversine formula.
 
-        return torch.stack([dist, azimuth], dim=-1)
+        Args:
+            station_coords: (..., 2) absolute (lon, lat) in degrees
+            reference_coords: (..., 2) absolute (lon, lat) in degrees (broadcastable)
+        Returns:
+            (..., 2) tensor of (distance_km, azimuth_rad)
+        """
+        with torch.amp.autocast(device_type=station_coords.device.type, enabled=False):
+            station_coords = station_coords.float()
+            reference_coords = reference_coords.float()
+            lat1 = torch.deg2rad(reference_coords[..., 1:2])
+            lat2 = torch.deg2rad(station_coords[..., 1:2])
+            dlon = torch.deg2rad(station_coords[..., 0:1] - reference_coords[..., 0:1])
+            dlat = lat2 - lat1
+
+            a = torch.sin(dlat / 2) ** 2 \
+                + torch.cos(lat1) * torch.cos(lat2) * torch.sin(dlon / 2) ** 2
+            dist = 2 * torch.atan2(torch.sqrt(a), torch.sqrt(1 - a)) * 6371
+
+            y = torch.sin(dlon) * torch.cos(lat2)
+            x = torch.cos(lat1) * torch.sin(lat2) \
+                - torch.sin(lat1) * torch.cos(lat2) * torch.cos(dlon)
+            azimuth = torch.atan2(y, x)
+
+            return torch.cat([dist, azimuth], dim=-1)
 
     def _pe_encoding(self, coords: Tensor) -> Tensor:
         """Positionally encode points that are normalized to [0,1]."""
@@ -558,37 +570,41 @@ class PositionEmbeddingPolar(nn.Module):
         coords = 2 * math.pi * coords
         # outputs d_1 x ... x d_n x C shape
         return torch.cat([torch.sin(coords), torch.cos(coords)], dim=-1)
-    
-    def forward(self, time_size: int, station_location: Tensor, reference_time: Tensor = 0.5, dt_s: float = None) -> Tensor:
+
+    def forward(self, time_size: int, station_location: Tensor, reference_location: Tensor = None, reference_time: Tensor = 0.5, dt_s: float = None) -> Tensor:
         """
         Generate positional encoding for a grid of the specified size.
         Args:
             time_size (int): The time size of the image embedding, as (H, W).
-            station_location (Tensor): The location of the station.
+            station_location (Tensor): Absolute (lon, lat) of stations, shape (B, nsta, 2).
+            reference_location (Tensor): Absolute (lon, lat) of reference point, shape (B, 1, 2).
         Returns:
             Tensor: Positional encoding with shape
-                1x(embed_dim)x(embedding_h)x(embedding_w)
+                Bx(embed_dim)x(time_size)x(nsta)
         """
         device: Any = self.positional_encoding_gaussian_matrix.device
         dt_s = dt_s if dt_s is not None else self.dt_s
         t_embed = torch.arange(1, time_size+1, device=device, dtype=torch.float).unsqueeze(0).unsqueeze(2)
         t_embed = t_embed.repeat(station_location.shape[0], 1, 1) - reference_time
         t_embed = t_embed.repeat_interleave(station_location.shape[1], dim=1) * dt_s
-        #assert torch.abs(t_embed.max() - 40.96) < 1, f"Invalid t_embed max: {t_embed.max()}, expected 40.96"
         x_embed = station_location[..., :2].repeat(1, time_size, 1)
-        x_embed = self.calc_distazi(x_embed)
+        if reference_location is not None:
+            ref_embed = reference_location.expand(-1, station_location.shape[1], -1).repeat(1, time_size, 1)
+        else:
+            ref_embed = torch.zeros_like(x_embed)
+        x_embed = self.calc_distazi(x_embed, ref_embed)
         grid = torch.cat([t_embed, x_embed], dim=-1).view(-1, time_size, station_location.shape[1], 3)
-        
+
         pe = self._pe_encoding(grid)
         return pe.permute(0, 3, 1, 2).contiguous()  # B x C x T x X
 
     def forward_with_coords(
-        self, coords_input: Tensor
+        self, coords_input: Tensor, reference_location: Tensor = None
     ) -> Tensor:
         """Positionally encode points that are converted to physical coordinates."""
         coords = coords_input.float()
-        coords[..., 1:] = self.calc_distazi(coords[..., 1:])
-        #coords[:, :, 0] = coords[:, :, 0] * self.dt_s
+        ref = reference_location if reference_location is not None else torch.zeros_like(coords[..., 1:])
+        coords[..., 1:] = self.calc_distazi(coords[..., 1:], ref)
         return self._pe_encoding(coords.to(torch.float))  # B x N x C
     
     
@@ -617,12 +633,13 @@ class PositionEmbeddingMLP(nn.Module):
         # outputs d_1 x ... x d_n x C shape
         return pe_embedding
 
-    def forward(self, time_size: int, station_location: Tensor, reference_time: Tensor = 0.5, dt_s: float = None) -> Tensor:
+    def forward(self, time_size: int, station_location: Tensor, reference_location: Tensor = None, reference_time: Tensor = 0.5, dt_s: float = None) -> Tensor:
         """
         Generate positional encoding for a grid of the specified size.
         Args:
             time_size (int): The time size of the image embedding, as (H, W).
             station_location (Tensor): The location of the station.
+            reference_location (Tensor): Unused, for interface compatibility.
         Returns:
             Tensor: Positional encoding with shape
                 1x(embed_dim)x(embedding_h)x(embedding_w)
@@ -632,19 +649,17 @@ class PositionEmbeddingMLP(nn.Module):
         t_embed = torch.arange(1, time_size+1, device=device, dtype=torch.float).unsqueeze(0).unsqueeze(2)
         t_embed = t_embed.repeat(station_location.shape[0], 1, 1) - reference_time
         t_embed = t_embed.repeat_interleave(station_location.shape[1], dim=1) * dt_s
-        #assert torch.abs(t_embed.max() - 40.96) < 1, f"Invalid t_embed max: {t_embed.max()}, expected 40.96"
         x_embed = station_location[..., :2].repeat(1, time_size, 1)
         grid = torch.cat([t_embed, x_embed], dim=-1).view(-1, time_size, station_location.shape[1], 3)
-        
+
         pe = self._pe_encoding(grid)
         return pe.permute(0, 3, 1, 2).contiguous()  # B x C x T x X
 
     def forward_with_coords(
-        self, coords_input: Tensor
+        self, coords_input: Tensor, reference_location: Tensor = None
     ) -> Tensor:
         """Positionally encode points that are converted to physical coordinates."""
         coords = coords_input.float()
-        #coords[:, :, 0] = coords[:, :, 0] * self.dt_s
         return self._pe_encoding(coords.to(torch.float))  # B x N x C
 
 
@@ -652,7 +667,7 @@ class PositionEmbeddingPolarMLP(nn.Module):
     """
     Positional encoding using predefined spatial frequencies.
     """
-    def __init__(self, num_pos_feats: int = 64, scale: Optional[float] = None, 
+    def __init__(self, num_pos_feats: int = 64, scale: Optional[float] = None, position_bias_dim: int = 512,
                  event_scale: int = 16, sampling_rate: float = 100.0, theta_t: float = 10000.0,
                  freq_dist: Tuple = (0, 13), freq_azi: Tuple = (0, 13)) -> None:
         super().__init__()
@@ -660,29 +675,38 @@ class PositionEmbeddingPolarMLP(nn.Module):
             scale = 1.0
 
         self.dt_s = 1 / sampling_rate * event_scale  # time unit
-        self.cpb_mlp = nn.Sequential(nn.Linear(4, 512, bias=True),
+        self.cpb_mlp = nn.Sequential(nn.Linear(4, position_bias_dim, bias=True),
                                          nn.ReLU(inplace=True),
-                                         nn.Linear(512, num_pos_feats*2, bias=False))
+                                         nn.Linear(position_bias_dim, num_pos_feats*2, bias=False))
     
-    def calc_distazi(self, relative_coords):
+    def calc_distazi(self, station_coords, reference_coords):
         """
-        The input coords are already relative to the prompt (dlon, dlat)
-        
-        """
-        rel_loc = torch.deg2rad(relative_coords.float())
-        a = torch.sin(rel_loc[..., 1] / 2) ** 2 \
-            + torch.cos(rel_loc[..., 1]) * 1 * torch.sin(rel_loc[..., 0] / 2) ** 2 # 1 is torch.cos(0)
-        dist = 2 * torch.atan2(torch.sqrt(a), torch.sqrt(1 - a)) * 6371
-        # azimuth = torch.atan2(
-        #     torch.sin(rel_loc[..., 0]) * torch.cos(0),
-        #     torch.cos(rel_loc[..., 1]) * torch.sin(0) - torch.sin(rel_loc[..., 1]) * torch.cos(0) * torch.cos(rel_loc[..., 0])
-        # )
-        azimuth = torch.atan2(
-            torch.sin(rel_loc[..., 0]),
-            -torch.sin(rel_loc[..., 1]) * torch.cos(rel_loc[..., 0])
-        )
+        Compute great-circle distance and azimuth using correct haversine formula.
 
-        return torch.stack([dist, azimuth], dim=-1)
+        Args:
+            station_coords: (..., 2) absolute (lon, lat) in degrees
+            reference_coords: (..., 2) absolute (lon, lat) in degrees (broadcastable)
+        Returns:
+            (..., 2) tensor of (distance_km, azimuth_rad)
+        """
+        with torch.amp.autocast(device_type=station_coords.device.type, enabled=False):
+            station_coords = station_coords.float()
+            reference_coords = reference_coords.float()
+            lat1 = torch.deg2rad(reference_coords[..., 1:2])
+            lat2 = torch.deg2rad(station_coords[..., 1:2])
+            dlon = torch.deg2rad(station_coords[..., 0:1] - reference_coords[..., 0:1])
+            dlat = lat2 - lat1
+
+            a = torch.sin(dlat / 2) ** 2 \
+                + torch.cos(lat1) * torch.cos(lat2) * torch.sin(dlon / 2) ** 2
+            dist = 2 * torch.atan2(torch.sqrt(a), torch.sqrt(1 - a)) * 6371
+
+            y = torch.sin(dlon) * torch.cos(lat2)
+            x = torch.cos(lat1) * torch.sin(lat2) \
+                - torch.sin(lat1) * torch.cos(lat2) * torch.cos(dlon)
+            azimuth = torch.atan2(y, x)
+
+            return torch.cat([dist, azimuth], dim=-1)
 
     def _pe_encoding(self, coords: Tensor) -> Tensor:
         """Positionally encode points that are normalized to [0,1]."""
@@ -695,34 +719,38 @@ class PositionEmbeddingPolarMLP(nn.Module):
         # outputs d_1 x ... x d_n x C shape
         return pe_embedding
 
-    def forward(self, time_size: int, station_location: Tensor, reference_time: Tensor = 0.5, dt_s: float = None) -> Tensor:
+    def forward(self, time_size: int, station_location: Tensor, reference_location: Tensor = None, reference_time: Tensor = 0.5, dt_s: float = None) -> Tensor:
         """
         Generate positional encoding for a grid of the specified size.
         Args:
             time_size (int): The time size of the image embedding, as (H, W).
-            station_location (Tensor): The location of the station.
+            station_location (Tensor): Absolute (lon, lat) of stations, shape (B, nsta, 2).
+            reference_location (Tensor): Absolute (lon, lat) of reference point, shape (B, 1, 2).
         Returns:
             Tensor: Positional encoding with shape
-                1x(embed_dim)x(embedding_h)x(embedding_w)
+                Bx(embed_dim)x(time_size)x(nsta)
         """
         device: Any = next(self.cpb_mlp.parameters()).device
         dt_s = dt_s if dt_s is not None else self.dt_s
         t_embed = torch.arange(1, time_size+1, device=device, dtype=torch.float).unsqueeze(0).unsqueeze(2)
         t_embed = t_embed.repeat(station_location.shape[0], 1, 1) - reference_time
         t_embed = t_embed.repeat_interleave(station_location.shape[1], dim=1) * dt_s
-        #assert torch.abs(t_embed.max() - 40.96) < 1, f"Invalid t_embed max: {t_embed.max()}, expected 40.96"
         x_embed = station_location[..., :2].repeat(1, time_size, 1)
-        x_embed = self.calc_distazi(x_embed)
+        if reference_location is not None:
+            ref_embed = reference_location.expand(-1, station_location.shape[1], -1).repeat(1, time_size, 1)
+        else:
+            ref_embed = torch.zeros_like(x_embed)
+        x_embed = self.calc_distazi(x_embed, ref_embed)
         grid = torch.cat([t_embed, x_embed], dim=-1).view(-1, time_size, station_location.shape[1], 3)
-        
+
         pe = self._pe_encoding(grid)
         return pe.permute(0, 3, 1, 2).contiguous()  # B x C x T x X
 
     def forward_with_coords(
-        self, coords_input: Tensor
+        self, coords_input: Tensor, reference_location: Tensor = None
     ) -> Tensor:
         """Positionally encode points that are converted to physical coordinates."""
         coords = coords_input.float()
-        coords[..., 1:] = self.calc_distazi(coords[..., 1:])
-        #coords[:, :, 0] = coords[:, :, 0] * self.dt_s
+        ref = reference_location if reference_location is not None else torch.zeros_like(coords[..., 1:])
+        coords[..., 1:] = self.calc_distazi(coords[..., 1:], ref)
         return self._pe_encoding(coords.to(torch.float))  # B x N x C

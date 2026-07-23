@@ -3,6 +3,7 @@ import datetime
 import errno
 import hashlib
 import os
+import psutil
 import time
 from collections import OrderedDict, defaultdict, deque
 from typing import List, Optional, Tuple
@@ -11,6 +12,17 @@ import numpy as np
 import torch
 import torch.distributed as dist
 
+_proc = psutil.Process(os.getpid())
+
+def cpu_ram_tree_mb() -> float:
+    """主进程 + 所有子进程 RSS 总和（MiB）"""
+    rss = _proc.memory_info().rss
+    for child in _proc.children(recursive=True):
+        try:
+            rss += child.memory_info().rss
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+    return rss / (1024 ** 2)
 
 class SmoothedValue:
     """Track a series of values and provide access to smoothed values over a
@@ -118,6 +130,7 @@ class MetricLogger:
                     "time: {time}",
                     "data: {data}",
                     "max mem: {memory:.0f}",
+                    "cpu mem: {cpu_mem:.1f}",
                     "{datetime}",
                 ]
             )
@@ -130,6 +143,7 @@ class MetricLogger:
                     "{meters}",
                     "time: {time}",
                     "data: {data}",
+                    "cpu mem: {cpu_mem:.1f}",
                     "{datetime}",
                 ]
             )
@@ -151,6 +165,7 @@ class MetricLogger:
                             time=str(iter_time),
                             data=str(data_time),
                             memory=torch.cuda.max_memory_allocated() / MB,
+                            cpu_mem=cpu_ram_tree_mb(),
                             datetime=datetime.datetime.now().strftime("%m-%dT%H:%M:%S"),
                         )
                     )
@@ -163,6 +178,7 @@ class MetricLogger:
                             meters=str(self),
                             time=str(iter_time),
                             data=str(data_time),
+                            cpu_mem=cpu_ram_tree_mb(),
                             datetime=datetime.datetime.now().strftime("%m-%dT%H:%M:%S"),
                         )
                     )

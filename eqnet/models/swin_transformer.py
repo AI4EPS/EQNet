@@ -381,7 +381,8 @@ def dynamic_shifted_window_attention(
     k = k.permute(0, 1, 3, 2, 4).unsqueeze(2).expand(-1, num_heads, pad_W, pad_W, window_size[0], C//num_heads) # B, nH, Wt, Wt*nx, nx, C//nH
     v = v.permute(0, 1, 3, 2, 4).unsqueeze(2).expand(-1, num_heads, pad_W, pad_W, window_size[0], C//num_heads)
     k = torch.gather(k, dim=3, index=topk_station_indices) # B, nH, Wt, nx, topk, C//nH
-    v = torch.gather(v, dim=3, index=topk_station_indices)
+    #v = torch.gather(v, dim=3, index=topk_station_indices)
+    
     #q = q.reshape(B * num_windows, num_heads, window_size[0]*pad_W, C//num_heads)
     q = q.permute(0, 1, 3, 2, 4)
     
@@ -393,7 +394,7 @@ def dynamic_shifted_window_attention(
         logit_scale = torch.clamp(logit_scale, max=np.log(100.0)).exp()
         attn = attn * logit_scale
     else:
-        q = q * (C // num_heads) ** -0.5
+        q *= (C // num_heads) ** -0.5
         #attn = q.matmul(k.transpose(-2, -1)) # B*nW, nH, Ws*Ws, Ws*Ws
         attn = torch.einsum("bhntd,bhnkud->bhntku", q, k) # B*nW, nH, Ws*Ws, Ws*Ws
         attn = attn.permute(0, 1, 3, 2, 5, 4).reshape(B * num_windows, num_heads, window_size[0] * pad_W, window_size[0] * window_size[1])
@@ -444,6 +445,7 @@ def dynamic_shifted_window_attention(
     attn = F.dropout(attn, p=attention_dropout, training=training)
 
     #x = attn.matmul(v).transpose(1, 2).reshape(x.size(0), x.size(1), C)
+    v = torch.gather(v, dim=3, index=topk_station_indices)
     x = torch.einsum('bhntku,bhnkud->bhntd', attn.view(B * num_windows, num_heads, window_size[0], pad_W, window_size[0], window_size[1]).permute(0,1,3,2,5,4), v)  # B*nW, nH, Wt, nx, C//nH
     x = x.permute(0,1,3,2,4).reshape(B * num_windows, num_heads, window_size[0]*pad_W, C//num_heads).transpose(1, 2).reshape(x.size(0), window_size[0]*pad_W, C)
     x = F.linear(x, proj_weight, proj_bias)
@@ -726,6 +728,7 @@ class ShiftedWindowAttention(nn.Module):
         dropout: float = 0.0,
         use_station_location: bool = True,
         use_relative_position_bias: bool = True,
+        relative_position_bias_dim: int = 512,
     ):
         super().__init__()
         if len(window_size) != 2 or len(shift_size) != 2:
@@ -880,6 +883,7 @@ class ShiftedWindowAttentionV2(ShiftedWindowAttention):
         dropout: float = 0.0,
         use_station_location: bool = True,
         use_relative_position_bias: bool = True,
+        relative_position_bias_dim: int = 512,
         decoupled_relative_position_bias: bool = False,
         time_unit: float = 1.0,
     ):
@@ -904,16 +908,16 @@ class ShiftedWindowAttentionV2(ShiftedWindowAttention):
         coords_dim = 5 if self.use_station_location else 2
         self.decoupled_relative_position_bias = decoupled_relative_position_bias
         if not decoupled_relative_position_bias:
-            self.cpb_mlp = nn.Sequential(nn.Linear(coords_dim, 512, bias=True),
+            self.cpb_mlp = nn.Sequential(nn.Linear(coords_dim, relative_position_bias_dim, bias=True),
                                          nn.ReLU(inplace=True),#checkpoint_wrapper(nn.GELU(), use_checkpoint=True),#nn.ReLU(inplace=True),
-                                         nn.Linear(512, num_heads, bias=False))
+                                         nn.Linear(relative_position_bias_dim, num_heads, bias=False))
         else:
-            self.cpb_mlp_time = nn.Sequential(nn.Linear(1, 128, bias=True),
+            self.cpb_mlp_time = nn.Sequential(nn.Linear(1, relative_position_bias_dim, bias=True),
                                                 nn.ReLU(inplace=True),#checkpoint_wrapper(nn.GELU(), use_checkpoint=True),#nn.ReLU(inplace=True),
-                                                nn.Linear(128, num_heads, bias=False))
-            self.cpb_mlp_space = nn.Sequential(nn.Linear(coords_dim-1, 512, bias=True),
+                                                nn.Linear(relative_position_bias_dim, num_heads, bias=False))
+            self.cpb_mlp_space = nn.Sequential(nn.Linear(coords_dim-1, relative_position_bias_dim, bias=True),
                                                 nn.ReLU(inplace=True),#checkpoint_wrapper(nn.GELU(), use_checkpoint=True),#nn.ReLU(inplace=True),
-                                                nn.Linear(512, num_heads, bias=False))
+                                                nn.Linear(relative_position_bias_dim, num_heads, bias=False))
         if qkv_bias:
             length = self.qkv.bias.numel() // 3
             self.qkv.bias[length : 2 * length].data.zero_()
@@ -957,7 +961,8 @@ class ShiftedWindowAttentionV2(ShiftedWindowAttention):
         if self.use_station_location:
             #relative_coords_t = self.relative_coords_t.repeat(loc_.shape[0], loc_.shape[1], loc_.shape[1], 1) # B, nt*nx, nt*nx, 1 #FIXME: this is wrong, causing mismatch in relative_position_coords
             relative_coords_t = self.relative_coords_t.repeat(loc_.shape[0], 1,1,1).repeat_interleave(loc_.shape[1], dim=1).repeat_interleave(loc_.shape[1], dim=2)*self.time_unit # B, nt*nx, nt*nx, 1
-            device = loc_.device
+            #device = loc_.device
+            device = loc_.device.type
             dtype = loc_.dtype
             device = device if isinstance(device, str) and device != "mps" else "cpu"
             #TODO: IF we implement window for station here, more memory can be saved to deal with large number of stations ~300+  
@@ -991,6 +996,12 @@ class ShiftedWindowAttentionV2(ShiftedWindowAttention):
             # relative_position_bias = self.cpb_mlp(relative_coords) #bt, Wh*Ww, Wh*Ww, nH
             if not self.decoupled_relative_position_bias:
                 relative_position_bias = self.cpb_mlp(torch.cat((relative_coords_t, relative_coords_sta), dim=-1)) #bt, Wh*Ww, Wh*Ww, nH
+                #rpc = torch.cat((relative_coords_t, relative_coords_sta), dim=-1)
+                #rpb_1 = self.cpb_mlp(rpc[:, :(self.window_size[0]*loc_.shape[1])//4, :,:]) #bt, Wh*Ww, Wh*Ww, nH
+                #rpb_2 = self.cpb_mlp(rpc[:, (self.window_size[0]*loc_.shape[1])//4:((self.window_size[0]*loc_.shape[1])//4)*2, :, :]) #bt, Wh*Ww, Wh*Ww, nH
+                #rpb_3 = self.cpb_mlp(rpc[:, ((self.window_size[0]*loc_.shape[1])//4)*2:((self.window_size[0]*loc_.shape[1])//4)*3, :, :]) #bt, Wh*Ww, Wh*Ww, nH
+                #rpb_4 = self.cpb_mlp(rpc[:, ((self.window_size[0]*loc_.shape[1])//4)*3:, :, :]) #bt, Wh*Ww, Wh*Ww, nH
+                #relative_position_bias = torch.cat((rpb_1, rpb_2, rpb_3, rpb_4), dim=1)
             else:
                 relative_position_bias = self.cpb_mlp_time(relative_coords_t.to(dtype)) + self.cpb_mlp_space(relative_coords_sta) #bt, Wh*Ww, Wh*Ww, nH
             relative_position_bias = relative_position_bias.permute(0, 3, 1, 2).view(loc.shape[0], self.num_heads, self.window_size[0], loc.shape[1], self.window_size[0], loc.shape[1]) #bt, nH, nt, nx, nt, nx
@@ -1052,6 +1063,7 @@ class DynamicShiftedWindowAttention(ShiftedWindowAttentionV2):
         use_station_location: bool = True,
         use_relative_position_bias: bool = True,
         decoupled_relative_position_bias: bool = False,
+        relative_position_bias_dim: int = 512,
         time_unit: float = 1.0,
     ):
         super().__init__(
@@ -1066,6 +1078,7 @@ class DynamicShiftedWindowAttention(ShiftedWindowAttentionV2):
             use_station_location=use_station_location,
             use_relative_position_bias=use_relative_position_bias,
             decoupled_relative_position_bias=decoupled_relative_position_bias,
+            relative_position_bias_dim=relative_position_bias_dim,
             time_unit=time_unit,
         )
 
@@ -1073,7 +1086,8 @@ class DynamicShiftedWindowAttention(ShiftedWindowAttentionV2):
         if self.use_station_location:
             #relative_coords_t = self.relative_coords_t.repeat(loc_.shape[0], loc_.shape[1], loc_.shape[1], 1) # B, nt*nx, nt*nx, 1 #FIXME: this is wrong, causing mismatch in relative_position_coords
             relative_coords_t = self.relative_coords_t.repeat(loc_.shape[0], 1,1,1).repeat_interleave(loc_.shape[1], dim=1).repeat_interleave(self.window_size[1], dim=2)*self.time_unit # B, nt*nx, nt*k, 1
-            device = loc_.device
+            #device = loc_.device
+            device = loc_.device.type
             dtype = loc_.dtype
             device = device if isinstance(device, str) and device != "mps" else "cpu"
             #TODO: IF we implement window for station here, more memory can be saved to deal with large number of stations ~300+  
@@ -1171,6 +1185,7 @@ class RotaryAxialWindowAttention(ShiftedWindowAttentionV2):
         use_station_location: bool = True,
         use_relative_position_bias: bool = False,
         decoupled_relative_position_bias: bool = False,
+        relative_position_bias_dim: int = 512,
         time_unit: float = 1.0,
         use_cos_attention: bool = False,
         **kwargs,
@@ -1186,6 +1201,7 @@ class RotaryAxialWindowAttention(ShiftedWindowAttentionV2):
             dropout=dropout,
             use_station_location=use_station_location,
             decoupled_relative_position_bias=decoupled_relative_position_bias,
+            relative_position_bias_dim=relative_position_bias_dim,
             time_unit=time_unit,
         )
         
@@ -1296,6 +1312,7 @@ class RotaryMixedWindowAttention(RotaryAxialWindowAttention):
         use_station_location: bool = True,
         use_relative_position_bias: bool = False,
         decoupled_relative_position_bias: bool = False,
+        relative_position_bias_dim: int = 512,
         time_unit: float = 1.0,
         use_cos_attention: bool = False,
     ):
@@ -1315,6 +1332,7 @@ class RotaryMixedWindowAttention(RotaryAxialWindowAttention):
             use_station_location=use_station_location,
             use_relative_position_bias=use_relative_position_bias,
             decoupled_relative_position_bias=decoupled_relative_position_bias,
+            relative_position_bias_dim=relative_position_bias_dim,
             time_unit=time_unit,
             use_cos_attention=use_cos_attention,
         )
@@ -1404,6 +1422,7 @@ class SwinTransformerBlock(nn.Module):
         use_station_location: bool = True,
         use_relative_position_bias: bool = True,
         decoupled_relative_position_bias: bool = False,
+        relative_position_bias_dim: int = 512,
         time_unit: float = 1.0,
     ):
         super().__init__()
@@ -1420,6 +1439,7 @@ class SwinTransformerBlock(nn.Module):
             use_relative_position_bias=use_relative_position_bias,
             decoupled_relative_position_bias=decoupled_relative_position_bias,
             time_unit=time_unit,
+            relative_position_bias_dim=relative_position_bias_dim,
         )
         self.stochastic_depth = StochasticDepth(stochastic_depth_prob, "row")
         self.norm2 = norm_layer(dim)
@@ -1473,6 +1493,7 @@ class SwinTransformerBlockV2(SwinTransformerBlock):
         use_station_location: bool = True,
         use_relative_position_bias: bool = True,
         decoupled_relative_position_bias: bool = False,
+        relative_position_bias_dim: int = 512,
         time_unit: float = 1.0,
         **kwargs,
     ):
@@ -1490,6 +1511,7 @@ class SwinTransformerBlockV2(SwinTransformerBlock):
             use_station_location=use_station_location,
             use_relative_position_bias=use_relative_position_bias,
             decoupled_relative_position_bias=decoupled_relative_position_bias,
+            relative_position_bias_dim=relative_position_bias_dim,
             time_unit=time_unit,
         )
 
@@ -1517,6 +1539,7 @@ class RotarySwinBlock(SwinTransformerBlockV2):
         use_station_location: bool = True,
         use_relative_position_bias: bool = False,
         decoupled_relative_position_bias: bool = False,
+        relative_position_bias_dim: int = 512,
         time_unit: float = 1.0,
         use_rope: bool = True,
         use_rope_mixed: bool = False,
@@ -1535,6 +1558,7 @@ class RotarySwinBlock(SwinTransformerBlockV2):
             use_station_location=use_station_location,
             use_relative_position_bias=use_relative_position_bias,
             decoupled_relative_position_bias=decoupled_relative_position_bias,
+            relative_position_bias_dim=relative_position_bias_dim,
             time_unit=time_unit,
         )
 
@@ -1580,6 +1604,7 @@ class SwinTransformer(nn.Module):
         use_rope: bool = False,
         use_rope_mixed: bool = False,
         decoupled_relative_position_bias: bool = False,
+        relative_position_bias_dim: int = 512,
         sampling_rate: float = 100.0,
     ):
         super().__init__()
@@ -1631,12 +1656,15 @@ class SwinTransformer(nn.Module):
             for i_layer in range(depths[i_stage]):
                 # adjust stochastic depth probability based on the depth of the stage block
                 sd_prob = stochastic_depth_prob * float(stage_block_id) / (total_stage_blocks - 1)
-                #temp_window_size = [window_size[0], window_size[1]//(4//(2**i_stage))] if i_stage <= 1 else window_size
+                #temp_window_size = [window_size[0], min(window_size[1], 4**i_stage)] if i_stage <= 1 else window_size
+                temp_window_size = window_size
+                #temp_window_size = [window_size[0], window_size[1]*(i_stage+1)] if i_stage <= 1 else [window_size[0], window_size[1]*8]
+                print(f"Stage {i_stage}, Layer {i_layer}, Window Size: {temp_window_size}, Stochastic Depth Prob: {sd_prob:.4f}")
                 stage.append(
                     block(
                         dim,
                         num_heads[i_stage],
-                        window_size=window_size,# if i_stage > 1 else temp_window_size,
+                        window_size=temp_window_size,# if i_stage > 1 else temp_window_size,
                         shift_size=[0 if i_layer % 2 == 0 else w // 2 for w in window_size],# if i_stage > 1 else [0 if i_layer % 2 == 0 else w // 2 for w in temp_window_size],
                         mlp_ratio=mlp_ratio,
                         dropout=dropout,
@@ -1649,6 +1677,7 @@ class SwinTransformer(nn.Module):
                         use_rope=use_rope,
                         use_rope_mixed=use_rope_mixed,
                         decoupled_relative_position_bias=decoupled_relative_position_bias,
+                        relative_position_bias_dim=relative_position_bias_dim,
                         time_unit=dt_s*(4**(i_stage+1)) if sampling_rate>0 else 1.0,
                     )
                 )
@@ -1682,7 +1711,7 @@ class SwinTransformer(nn.Module):
         return {'absolute_pos_embed'}
     @torch.jit.ignore
     def no_weight_decay_keywords(self):
-        return {"cpb_mlp", "logit_scale", 'relative_position_bias_table'}
+        return {"cpb_mlp", "logit_scale", 'relative_position_bias_table', 'freqs'}
 
     def forward(self, x, loc):
         

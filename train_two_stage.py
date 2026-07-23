@@ -257,7 +257,7 @@ def main(args):
             test_sampler = None
             
             negative_mask_ratio = Value("d", 1.0)
-            cat_event_ratio = Value("d", 0.08)
+            cat_event_ratio = Value("d", 0.06)
             def worker_init_fn(negative_mask_ratio, cat_event_ratio, worker_id):
                 info = torch.utils.data.get_worker_info()
                 info.dataset.negative_mask_ratio = negative_mask_ratio
@@ -292,7 +292,7 @@ def main(args):
             drop_last=True,
             prefetch_factor=5,
             #pin_memory=True,
-            persistent_workers=True,
+            persistent_workers=False,#True,
             worker_init_fn=partial(worker_init_fn, negative_mask_ratio, cat_event_ratio) if args.model == "eqnet" else None,
         )
 
@@ -377,9 +377,19 @@ def main(args):
     )
     
     optimizer = torch.optim.AdamW(warmup_parameters, lr=args.new_warmup_lr, weight_decay=args.weight_decay)
-    # constant lr schedule
+    # linear warmup to constant lr schedule
     iters_per_epoch = len(data_loader)
-    lr_scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer, factor=1.0, total_iters=iters_per_epoch*args.new_warmup_epoch)
+    warmup_lr_scheduler = torch.optim.lr_scheduler.LinearLR(
+        optimizer, start_factor=args.lr_warmup_decay, total_iters=int(1.0 * iters_per_epoch)
+    )
+    main_lr_scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer, factor=1.0, total_iters=iters_per_epoch*args.new_warmup_epoch-int(1.0 * iters_per_epoch))
+    
+    lr_scheduler = torch.optim.lr_scheduler.SequentialLR(
+        optimizer,
+        schedulers=[warmup_lr_scheduler, main_lr_scheduler],
+        milestones=[int(0.5 * iters_per_epoch)],
+    )
+    #lr_scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer, factor=1.0, total_iters=iters_per_epoch*args.new_warmup_epoch)
     tasks = ["loss_focal", "loss_dice", "loss_iou"]
     pre_weight = list(model.phase_associator.weights.values())
     print(f"{args.model}: constant pre_weight: ", end="\t")
@@ -462,7 +472,7 @@ def main(args):
             break
         if epoch>args.new_warmup_epoch//2 and args.model == "eqnet" and not args.huggingface_dataset:
             with cat_event_ratio.get_lock():
-                cat_event_ratio.value = 0.12 if epoch>args.new_warmup_epoch//2 else 0.08
+                cat_event_ratio.value = 0.08 if epoch>args.new_warmup_epoch//2 else 0.04
         if args.distributed and (train_sampler is not None):
             train_sampler.set_epoch(epoch)
 
@@ -525,25 +535,110 @@ def main(args):
     original_model = model.module if args.distributed else model
     for param in original_model.parameters():
         param.requires_grad = True    
-        
-    other_modules = torch.nn.ModuleList([m for n, m in original_model.named_children() if n != "phase_associator"])
-    main_parameters = utils.set_weight_decay(
+
+    def build_backbone_param_groups(backbone: torch.nn.Module):
+        """
+        Returns param groups for backbone.
+        - If use_llrd: assigns smaller lr to earlier layers.
+        - Always uses utils.set_weight_decay so norm/bias can get wd=0.
+        """
+        if not args.use_llrd:
+            groups = utils.set_weight_decay(
+                backbone,
+                args.weight_decay,
+                norm_weight_decay=args.norm_weight_decay,
+                custom_keys_weight_decay=custom_keys_weight_decay if len(custom_keys_weight_decay) > 0 else None,
+            )
+            for g in groups:
+                g["lr"] = args.lr
+            return groups
+
+        # --- LLRD path ---
+        stage_lr_mult = {
+            "features.6": 1.0,
+            "features.5": 1.0,
+            "features.4": args.llrd,
+            "features.3": args.llrd,
+            "features.2": args.llrd**2,
+            "features.1": args.llrd**2,
+            "features.0": args.llrd**3,
+            "split_patch": args.llrd**4,
+            "cpb_mlp": args.llrd**4,
+        }
+
+        base_groups = utils.set_weight_decay(
+            backbone,
+            args.weight_decay*0.1,
+            norm_weight_decay=args.norm_weight_decay,
+            custom_keys_weight_decay=custom_keys_weight_decay if len(custom_keys_weight_decay) > 0 else None,
+        )
+
+        name_to_param = {n: p for n, p in backbone.named_parameters() if p.requires_grad}
+        expanded = []
+
+        def lr_mult_for_name(name: str) -> float:
+            if "cpb_mlp" in name:
+                return stage_lr_mult["cpb_mlp"]
+            
+            for key, mult in stage_lr_mult.items():
+                if name.startswith(key):
+                    return mult
+
+            return 1.0
+
+        param_to_wd = {}
+        for g in base_groups:
+            wd = g.get("weight_decay", 0.0)
+            for p in g["params"]:
+                param_to_wd[id(p)] = wd
+
+        # create dict: (lr, wd) -> param list
+        buckets = {}
+        for n, p in name_to_param.items():
+            wd = param_to_wd.get(id(p), args.weight_decay*0.1)
+            lr = args.lr * lr_mult_for_name(n)
+            buckets.setdefault((lr, wd), []).append(p)
+
+        for (lr, wd), ps in buckets.items():
+            expanded.append({"params": ps, "lr": lr, "weight_decay": wd})
+
+        return expanded
+
+    backbone_groups = build_backbone_param_groups(original_model.backbone)
+
+    neck_groups = utils.set_weight_decay(
+        original_model.neck,
+        args.weight_decay*0.6,
+        norm_weight_decay=args.norm_weight_decay,
+        custom_keys_weight_decay=custom_keys_weight_decay if len(custom_keys_weight_decay) > 0 else None,
+    )
+    for g in neck_groups:
+        g["lr"] = min(args.lr*5, args.new_full_lr*0.5) # allow larger lr for neck
+
+    other_modules = torch.nn.ModuleList([
+        m for n, m in original_model.named_children()
+        if n not in ["backbone", "neck", "phase_associator"]
+    ])
+
+    old_groups = utils.set_weight_decay(
         other_modules,
-        0.0, # no weight decay for backbone and other modules
+        args.weight_decay*0.2,
         norm_weight_decay=args.norm_weight_decay,
         custom_keys_weight_decay=custom_keys_weight_decay if len(custom_keys_weight_decay) > 0 else None,
     )
-    for group in main_parameters:
-        group['lr'] = args.lr
-    new_parameters = utils.set_weight_decay(
+    for g in old_groups:
+        g["lr"] = min(args.lr*20, args.new_full_lr*0.5) # allow larger lr for old modules except backbone and neck
+
+    new_groups = utils.set_weight_decay(
         original_model.phase_associator,
-        args.weight_decay,
+        args.weight_decay*0.8,
         norm_weight_decay=args.norm_weight_decay,
         custom_keys_weight_decay=custom_keys_weight_decay if len(custom_keys_weight_decay) > 0 else None,
     )
-    for group in new_parameters:
-        group['lr'] = args.new_full_lr
-    parameters = main_parameters + new_parameters
+    for g in new_groups:
+        g["lr"] = args.new_full_lr
+
+    parameters = backbone_groups + neck_groups + old_groups + new_groups
 
     opt_name = args.opt.lower()
     if opt_name.startswith("sgd"):
@@ -604,20 +699,6 @@ def main(args):
     else:
         lr_scheduler = main_lr_scheduler
         
-    if args.mtl is not None:
-        if args.mtl == "dwa" or args.mtl == "dwa_inverse":
-            if args.model == "eqnet":
-                #tasks = ["loss_phase", "loss_event", "loss_offset", "loss_hypocenter"]
-                tasks = ["loss_phase", "loss_event", "loss_offset", "loss_origin_time", "loss_x", "loss_y", "loss_depth", "loss_magnitude", "loss_polarity", "loss_focal", "loss_dice", "loss_iou"]
-                # pre_weight = args.pre_weight
-                pre_weight = original_model.phase_picker.weights+original_model.event_detector.weights+original_model.polarity_picker.weights + list(original_model.phase_associator.weights.values())
-                print(f"{args.model}: {args.mtl} pre_weight: ", end="\t")
-                for i, k in enumerate(tasks):
-                    print(f"{k}: {pre_weight[i]:.4f}", end="\t")
-                print()
-        
-        balancer = utils.MTLBalance(args.mtl, tasks, pre_weight, args.temp, args.epochs+1, device)
-
     model_without_ddp = original_model
     # print parameter number
     #print("Number of parameters: ", sum(p.numel() for p in model_without_ddp.parameters() if p.requires_grad))
@@ -653,7 +734,7 @@ def main(args):
         drop_last=True,
         #prefetch_factor=5,
         #pin_memory=True,
-        persistent_workers=True,
+        persistent_workers=False,#True,
         worker_init_fn=partial(worker_init_fn, negative_mask_ratio, cat_event_ratio) if args.model == "eqnet" else None,
     )
     
@@ -678,6 +759,23 @@ def main(args):
                 model_ema.load_state_dict(checkpoint["model_ema"])
             if scaler:
                 scaler.load_state_dict(checkpoint["scaler"])
+                
+    if args.mtl is not None:
+        if args.mtl == "dwa" or args.mtl == "dwa_inverse":
+            if args.model == "eqnet":
+                #tasks = ["loss_phase", "loss_event", "loss_offset", "loss_hypocenter"]
+                tasks = ["loss_phase", "loss_event", "loss_offset", "loss_origin_time", "loss_x", "loss_y", "loss_depth", "loss_magnitude", "loss_polarity", "loss_focal", "loss_dice", "loss_iou"]
+                # pre_weight = args.pre_weight
+                pre_weight = original_model.phase_picker.weights+original_model.event_detector.weights+original_model.polarity_picker.weights + list(original_model.phase_associator.weights.values())
+                scaling = 1
+                for i in range(len(pre_weight)-3):
+                    pre_weight[i] = pre_weight[i] * scaling # scale down the loss weights for other tasks except phase associator
+                print(f"{args.model}: {args.mtl} pre_weight: ", end="\t")
+                for i, k in enumerate(tasks):
+                    print(f"{k}: {pre_weight[i]:.4f}", end="\t")
+                print()
+        
+        balancer = utils.MTLBalance(args.mtl, tasks, pre_weight, args.temp, args.epochs+base_epoch+1, device)
 
     start_time = time.time()
     best_loss = float("inf")
@@ -685,10 +783,18 @@ def main(args):
         if epoch%5==0 and epoch >= 5 and args.model == "eqnet" and not args.huggingface_dataset:
             #negative_mask_ratio = max(1.0 - 0.03 * epoch, 0.3)
             with negative_mask_ratio.get_lock():
-                negative_mask_ratio.value = max(1.0 - 0.006 * epoch, 0.4)
-        if epoch>args.epochs//3 and args.model == "eqnet" and not args.huggingface_dataset:
+                negative_mask_ratio.value = max(1.0 - 0.006 * epoch, 0.74)
+        cat_epoch = epoch - base_epoch + args.new_warmup_epoch
+        if cat_epoch>(args.epochs+args.new_warmup_epoch)//3 and args.model == "eqnet" and not args.huggingface_dataset:
             with cat_event_ratio.get_lock():
-                cat_event_ratio.value = 0.12 if epoch<2*args.epochs//3 else 0.16
+                if cat_epoch<(args.epochs+args.new_warmup_epoch)//4:
+                    cat_event_ratio.value = 0.08
+                elif cat_epoch<2*(args.epochs+args.new_warmup_epoch)//4:
+                    cat_event_ratio.value = 0.12
+                elif cat_epoch<3*(args.epochs+args.new_warmup_epoch)//4:
+                    cat_event_ratio.value = 0.16
+                else:
+                    cat_event_ratio.value = 0.18
         if args.distributed and (train_sampler is not None):
             train_sampler.set_epoch(epoch)
 
@@ -704,7 +810,7 @@ def main(args):
             epoch,
             len(dataset),
             balancer=None if args.mtl is None else balancer,
-            freeze_batchnorm=True,
+            freeze_batchnorm=False,
         )
         print(f"Training time of epoch {epoch} of rank {rank}: {time.time() - tmp_time:.3f}")
 
@@ -757,5 +863,7 @@ if __name__ == "__main__":
     parser.add_argument("--new-full-lr", default=2e-4, type=float, help="full learning rate for new component")
     parser.add_argument("--new-warmup-method", default="constant", type=str, help="warm up method for new component")
     parser.add_argument("--warmup-resume", default=None, type=str, help="resume from warmup checkpoint")
+    parser.add_argument("--use-llrd", action="store_true", help="whether to use layer-wise learning rate decay for backbone")
+    parser.add_argument("--llrd", default=0.85, type=float, help="the layer-wise learning rate decay factor when use_llrd is set")
     args = parser.parse_args()
     main(args)

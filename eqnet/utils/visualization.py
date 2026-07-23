@@ -537,7 +537,7 @@ def plot_eqnet_train(meta, phase, event, polarity, association, epoch, figure_di
     data = normalize(meta["data"])
     flag=True if (offset is not None) and (hypocenter is not None) else False
     for i in range(meta["data"].shape[0]):
-        if i>=16:
+        if i>=8:
             break # don't plot too many
         plt.close("all")
         if flag:
@@ -555,7 +555,7 @@ def plot_eqnet_train(meta, phase, event, polarity, association, epoch, figure_di
         else:
             fig, axes = plt.subplots(3, 1, figsize=(10, 10))
         for j in range(phase.shape[-1]):
-            axes[0].plot((data[i, -1, :, j]) + j)
+            axes[0].plot((data[i, -1, :, j]) + j, linewidth=0.5)
 
             axes[1].plot(phase[i, 1, :, j] + j, "r")
             axes[1].plot(phase[i, 2, :, j] + j, "b")

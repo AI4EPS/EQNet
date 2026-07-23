@@ -9,7 +9,7 @@ from .ops import LayerNorm2d
 from .swin_transformer_1d import SwinTransformer1D
 from .centernet import CenterNetHead, CenterNetHeadV1
 from .losses import smoothl1_reg_loss, weighted_l1_reg_loss, cross_entropy_loss, focal_loss
-from .uper_head import UPerNeck, EventHead, PhaseHead, EventHead2, PhaseHead2, PolarityHead
+from .uper_head import UPerNeck, EventHead, PhaseHead, EventHead2, PhaseHead2, PolarityHead, PhaseHead3, EventHead4
 from .phase_associator import PhaseAssociator
 
 
@@ -268,6 +268,7 @@ class EQNet(nn.Module):
         embed_dim = 64#96
         sampling_rate = 100
         prompt_embed_dim = 128
+        relative_position_bias_dim = 512
         
         if backbone == "resnet18":
             self.backbone = ResNet(BasicBlock, [2, 2, 2, 2])  # ResNet18
@@ -295,13 +296,68 @@ class EQNet(nn.Module):
                 depths=[2, 2, 6, 2],
                 #num_heads=[3, 6, 12, 24],
                 num_heads=[2, 4, 8, 16],
-                window_size=[16, 16], # can use 32 for inference
+                window_size=[16, 32], # can use 32 for inference
                 #stochastic_depth_prob=0.2,
                 stochastic_depth_prob=0.15,
                 block_name="SwinTransformerBlockV2",
                 out_indices=out_indices,
                 use_station_location=use_station_location,
                 decoupled_relative_position_bias=False,
+                relative_position_bias_dim=relative_position_bias_dim,
+                sampling_rate=sampling_rate,
+            )
+        elif backbone == "swin_micro":
+            embed_dim = 64
+            relative_position_bias_dim = 512
+            out_indices = [0, 1, 2, 3] if "upernet" in head else [3]
+            self.backbone = SwinTransformer(
+                patch_size=[4, 1],
+                embed_dim=embed_dim,
+                depths=[2, 2, 6, 2],
+                num_heads=[1, 2, 4, 8],
+                window_size=[16, 16], # can use 32 for inference
+                stochastic_depth_prob=0.15,
+                block_name="SwinTransformerBlockV2",
+                out_indices=out_indices,
+                use_station_location=use_station_location,
+                decoupled_relative_position_bias=False,
+                relative_position_bias_dim=relative_position_bias_dim,
+                sampling_rate=sampling_rate,
+            )
+        elif backbone == "swin_nano":
+            embed_dim = 32
+            relative_position_bias_dim = 256
+            out_indices = [0, 1, 2, 3] if "upernet" in head else [3]
+            self.backbone = SwinTransformer(
+                patch_size=[4, 1],
+                embed_dim=embed_dim,
+                depths=[2, 2, 6, 2],
+                num_heads=[1, 2, 4, 8],
+                window_size=[16, 16], # can use 32 for inference
+                stochastic_depth_prob=0.1,
+                block_name="SwinTransformerBlockV2",
+                out_indices=out_indices,
+                use_station_location=use_station_location,
+                decoupled_relative_position_bias=False,
+                relative_position_bias_dim=relative_position_bias_dim,
+                sampling_rate=sampling_rate,
+            )
+        elif backbone == "swin_pico":
+            embed_dim = 16
+            relative_position_bias_dim = 128
+            out_indices = [0, 1, 2, 3] if "upernet" in head else [3]
+            self.backbone = SwinTransformer(
+                patch_size=[4, 1],
+                embed_dim=embed_dim,
+                depths=[2, 2, 6, 2],
+                num_heads=[1, 2, 4, 8],
+                window_size=[16, 16], # can use 32 for inference
+                stochastic_depth_prob=0.1,
+                block_name="SwinTransformerBlockV2",
+                out_indices=out_indices,
+                use_station_location=use_station_location,
+                decoupled_relative_position_bias=False,
+                relative_position_bias_dim=relative_position_bias_dim,
                 sampling_rate=sampling_rate,
             )
         elif backbone == "swin_single":
@@ -386,12 +442,14 @@ class EQNet(nn.Module):
         # the len of channels and dilations should be 5 when using other config
         # or you need to change the structure of event_detector and phase_picker
         if "swin" in backbone:
-            channels=[embed_dim * (2**3), 128, 32, 16, 8] 
+            #neck_channels=256
+            neck_channels=embed_dim * 2 # 128 for embed_dim=64
+            channels=[embed_dim * (2**2), neck_channels, embed_dim, embed_dim//2, max(8, embed_dim//4)] 
+            #channels=[embed_dim * (2**3), 128, 32, 16, 8] 
             #channels=[embed_dim * (2**3), 256, 64, 16, 8]
             #dilations=[1, 6, 24, 48, 96] 
-            dilations=[1, 4, 8, 32, 64]
-            #neck_channels=256 # TODO: 512 is the original setting
-            neck_channels=128
+            #dilations=[1, 4, 8, 32, 64]
+            dilations=[1, 4, 8, 16, 32]
         elif backbone[:6] == "resnet":
             channels=[128, 64, 32, 16, 8]
             dilations=[1, 2, 4, 8, 16]
@@ -416,18 +474,22 @@ class EQNet(nn.Module):
         elif head == "upernet":
             self.event_detector = EventHead(channels=neck_channels)
         elif head == "upernet2":
-            self.event_detector = EventHead2(channels=neck_channels)
+            self.event_detector = EventHead2(channels=neck_channels, hidden_channels=channels)
+        elif head == "upernet3":
+            self.event_detector = EventHead4(channels=neck_channels)
         
         if head == "upernet":
-            self.phase_picker = PhaseHead(channels=neck_channels)
+            self.phase_picker = PhaseHead(channels=neck_channels, hidden_channels=channels)
         elif head == "upernet2":
-            self.phase_picker = PhaseHead(channels=neck_channels)
+            self.phase_picker = PhaseHead(channels=neck_channels, hidden_channels=channels)
+        elif head == "upernet3":
+            self.phase_picker = PhaseHead3(channels=neck_channels)
         else:
             self.phase_picker = PhasePicker(channels=channels, bn=True, dilations=dilations)
         
-        self.polarity_picker = PolarityHead(channels=neck_channels, stem_channels=embed_dim)
+        self.polarity_picker = PolarityHead(channels=neck_channels, stem_channels=embed_dim, hidden_channels=channels)
         
-        self.phase_associator = PhaseAssociator(feature_dim=neck_channels, prompt_embed_dim=prompt_embed_dim, event_scale=16, sampling_rate=100.0) if add_prompt else lambda *args, **kwargs: ({name: None for name in ["association", "iou"]}, {name: torch.tensor(0.0, device=self.device) for name in ["loss", "loss_focal", "loss_dice", "loss_iou"]})
+        self.phase_associator = PhaseAssociator(feature_dim=neck_channels, prompt_embed_dim=prompt_embed_dim, position_bias_dim=relative_position_bias_dim, event_scale=16, sampling_rate=100.0) if add_prompt else lambda *args, **kwargs: ({name: None for name in ["association", "iou"]}, {name: torch.tensor(0.0, device=self.device) for name in ["loss", "loss_focal", "loss_dice", "loss_iou"]})
 
     @property
     def device(self):
@@ -446,6 +508,8 @@ class EQNet(nn.Module):
             keys.update({'phase_picker.' + i for i in self.phase_picker.no_weight_decay()})
         if hasattr(self.polarity_picker, 'no_weight_decay'):
             keys.update({'polarity_picker.' + i for i in self.polarity_picker.no_weight_decay()})
+        if hasattr(self.phase_associator, 'no_weight_decay'):
+            keys.update({'phase_associator.' + i for i in self.phase_associator.no_weight_decay()})
         return keys
 
     @torch.jit.ignore
@@ -461,6 +525,8 @@ class EQNet(nn.Module):
             keys.update({i for i in self.phase_picker.no_weight_decay_keywords()})
         if hasattr(self.polarity_picker, 'no_weight_decay_keywords'):
             keys.update({i for i in self.polarity_picker.no_weight_decay_keywords()})
+        if hasattr(self.phase_associator, 'no_weight_decay_keywords'):
+            keys.update({i for i in self.phase_associator.no_weight_decay_keywords()})
         return keys
 
     def forward(self, batched_inputs: Dict[str, Tensor]) -> Dict[str, Tensor]:

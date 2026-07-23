@@ -470,7 +470,7 @@ def pred_eqnet(args, model, data_loader, pick_path, figure_path, event_path=None
     feature_scale = 16
     downsample_rate = 256
     encoder_window_size = (args.nt, args.nx)
-    window_size = (4096//256, 48)
+    window_size = (4096//256, 64)
     mask_thld = 0.4
     iou_thld = 0.40
     MIN_STATIONS = 3
@@ -487,7 +487,18 @@ def pred_eqnet(args, model, data_loader, pick_path, figure_path, event_path=None
     # ctx = nullcontext() if args.device == "cpu" else torch.cuda.amp.autocast(enabled=args.amp)
     ctx = nullcontext() if args.device == "cpu" else torch.amp.autocast(device_type=args.device, dtype=args.ptdtype)
     for isample, meta in enumerate(metric_logger.log_every(data_loader, 1, header)):
+        start_time = time.time()
         num_stations = len(meta["station_id"])
+        
+        #done = True
+        #for i in range(len(meta["file_name"])):
+        #    filename = meta["file_name"][i].split("//")[-1].replace("/", "_")
+        #    if not os.path.exists(os.path.join(pick_path, filename + ".csv")):
+        #        done = False
+        #        break
+        #if done:
+        #    continue
+            
         if not args.sliding_window:
             try:
                 with torch.inference_mode(), ctx:
@@ -518,12 +529,16 @@ def pred_eqnet(args, model, data_loader, pick_path, figure_path, event_path=None
                             pass
                 output_patches.append(patch_output)
             phase = torch.zeros_like(meta["data"]).to(output_patches[0]["phase"].device)
-            polarity = torch.zeros_like(meta["data"]).to(phase.device) if "polarity" in output_patches[0] else None
+            if "polarity" in output_patches[0].keys():
+                polarity = torch.zeros_like(meta["data"]).to(phase.device) if output_patches[0]["polarity"].shape[1]>1 else torch.zeros((meta["data"].shape[0], 1, meta["data"].shape[2], meta["data"].shape[3])).to(phase.device)
+            else:
+                polarity = None
             event = torch.zeros((meta["data"].shape[0], meta["data"].shape[2]//feature_scale, meta["data"].shape[3])).to(phase.device)
             offset = torch.zeros((meta["data"].shape[0], 2, meta["data"].shape[2]//feature_scale, meta["data"].shape[3])).to(phase.device)
             hypocenter = torch.zeros((meta["data"].shape[0], 5, meta["data"].shape[2]//feature_scale, meta["data"].shape[3])).to(phase.device)
             ppm_feat = torch.zeros((output_patches[0]["feature"]['ppm'].shape[0], meta["data"].shape[3], output_patches[0]["feature"]['ppm'].shape[2], meta["data"].shape[2]//downsample_rate)).to(phase.device)
             ppm_dividend = torch.zeros_like(ppm_feat)
+
             try:
                 midlower_feat = torch.zeros((output_patches[0]["feature"]['midlower'].shape[0], meta["data"].shape[3], output_patches[0]["feature"]['midlower'].shape[2], meta["data"].shape[2]//(downsample_rate//4))).to(phase.device)
                 midlower_dividend = torch.zeros_like(midlower_feat)
@@ -559,18 +574,24 @@ def pred_eqnet(args, model, data_loader, pick_path, figure_path, event_path=None
                 feats['midupper'] = midupper_feat/midupper_dividend
             except NameError:
                 pass
+
             output = {
                 "phase": phase.to(args.device),
-                "polarity": polarity.to(args.device),
+                "polarity": polarity.to(args.device) if polarity is not None else None,
                 "event": event.to(args.device),
                 "offset": offset.to(args.device),
                 "hypocenter": hypocenter.to(args.device),
                 "feature": feats,
             }
             del output_patches, patch_output
-        
+        model_time = time.time() - start_time
+        print(f"Model inference time for {meta['file_name'][0]}: {model_time:.4f} seconds")
         if "phase" in output:
             output["phase"] = output["phase"][:, :, :, :num_stations]
+            try:
+                output["polarity"] = output["polarity"][:, :, :, :num_stations]
+            except:
+                pass
         if "event" in output:
             output["event"] = output["event"][:, :, :num_stations]
             output["offset"] = output["offset"][:, :, :, :num_stations]
@@ -830,7 +851,7 @@ def pred_eqnet(args, model, data_loader, pick_path, figure_path, event_path=None
                 events_df['event_center_time'] = events_df['event_center_time'].apply(lambda x: x.isoformat(timespec='microseconds'))
                 events_df.drop(columns=['sta_lon', 'sta_lat'], inplace=True)
                 events_df.to_csv(os.path.join(event_path, filename + ".csv"), index=False)
-            del association_query, feat_query
+            del association_query, feat_query, feature
     
         # if cuda, clear cache
         if args.device != "cpu" and args.device != "mps":

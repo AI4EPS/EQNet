@@ -321,10 +321,14 @@ def plot_results(meta, model, output, args, epoch, prefix=""):
                     )
                     eps = 1e-15
                     polarity = torch.clamp(link_mat, eps, 1 - eps)[:, [1,2,0]].cpu().float() # DNU -> NUD
-                association = torch.sigmoid(output["association"]).cpu().float()
-            except:
+            except Exception as e:
+                print(f"Error occurred while processing event: {e}")
                 event = None
                 polarity = None
+            try:
+                association = torch.sigmoid(output["association"]).cpu().float() if ("association" in output and output["association"] is not None) else None
+            except Exception as e:
+                print(f"Error occurred while processing association: {e}")
                 association = None
             try:
                 offset = output["offset"].cpu().float()
@@ -334,7 +338,7 @@ def plot_results(meta, model, output, args, epoch, prefix=""):
                 hypocenter = None
             print("Plotting...")
             eqnet.utils.plot_eqnet_train(meta, phase, event, polarity, association, epoch=epoch, figure_dir=args.figure_dir, prefix=prefix, offset=offset, hypocenter=hypocenter)
-            del output, phase, event, polarity, offset, hypocenter
+            del output, phase, event, polarity, offset, hypocenter, association
 
 
 def main(args):
@@ -764,23 +768,22 @@ def main(args):
         model_ema = utils.ExponentialMovingAverage(model_without_ddp, device=device, decay=1.0 - alpha)
 
     if args.pretrained:
-        backbone_pretrained = None
+        pretrained = None
         if os.path.isfile(args.pretrained):
             print(f"Loading pretrained model from '{args.pretrained}'")
-            backbone_pretrained = torch.load(args.pretrained, map_location="cpu")
-        elif os.path.isfile(args.output_dir + "/backbone.pth"):
-            print(f"Loading pretrained model from '{args.output_dir}/backbone.pth'")
-            backbone_pretrained = torch.load(args.output_dir + "/backbone.pth", map_location="cpu")
+            pretrained = torch.load(args.pretrained, map_location="cpu", weights_only=False)
+        elif os.path.isfile(args.output_dir + "/pretrained.pth"):
+            print(f"Loading pretrained model from '{args.output_dir}/pretrained.pth'")
+            pretrained = torch.load(args.output_dir + "/pretrained.pth", map_location="cpu", weights_only=False)
         else:
             print(f"No pretrained model found")
-        
-        if backbone_pretrained is not None:
-            if "model" in backbone_pretrained:
-                model_without_ddp.backbone.load_state_dict(backbone_pretrained["model"])
+
+        if pretrained is not None:
+            if "model" in pretrained:
+                model_without_ddp.load_state_dict(pretrained["model"], strict=False)
             else:
-                model_without_ddp.backbone.load_state_dict(backbone_pretrained)
-            
-        
+                model_without_ddp.load_state_dict(pretrained, strict=False)
+
     if args.resume:
         checkpoint = None
         if isinstance(args.resume, str) and os.path.isfile(args.resume):
@@ -804,13 +807,16 @@ def main(args):
     start_time = time.time()
     best_loss = float("inf")
     for epoch in range(args.start_epoch, args.epochs):
+        #if args.resume and (args.start_epoch < 32):
+        #    break # avoid long time training when resume from old checkpoints
         if epoch%5==0 and epoch >= 5 and args.model == "eqnet" and not args.huggingface_dataset:
             #negative_mask_ratio = max(1.0 - 0.03 * epoch, 0.3)
             with negative_mask_ratio.get_lock():
-                negative_mask_ratio.value = max(1.0 - 0.006 * epoch, 0.40)
+                negative_mask_ratio.value = max(1.0 - 0.006 * epoch, 0.83)
         if epoch>args.epochs//3 and args.model == "eqnet" and not args.huggingface_dataset:
             with cat_event_ratio.get_lock():
-                cat_event_ratio.value = 0.08 if epoch<2*args.epochs//3 else 0.16
+                cat_event_ratio.value = 0.04#0.08 if epoch<2*args.epochs//3 else 0.16
+                #cat_event_ratio.value = 0.08 if epoch<2*args.epochs//3 else 0.16
         if args.distributed and (train_sampler is not None):
             train_sampler.set_epoch(epoch)
 
@@ -827,14 +833,15 @@ def main(args):
             len(dataset),
             balancer=None if args.mtl is None else balancer,
         )
+        train_time = time.time() - tmp_time
         print(f"Training time of epoch {epoch} of rank {rank}: {time.time() - tmp_time:.3f}")
 
-        if args.test_hdf5_file is not None:
-            tmp_time = time.time()
-            metric = evaluate(model, data_loader_test, scaler, args, epoch, len(dataset_test))
-            if model_ema:
-                metric = evaluate(model_ema, data_loader_test, scaler, args, epoch, len(dataset_test))
-            print(f"Testing time of epoch {epoch} of rank {rank}: {time.time() - tmp_time:.3f}")
+        #if args.test_hdf5_file is not None:
+        #    tmp_time = time.time()
+        #    metric = evaluate(model, data_loader_test, scaler, args, epoch, len(dataset_test))
+        #    if model_ema:
+        #        metric = evaluate(model_ema, data_loader_test, scaler, args, epoch, len(dataset_test))
+        #    print(f"Testing time of epoch {epoch} of rank {rank}: {time.time() - tmp_time:.3f}")
 
         tmp_time = time.time()
         checkpoint = {
@@ -990,7 +997,7 @@ def get_args_parser(add_help=True):
     parser.add_argument("--lr-min", default=0.0, type=float, help="minimum lr of lr schedule (default: 0.0)")
     parser.add_argument("--print-freq", default=10, type=int, help="print frequency")
     parser.add_argument("--output-dir", default="./output", type=str, help="path to save outputs")
-    parser.add_argument("--resume", action="store_true", help="resume automatically")
+    parser.add_argument("--resume", default="", type=str, help="resume from checkpoint")
     parser.add_argument("--resume_wandb", action="store_true", help="resume from wandb")
     parser.add_argument("--pretrained", default="", type=str, help="path to pre-trained model")
     parser.add_argument("--start-epoch", default=0, type=int, metavar="N", help="start epoch")

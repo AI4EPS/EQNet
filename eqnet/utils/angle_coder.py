@@ -125,4 +125,4 @@ class TrigonoCoder:
         sin_idx[angle_dim]=0
         cos_idx = [slice(None)]*angle_preds.dim()
         cos_idx[angle_dim]=1
-        return torch.atan2(angle_preds[sin_idx], angle_preds[cos_idx]).unsqueeze(angle_dim)
+        return torch.atan2(angle_preds[tuple(sin_idx)], angle_preds[tuple(cos_idx)]).unsqueeze(angle_dim)

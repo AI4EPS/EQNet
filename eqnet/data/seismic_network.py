@@ -273,6 +273,7 @@ def cut_data(meta, nt=8192, nt0=2960, feature_scale=16, base_phase_points=80, if
     s_end = np.nonzero(phase_mask[:, 2, :].sum(axis=0))[0].max() // feature_scale
     event_end = np.nonzero(event_mask.sum(axis=0))[0].max()
     main_event_start = np.nonzero(meta["association_mask"].sum(axis=0))[0].min()
+    main_event_end = np.nonzero(meta["association_mask"].sum(axis=0))[0].max()
     if not if_reverse_roll:
         rand_lower = max(0, min(p_start, event_start)-nt//feature_scale+10, main_event_start-nt//feature_scale+10)
     else:
@@ -281,9 +282,9 @@ def cut_data(meta, nt=8192, nt0=2960, feature_scale=16, base_phase_points=80, if
     #raw_rand_upper = max(1, nt0//feature_scale)
     rand_upper = max(1, main_event_start-20)
     #raw_rand_upper = max(min(p_start, event_start)-10, nt0//feature_scale)
-    raw_rand_upper = max(min(p_start, event_start), max(s_end, event_end)-nt//feature_scale+10, nt0//feature_scale)
-    phase_points = phase_mask[:,1:, :nt].sum()
-    event_points = event_mask[:,:nt//feature_scale].sum()
+    raw_rand_upper = max(min(p_start, main_event_start), min(s_end, main_event_end)-nt//feature_scale+10, nt0//feature_scale)
+    phase_points = phase_mask[:,1:, :nt].sum() // 1.5 # to balance the mask ratio
+    event_points = event_mask[:,:nt//feature_scale].sum() // 1.5 # to balance the mask ratio
     phase_types = phase_mask.shape[1]-1
     
     for _ in range(max_tries):
@@ -766,28 +767,34 @@ def concatenate_event(
     event_index1 = event_attrs1["event_time_index"]
     event_index2 = event_attrs2["event_time_index"]
     geod = Geodesic.WGS84
-    #event_location1 = np.array([event_attrs1["longitude"], event_attrs1["latitude"], 0])
-    event_location2 = np.array([event_attrs2["longitude"], event_attrs2["latitude"], 0])
-    
+
     tmp_dict = geod.Direct(event_attrs1["latitude"], event_attrs1["longitude"], random.uniform(0, 360), 1000*random.uniform(*space_shift_range))
     target_location1 = np.array([tmp_dict['lon2'], tmp_dict['lat2'], 0])
-    space_shift = event_location2 - target_location1
-    #space_shift[0] += random.choice([-1, 1]) * random.uniform(*space_shift_range)
-    #space_shift[1] += random.choice([-1, 1]) * random.uniform(*space_shift_range)
 
     trunc_station_index = min(random.randint(trunc_stations[0], trunc_stations[1]), meta1['num_stations'])
     station_shift = random.randint(0, trunc_station_index//2)
+
+    # Compute shifted station locations using geodesic method:
+    # For each station, preserve its azimuth and distance relative to event2,
+    # but place it relative to target_location1 instead.
+    selected_stations = meta2['station_location'][station_shift:num_stations-trunc_station_index+station_shift]
+    shifted_station_locs = np.zeros_like(selected_stations)
+    for i, sta_loc in enumerate(selected_stations):
+        inv = geod.Inverse(event_attrs2["latitude"], event_attrs2["longitude"],
+                           sta_loc[1], sta_loc[0])
+        new_sta = geod.Direct(target_location1[1], target_location1[0],
+                              inv['azi1'], inv['s12'])
+        shifted_station_locs[i] = [new_sta['lon2'], new_sta['lat2'], sta_loc[2]]
+
     if random.random() < ill_case_ratio:
-        selected_event2_station_location = meta2['station_location'][station_shift:num_stations-trunc_station_index+station_shift].copy()
-        dist_1 = np.array([geod.Inverse(event_attrs1["latitude"], event_attrs1["longitude"], loc[1]-space_shift[1], loc[0]-space_shift[0])['s12']/1e3 for loc in selected_event2_station_location])
-        dist_2 = np.array([geod.Inverse(event_attrs2["latitude"], event_attrs2["longitude"], loc[1], loc[0])['s12']/1e3 for loc in selected_event2_station_location])
+        dist_1 = np.array([geod.Inverse(event_attrs1["latitude"], event_attrs1["longitude"], loc[1], loc[0])['s12']/1e3 for loc in shifted_station_locs])
+        dist_2 = np.array([geod.Inverse(event_attrs2["latitude"], event_attrs2["longitude"], loc[1], loc[0])['s12']/1e3 for loc in selected_stations])
         event_center_index1 = event_index1 + np.median((dist_1/VP + dist_1/(VP/VPVS_RATIO))/2) * sampling_rate
         event_center_index2 = event_index2 + np.median((dist_2/VP + dist_2/(VP/VPVS_RATIO))/2) * sampling_rate
         time_shift = int((event_center_index2 - event_center_index1) / feature_scale)    
     else:
         time_shift = int((event_index2 - event_index1) / feature_scale)
-    #space_shift = event_location2 - event_location1
-    time_shift += random.choice([-1, 1]) * random.randint(time_shift_range[0]//(feature_scale/sampling_rate), time_shift_range[1]//(feature_scale/sampling_rate))
+    time_shift += random.choice([-1, 1]) * random.randint(int(time_shift_range[0]//(feature_scale/sampling_rate)), int(time_shift_range[1]//(feature_scale/sampling_rate)))
     
     waveforms = np.zeros((num_stations, *meta1['waveforms'].shape[1:]))
     amplitude = np.zeros((num_stations, *meta1['amplitude'].shape[1:]))
@@ -828,7 +835,7 @@ def concatenate_event(
     association_mask[trunc_station_index:] = 0#np.roll(meta2['association_mask'][station_shift:num_stations-trunc_station_index+station_shift], shift=-time_shift, axis=-1)
     
     station_location[:trunc_station_index] = meta1['station_location'][:trunc_station_index]
-    station_location[trunc_station_index:] = meta2['station_location'][station_shift:num_stations-trunc_station_index+station_shift] - space_shift
+    station_location[trunc_station_index:] = shifted_station_locs
     
     main_event_center[:trunc_station_index] = meta1['main_event_center'][:trunc_station_index]
     main_event_center[trunc_station_index:] = -1000
@@ -867,9 +874,9 @@ def concatenate_event(
 class SeismicNetworkIterableDataset(IterableDataset):
     degree2km = 111.32
     nt = 4096  ## 8992
-    feature_nt = 256  ##560
+    feature_scale = 16
+    feature_nt = int(nt / feature_scale)
     raw_nt = 12000 # temporary hard code
-    feature_scale = int(nt / feature_nt)
     raw_feature_nt = int(raw_nt / feature_scale)
 
     def __init__(self, 
@@ -915,8 +922,9 @@ class SeismicNetworkIterableDataset(IterableDataset):
         self.world_size = world_size 
         self.hdf5_fp = None
         if hdf5_file is not None:
-            tmp_hdf5_keys = f"tmp/{'_'.join(hdf5_file.split('/'))}.txt"
-            #tmp_hdf5_keys = f"tmp/test_event_ids.txt"
+            tmp_hdf5_keys = f"tmp/{'_'.join(hdf5_file.split('/')[3:])}.txt"
+            #tmp_hdf5_keys = f"tmp/big_events.txt"
+            #tmp_hdf5_keys = f"tmp/debug_2022_train.txt"#f"tmp/big_events.txt"#f"tmp/test_association_events.txt"#
             if not os.path.exists(tmp_hdf5_keys) and (rank == 0):
                 with h5py.File(hdf5_file, "r", libver="latest", swmr=True) as fp:
                     self.data_list = []
@@ -970,7 +978,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
             self.data_list = self.data_list[rank::world_size]
             if training:
                 self.data_list = self.data_list[:target_len]
-        
+
         if station_file is not None:
             #self.station_info = json.load(open(station_file, "r"))
             self.station_info = pd.read_csv(station_file)
@@ -1050,7 +1058,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
 
         self._data_len = self._count()
         self.negative_mask_ratio = 1.0
-        self.cat_event_ratio = 0.16
+        self.cat_event_ratio = 0.06
 
     def __iter__(self):
         worker_info = torch.utils.data.get_worker_info()
@@ -1209,7 +1217,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
         if is_sick:
             self.ill_event_ids.add(event_id)
             return None
-        
+
         if max_stations_ratio: # avoid reading too many stations
             desired_num = int(self.num_stations * max_stations_ratio)
             if len(station_ids) <= desired_num:
@@ -1526,7 +1534,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
                     continue
             # if True:
             try:
-                meta = self._read_training_h5(event_id, hdf5_fp, max_stations_ratio=6)
+                meta = self._read_training_h5(event_id, hdf5_fp, max_stations_ratio=5)
             except Exception as e:
                 print(f"Error reading {event_id}:\n{e}", force=True)
                 continue
@@ -1808,7 +1816,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
 
         nx = len(station_ids)
         nt = len(stream[0].data)
-        data = np.zeros([3, nt+((32- nt%32)%32), nx], dtype=np.float32) # the length of data should be multiple of 32
+        data = np.zeros([3, nt+((32 - nt%32)%32), nx], dtype=np.float32) # the length of data should be multiple of 32
         amplitude = np.zeros_like(data)
         for i, sta in enumerate(station_keys):
             for c in station_ids[sta]:
@@ -1887,7 +1895,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
             # data shape
             nt = event[station_ids[0]].shape[1]
             nt_feature = 32
-            b, a = butter(4, 0.1, btype="highpass", analog=False)
+            b, a = butter(4, 1/(self.sampling_rate/2), btype="highpass", analog=False)
             waveforms = np.zeros([3, nt+((nt_feature-(nt%nt_feature))%nt_feature), len(station_ids)], dtype="float32")
             amplitude = np.zeros_like(waveforms)
             station_location = np.zeros([len(station_ids), 3])
@@ -1942,7 +1950,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
             #    station_ids = [station_ids[i] for i in idx]
             #    station_location = station_location[idx]
             
-            if self.sort and len(station_ids)>5:
+            if self.sort and len(station_ids)>16:
                 D = np.sqrt(((station_location[:, np.newaxis, :2] -  station_location[np.newaxis, :, :2])**2).sum(axis=-1))
                 Tcsr = minimum_spanning_tree(D)
                 index = breadth_first_order(Tcsr, i_start=0, directed=False, return_predecessors=False)
@@ -2059,7 +2067,9 @@ class SeismicNetworkIterableDataset(IterableDataset):
 if __name__ == "__main__":
     import matplotlib.pyplot as plt
 
-    dataset = SeismicNetworkIterableDataset("/Users/weiqiang/Research/EQNet/datasets/NCEDC/ncedc_event.h5")
+    dataset = SeismicNetworkIterableDataset(hdf5_file="/Users/weiqiang/Research/EQNet/quakeflow_dataset/NC/waveform_train.h5",
+                                            stack_event=True,
+                                            concatenate_event=True)
     for x in dataset:
         # print(x)
         fig, axes = plt.subplots(1, 6, figsize=(15, 5))
