@@ -296,7 +296,7 @@ class EQNet(nn.Module):
                 depths=[2, 2, 6, 2],
                 #num_heads=[3, 6, 12, 24],
                 num_heads=[2, 4, 8, 16],
-                window_size=[16, 32], # can use 32 for inference
+                window_size=[16, 16], # can use 32 for inference
                 #stochastic_depth_prob=0.2,
                 stochastic_depth_prob=0.15,
                 block_name="SwinTransformerBlockV2",
