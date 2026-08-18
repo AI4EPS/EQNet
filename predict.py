@@ -497,7 +497,7 @@ def get_args_parser(add_help=True):
     parser.add_argument("--add_polarity", action="store_true", help="If use polarity information")
     parser.add_argument("--add_event", action="store_true", help="If use event information")
     parser.add_argument("--sampling_rate", type=float, default=100.0, help="sampling rate; default 100.0 Hz")
-    parser.add_argument("--highpass_filter", type=float, default=0.0, help="highpass filter; default 0.0 is no filter")
+    parser.add_argument("--highpass_filter", type=float, default=1.0, help="highpass filter corner in Hz applied when reading the data (0.0 = no filter); the S/P amplitude ratios and event amplitudes are measured on this record")
     parser.add_argument("--response_path", default=None, type=str, help="response path")
     parser.add_argument("--response_xml", default=None, type=str, help="response xml file")
     parser.add_argument("--subdir_level", default=0, type=int, help="folder depth for data list")

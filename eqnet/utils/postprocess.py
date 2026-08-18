@@ -172,7 +172,7 @@ def extract_events(
     event_scale=16,
     event_time=None,
     waveform=None,
-    window_amp=[2, 2],
+    window_amp=[[0.5, 1.5], [0.0, 2.0]],  # (before, after) the P and S arrivals in s: Shelly et al. (2024), Yang et al. (2012)
     VPVS_RATIO=1.73,
     **kwargs,
 ):
@@ -205,6 +205,11 @@ def extract_events(
     else:
         begin_time_index = [0 for i in range(batch)]
 
+    if waveform is not None:
+        # peak of the three-component vector amplitude in each window (the S amplitude the focal-mechanism model
+        # predicts is the vector one; a max - min over the channels jointly is not)
+        waveform_amp = torch.linalg.norm(waveform, dim=1)  # [batch, nt, nst]
+
     for i in range(batch):
         events_per_file = []
         # if file_name is None:
@@ -220,8 +225,8 @@ def extract_events(
                 begin_i = "1970-01-01T00:00:00.000"
         begin_i = datetime.fromisoformat(begin_i.rstrip("Z"))
 
-        p_window = int(window_amp[0] / dt[i])  ## index of window
-        s_window = int(window_amp[1] / dt[i])  ## index of window
+        p_before, p_after = int(window_amp[0][0] / dt[i]), int(window_amp[0][1] / dt[i])  ## index of window
+        s_before, s_after = int(window_amp[1][0] / dt[i]), int(window_amp[1][1] / dt[i])
 
         for j in range(nch):
             for k in range(nst):
@@ -263,16 +268,11 @@ def extract_events(
                             itp = max(0, index.item() * event_scale - int(ps_delta * 0.5)) # waveform is not downsampled
                             its = max(0, index.item() * event_scale + int(ps_delta * 0.5))
 
-                            # p_amp = torch.max(torch.abs(waveform[i, :, itp : min(itp + p_window, its), k]))
-                            # s_amp = torch.max(torch.abs(waveform[i, :, its : its + s_window, k]))
-                            waveform_cut = waveform[i, :, itp : min(itp + p_window, its), k]
-                            p_amp = torch.max(waveform_cut) - torch.min(waveform_cut)
-                            waveform_cut = waveform[i, :, its : its + s_window, k]
-                            if waveform_cut.numel() == 0:
-                                s_amp = torch.tensor(0.0)
-                            else:
-                                s_amp = torch.max(waveform_cut) - torch.min(waveform_cut)
-                            event_dict["sp_ratio"] = s_amp.item() / p_amp.item()
+                            waveform_cut = waveform_amp[i, max(itp - p_before, 0) : min(itp + p_after, its), k]
+                            p_amp = torch.max(waveform_cut) if waveform_cut.numel() > 0 else torch.tensor(0.0)
+                            waveform_cut = waveform_amp[i, max(its - s_before, 0) : its + s_after, k]
+                            s_amp = torch.max(waveform_cut) if waveform_cut.numel() > 0 else torch.tensor(0.0)
+                            event_dict["sp_ratio"] = s_amp.item() / p_amp.item() if (p_amp > 0 and s_amp > 0) else np.nan
 
                             ## calculate event amplitude
                             # event_amp = torch.max(torch.abs(waveform[i, :, itp : its + (its - itp), k]))

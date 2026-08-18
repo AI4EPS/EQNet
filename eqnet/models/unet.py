@@ -28,7 +28,7 @@ def moving_normalize(data, filter=1024, stride=128):
         data_ = F.pad(data, (0, 0, padding, padding), mode="reflect")
         mean = F.avg_pool2d(data_, kernel_size=(filter, 1), stride=(stride, 1))
         mean = F.interpolate(mean, scale_factor=(stride, 1), mode="bilinear", align_corners=False)[:, :, :nt, :nx]
-        data -= mean
+        data = data - mean  # not in place: the caller's tensor (predict.py's meta["data"], measured on later) must stay raw
 
         # data_ = F.pad(data, (0, 0, pad1, pad2), mode="reflect")
         data_ = F.pad(data, (0, 0, padding, padding), mode="reflect")

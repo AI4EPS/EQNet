@@ -770,7 +770,7 @@ class SeismicTraceIterableDataset(IterableDataset):
             ## highpass filtering > 1Hz
             if highpass_filter > 0.0:
                 # trace = trace.filter("highpass", freq=1.0)
-                trace = trace.filter("highpass", freq=highpass_filter)
+                trace = trace.filter("highpass", freq=highpass_filter, corners=4, zerophase=True)  # zero phase: keeps the first-motion onset
 
             tmp_stream.append(trace)
 
