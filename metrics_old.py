@@ -102,6 +102,9 @@ class PickMetric:
         self.snr_s = []
         self.epicenter_distance_s = []
         self.azimuth_s = []
+        # per-phase snr: P picks use P snr, S picks use S snr (NaN if unavailable)
+        self.phase_snr_p = []
+        self.phase_snr_s = []
         self.scores_p = []
         self.scores_s = []
         self.polarity_score_p = []
@@ -126,6 +129,8 @@ class PickMetric:
         self.snr_s = np.array(self.snr_s)
         self.epicenter_distance_s = np.array(self.epicenter_distance_s)
         self.azimuth_s = np.array(self.azimuth_s)
+        self.phase_snr_p = np.array(self.phase_snr_p, dtype=float)
+        self.phase_snr_s = np.array(self.phase_snr_s, dtype=float)
         self.scores_p = np.array(self.scores_p)
         self.scores_s = np.array(self.scores_s)
         self.polarity_score_p = np.array(self.polarity_score_p)
@@ -135,14 +140,14 @@ class PickMetric:
         self.polarity_manual_p = np.array(self.polarity_manual_p)
         self.polarity_manual_s = np.array(self.polarity_manual_s)
         assert all([len(self.p_trace_stat)==self.num_p_picks, len(self.s_trace_stat)==self.num_s_picks, len(self.p_trace_stat_label)==self.num_p_picks_label, len(self.s_trace_stat_label)==self.num_s_picks_label]), f"trace stat length not match, {len(self.p_trace_stat) = }, {self.num_p_picks = }, {len(self.s_trace_stat) = }, {self.num_s_picks = }, {len(self.p_trace_stat_label) = }, {self.num_p_picks_label = }, {len(self.s_trace_stat_label) = }, {self.num_s_picks_label = }"
-        self.p_trace_stat = pd.DataFrame(self.p_trace_stat, columns=["trace_id", "snr", "magnitude", "distance", "azimuth"])
-        self.s_trace_stat = pd.DataFrame(self.s_trace_stat, columns=["trace_id", "snr", "magnitude", "distance", "azimuth"])
-        self.p_trace_stat_label = pd.DataFrame(self.p_trace_stat_label, columns=["trace_id", "snr", "magnitude", "distance", "azimuth"])
-        self.s_trace_stat_label = pd.DataFrame(self.s_trace_stat_label, columns=["trace_id", "snr", "magnitude", "distance", "azimuth"])
+        self.p_trace_stat = pd.DataFrame(self.p_trace_stat, columns=["trace_id", "snr", "magnitude", "distance", "azimuth", "phase_snr"])
+        self.s_trace_stat = pd.DataFrame(self.s_trace_stat, columns=["trace_id", "snr", "magnitude", "distance", "azimuth", "phase_snr"])
+        self.p_trace_stat_label = pd.DataFrame(self.p_trace_stat_label, columns=["trace_id", "snr", "magnitude", "distance", "azimuth", "phase_snr"])
+        self.s_trace_stat_label = pd.DataFrame(self.s_trace_stat_label, columns=["trace_id", "snr", "magnitude", "distance", "azimuth", "phase_snr"])
         
         return
         
-    def update_matched_picks(self, min_res_p, min_res_s, min_scores_p, min_scores_s, magnitude, distance_km, snr_sta, azimuth, polarity_score_p=None, polarity_score_s=None, polarity_pred_p=None, polarity_pred_s=None, polarity_manual_p=None, polarity_manual_s=None):
+    def update_matched_picks(self, min_res_p, min_res_s, min_scores_p, min_scores_s, magnitude, distance_km, snr_sta, azimuth, polarity_score_p=None, polarity_score_s=None, polarity_pred_p=None, polarity_pred_s=None, polarity_manual_p=None, polarity_manual_s=None, phase_snr_p=None, phase_snr_s=None):
         self.time_res_p+=min_res_p
         self.time_res_s+=min_res_s
         self.scores_p+=min_scores_p
@@ -155,6 +160,8 @@ class PickMetric:
         self.azimuth_s+=azimuth*len(min_res_s)
         self.snr_p+=snr_sta*len(min_res_p)
         self.snr_s+=snr_sta*len(min_res_s)
+        self.phase_snr_p+=(phase_snr_p if phase_snr_p is not None else [np.nan])*len(min_res_p)
+        self.phase_snr_s+=(phase_snr_s if phase_snr_s is not None else [np.nan])*len(min_res_s)
         self.polarity_score_p+=polarity_score_p if polarity_score_p is not None else [0]*len(min_res_p)
         self.polarity_score_s+=polarity_score_s if polarity_score_s is not None else [0]*len(min_res_s)
         self.polarity_pred_p+=polarity_pred_p if polarity_pred_p is not None else ['N']*len(min_res_p)
@@ -177,6 +184,8 @@ class PickMetric:
         self.tp_s_azimuth = self.azimuth_s[index_s]
         self.tp_p_snr = self.snr_p[index_p]
         self.tp_s_snr = self.snr_s[index_s]
+        self.tp_p_phase_snr = self.phase_snr_p[index_p]
+        self.tp_s_phase_snr = self.phase_snr_s[index_s]
         self.tp_p_scores = self.scores_p[index_p]
         self.tp_s_scores = self.scores_s[index_s]
         self.tp_p_polarity_score = self.polarity_score_p[index_p]
@@ -403,6 +412,17 @@ class PickMetric:
         plt.close()
         return precision_p_bin, precision_s_bin, recall_p_bin, recall_s_bin, f1_p_bin, f1_s_bin, tp_p_bin, tp_s_bin, fp_p_bin, fp_s_bin, fn_p_bin, fn_s_bin
 
+def get_phase_snr(sta_attrs):
+    '''P/S snr of a trace, max over positive components. The dataset "snr" is computed at the main P pick;
+    use "snr_p"/"snr_s" attrs if the dataset provides them, otherwise S snr is NaN.'''
+    def _max_pos(x):
+        x = np.atleast_1d(np.asarray(x, dtype=float))
+        x = x[x > 0]
+        return float(x.max()) if len(x) > 0 else 0.0
+    snr_p = _max_pos(sta_attrs["snr_p"]) if "snr_p" in sta_attrs else _max_pos(sta_attrs["snr"])
+    snr_s = _max_pos(sta_attrs["snr_s"]) if "snr_s" in sta_attrs else np.nan
+    return snr_p, snr_s
+
 # %%
 pick_metric = PickMetric(sample_rate=sample_rate)
 pick_metric_thld = PickMetric(sample_rate=sample_rate)
@@ -464,6 +484,7 @@ with h5py.File(h5_file, "r") as fp:
             for sta_id in station_ids:
                 phase_type_gt = event[sta_id].attrs["phase_type"]
                 phase_index_gt = event[sta_id].attrs["phase_index"]
+                snr_p_sta, snr_s_sta = get_phase_snr(event[sta_id].attrs)
                 try:
                     if len(phase_type_gt)==1 or event[sta_id].attrs["phase_status"]=='automatic':
                         continue
@@ -478,12 +499,12 @@ with h5py.File(h5_file, "r") as fp:
                     s_picks_gt.append(phase_index_gt[np.logical_and(e_ids==e_id, phase_type_gt=='S')][0])
                 pick_metric.num_p_picks_label+=len(p_picks_gt)
                 pick_metric.num_s_picks_label+=len(s_picks_gt)
-                pick_metric.p_trace_stat_label.extend([{"trace_id": f"{event_id}/{sta_id}", "snr": event[sta_id].attrs["snr"].max(), "magnitude": event.attrs["magnitude"], "distance": event[sta_id].attrs["distance_km"], "azimuth": event[sta_id].attrs["azimuth"]}]*len(p_picks_gt))
-                pick_metric.s_trace_stat_label.extend([{"trace_id": f"{event_id}/{sta_id}", "snr": event[sta_id].attrs["snr"].max(), "magnitude": event.attrs["magnitude"], "distance": event[sta_id].attrs["distance_km"], "azimuth": event[sta_id].attrs["azimuth"]}]*len(s_picks_gt))
+                pick_metric.p_trace_stat_label.extend([{"trace_id": f"{event_id}/{sta_id}", "snr": event[sta_id].attrs["snr"].max(), "magnitude": event.attrs["magnitude"], "distance": event[sta_id].attrs["distance_km"], "azimuth": event[sta_id].attrs["azimuth"], "phase_snr": snr_p_sta}]*len(p_picks_gt))
+                pick_metric.s_trace_stat_label.extend([{"trace_id": f"{event_id}/{sta_id}", "snr": event[sta_id].attrs["snr"].max(), "magnitude": event.attrs["magnitude"], "distance": event[sta_id].attrs["distance_km"], "azimuth": event[sta_id].attrs["azimuth"], "phase_snr": snr_s_sta}]*len(s_picks_gt))
                 pick_metric_thld.num_p_picks_label += len(p_picks_gt) if num_stations>=station_threshold else 0
                 pick_metric_thld.num_s_picks_label += len(s_picks_gt) if num_stations>=station_threshold else 0
-                pick_metric_thld.p_trace_stat_label.extend([{"trace_id": f"{event_id}/{sta_id}", "snr": event[sta_id].attrs["snr"].max(), "magnitude": event.attrs["magnitude"], "distance": event[sta_id].attrs["distance_km"], "azimuth": event[sta_id].attrs["azimuth"]}]*len(p_picks_gt) if num_stations>=station_threshold else [])
-                pick_metric_thld.s_trace_stat_label.extend([{"trace_id": f"{event_id}/{sta_id}", "snr": event[sta_id].attrs["snr"].max(), "magnitude": event.attrs["magnitude"], "distance": event[sta_id].attrs["distance_km"], "azimuth": event[sta_id].attrs["azimuth"]}]*len(s_picks_gt) if num_stations>=station_threshold else [])
+                pick_metric_thld.p_trace_stat_label.extend([{"trace_id": f"{event_id}/{sta_id}", "snr": event[sta_id].attrs["snr"].max(), "magnitude": event.attrs["magnitude"], "distance": event[sta_id].attrs["distance_km"], "azimuth": event[sta_id].attrs["azimuth"], "phase_snr": snr_p_sta}]*len(p_picks_gt) if num_stations>=station_threshold else [])
+                pick_metric_thld.s_trace_stat_label.extend([{"trace_id": f"{event_id}/{sta_id}", "snr": event[sta_id].attrs["snr"].max(), "magnitude": event.attrs["magnitude"], "distance": event[sta_id].attrs["distance_km"], "azimuth": event[sta_id].attrs["azimuth"], "phase_snr": snr_s_sta}]*len(s_picks_gt) if num_stations>=station_threshold else [])
             fn_p_trace.append([f"{event_id}/{sta_id}" for sta_id in station_ids if len(set(event[sta_id].attrs["phase_type"]))>1])
             fn_s_trace.append([f"{event_id}/{sta_id}" for sta_id in station_ids if len(set(event[sta_id].attrs["phase_type"]))>1])
             continue
@@ -497,6 +518,7 @@ with h5py.File(h5_file, "r") as fp:
         for sta_id in station_ids:
             phase_type_gt = event[sta_id].attrs["phase_type"]
             phase_index_gt = event[sta_id].attrs["phase_index"]
+            snr_p_sta, snr_s_sta = get_phase_snr(event[sta_id].attrs)
             phase_polarity_gt = event[sta_id].attrs["phase_polarity"]
             
             try:
@@ -523,12 +545,12 @@ with h5py.File(h5_file, "r") as fp:
             assert len(s_picks_gt) == len(s_pol_gt), f"s_picks_gt and s_pol_gt have different length in {event_id} {sta_id}"
             pick_metric.num_p_picks_label+=len(p_picks_gt)
             pick_metric.num_s_picks_label+=len(s_picks_gt)
-            pick_metric.p_trace_stat_label.extend([{"trace_id": f"{event_id}/{sta_id}", "snr": event[sta_id].attrs["snr"].max(), "magnitude": event.attrs["magnitude"], "distance": event[sta_id].attrs["distance_km"], "azimuth": event[sta_id].attrs["azimuth"]}]*len(p_picks_gt))
-            pick_metric.s_trace_stat_label.extend([{"trace_id": f"{event_id}/{sta_id}", "snr": event[sta_id].attrs["snr"].max(), "magnitude": event.attrs["magnitude"], "distance": event[sta_id].attrs["distance_km"], "azimuth": event[sta_id].attrs["azimuth"]}]*len(s_picks_gt))    
+            pick_metric.p_trace_stat_label.extend([{"trace_id": f"{event_id}/{sta_id}", "snr": event[sta_id].attrs["snr"].max(), "magnitude": event.attrs["magnitude"], "distance": event[sta_id].attrs["distance_km"], "azimuth": event[sta_id].attrs["azimuth"], "phase_snr": snr_p_sta}]*len(p_picks_gt))
+            pick_metric.s_trace_stat_label.extend([{"trace_id": f"{event_id}/{sta_id}", "snr": event[sta_id].attrs["snr"].max(), "magnitude": event.attrs["magnitude"], "distance": event[sta_id].attrs["distance_km"], "azimuth": event[sta_id].attrs["azimuth"], "phase_snr": snr_s_sta}]*len(s_picks_gt))    
             pick_metric_thld.num_p_picks_label += len(p_picks_gt) if num_stations>=station_threshold else 0
             pick_metric_thld.num_s_picks_label += len(s_picks_gt) if num_stations>=station_threshold else 0
-            pick_metric_thld.p_trace_stat_label.extend([{"trace_id": f"{event_id}/{sta_id}", "snr": event[sta_id].attrs["snr"].max(), "magnitude": event.attrs["magnitude"], "distance": event[sta_id].attrs["distance_km"], "azimuth": event[sta_id].attrs["azimuth"]}]*len(p_picks_gt) if num_stations>=station_threshold else [])
-            pick_metric_thld.s_trace_stat_label.extend([{"trace_id": f"{event_id}/{sta_id}", "snr": event[sta_id].attrs["snr"].max(), "magnitude": event.attrs["magnitude"], "distance": event[sta_id].attrs["distance_km"], "azimuth": event[sta_id].attrs["azimuth"]}]*len(s_picks_gt) if num_stations>=station_threshold else [])
+            pick_metric_thld.p_trace_stat_label.extend([{"trace_id": f"{event_id}/{sta_id}", "snr": event[sta_id].attrs["snr"].max(), "magnitude": event.attrs["magnitude"], "distance": event[sta_id].attrs["distance_km"], "azimuth": event[sta_id].attrs["azimuth"], "phase_snr": snr_p_sta}]*len(p_picks_gt) if num_stations>=station_threshold else [])
+            pick_metric_thld.s_trace_stat_label.extend([{"trace_id": f"{event_id}/{sta_id}", "snr": event[sta_id].attrs["snr"].max(), "magnitude": event.attrs["magnitude"], "distance": event[sta_id].attrs["distance_km"], "azimuth": event[sta_id].attrs["azimuth"], "phase_snr": snr_s_sta}]*len(s_picks_gt) if num_stations>=station_threshold else [])
             if sta_id not in df["station_id"].values:
                 continue
             if len(p_picks_gt) == 0 or len(s_picks_gt) == 0:
@@ -546,12 +568,12 @@ with h5py.File(h5_file, "r") as fp:
             df_sta_s = df_sta[df_sta["phase_type"] == "S"]
             pick_metric.num_p_picks += len(df_sta_p)
             pick_metric.num_s_picks += len(df_sta_s)
-            pick_metric.p_trace_stat.extend([{"trace_id": f"{event_id}/{sta_id}", "snr": event[sta_id].attrs["snr"].max(), "magnitude": event.attrs["magnitude"], "distance": event[sta_id].attrs["distance_km"], "azimuth": event[sta_id].attrs["azimuth"]}]*len(df_sta_p))
-            pick_metric.s_trace_stat.extend([{"trace_id": f"{event_id}/{sta_id}", "snr": event[sta_id].attrs["snr"].max(), "magnitude": event.attrs["magnitude"], "distance": event[sta_id].attrs["distance_km"], "azimuth": event[sta_id].attrs["azimuth"]}]*len(df_sta_s))
+            pick_metric.p_trace_stat.extend([{"trace_id": f"{event_id}/{sta_id}", "snr": event[sta_id].attrs["snr"].max(), "magnitude": event.attrs["magnitude"], "distance": event[sta_id].attrs["distance_km"], "azimuth": event[sta_id].attrs["azimuth"], "phase_snr": snr_p_sta}]*len(df_sta_p))
+            pick_metric.s_trace_stat.extend([{"trace_id": f"{event_id}/{sta_id}", "snr": event[sta_id].attrs["snr"].max(), "magnitude": event.attrs["magnitude"], "distance": event[sta_id].attrs["distance_km"], "azimuth": event[sta_id].attrs["azimuth"], "phase_snr": snr_s_sta}]*len(df_sta_s))
             pick_metric_thld.num_p_picks += len(df_sta_p) if num_stations>=station_threshold else 0
             pick_metric_thld.num_s_picks += len(df_sta_s) if num_stations>=station_threshold else 0
-            pick_metric_thld.p_trace_stat.extend([{"trace_id": f"{event_id}/{sta_id}", "snr": event[sta_id].attrs["snr"].max(), "magnitude": event.attrs["magnitude"], "distance": event[sta_id].attrs["distance_km"], "azimuth": event[sta_id].attrs["azimuth"]}]*len(df_sta_p) if num_stations>=station_threshold else [])
-            pick_metric_thld.s_trace_stat.extend([{"trace_id": f"{event_id}/{sta_id}", "snr": event[sta_id].attrs["snr"].max(), "magnitude": event.attrs["magnitude"], "distance": event[sta_id].attrs["distance_km"], "azimuth": event[sta_id].attrs["azimuth"]}]*len(df_sta_s) if num_stations>=station_threshold else [])
+            pick_metric_thld.p_trace_stat.extend([{"trace_id": f"{event_id}/{sta_id}", "snr": event[sta_id].attrs["snr"].max(), "magnitude": event.attrs["magnitude"], "distance": event[sta_id].attrs["distance_km"], "azimuth": event[sta_id].attrs["azimuth"], "phase_snr": snr_p_sta}]*len(df_sta_p) if num_stations>=station_threshold else [])
+            pick_metric_thld.s_trace_stat.extend([{"trace_id": f"{event_id}/{sta_id}", "snr": event[sta_id].attrs["snr"].max(), "magnitude": event.attrs["magnitude"], "distance": event[sta_id].attrs["distance_km"], "azimuth": event[sta_id].attrs["azimuth"], "phase_snr": snr_s_sta}]*len(df_sta_s) if num_stations>=station_threshold else [])
             if len(df_sta_p) == 0:
                 min_res_p = [np.inf] * len(p_picks_gt)
                 min_scores_p = [np.inf] * len(p_picks_gt)
@@ -607,9 +629,9 @@ with h5py.File(h5_file, "r") as fp:
                 snr_sta = snr_sta.max()
             else:
                 snr_sta = 0
-            pick_metric.update_matched_picks(min_res_p, min_res_s, min_scores_p, min_scores_s, [event.attrs["magnitude"]], [event[sta_id].attrs["distance_km"]], [snr_sta], [event[sta_id].attrs["azimuth"]], min_polarity_score_p, min_polarity_score_s, min_polarity_pred_p, min_polarity_pred_s, min_polarity_manual_p, min_polarity_manual_s)
+            pick_metric.update_matched_picks(min_res_p, min_res_s, min_scores_p, min_scores_s, [event.attrs["magnitude"]], [event[sta_id].attrs["distance_km"]], [snr_sta], [event[sta_id].attrs["azimuth"]], min_polarity_score_p, min_polarity_score_s, min_polarity_pred_p, min_polarity_pred_s, min_polarity_manual_p, min_polarity_manual_s, [snr_p_sta], [snr_s_sta])
             if num_stations>=station_threshold:
-                pick_metric_thld.update_matched_picks(min_res_p, min_res_s, min_scores_p, min_scores_s, [event.attrs["magnitude"]], [event[sta_id].attrs["distance_km"]], [snr_sta], [event[sta_id].attrs["azimuth"]], min_polarity_score_p, min_polarity_score_s, min_polarity_pred_p, min_polarity_pred_s, min_polarity_manual_p, min_polarity_manual_s)
+                pick_metric_thld.update_matched_picks(min_res_p, min_res_s, min_scores_p, min_scores_s, [event.attrs["magnitude"]], [event[sta_id].attrs["distance_km"]], [snr_sta], [event[sta_id].attrs["azimuth"]], min_polarity_score_p, min_polarity_score_s, min_polarity_pred_p, min_polarity_pred_s, min_polarity_manual_p, min_polarity_manual_s, [snr_p_sta], [snr_s_sta])
 
 pick_metric.list2numpy()
 pick_metric_thld.list2numpy()

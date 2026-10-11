@@ -241,10 +241,13 @@ def train_one_epoch(
     
     if balancer is not None:
         balancer.update(meters=metric_logger.meters, epoch=epoch)
-        if args.wandb and utils.is_main_process():
-            if args.mtl=="dwa" or args.mtl=="dwa_inverse":
-                for i, k in enumerate(balancer.tasks):
-                    wandb.log({"train/balancer_" + k: balancer.batch_weight[epoch,i]})
+        try:
+            if args.wandb and utils.is_main_process():
+                if args.mtl=="dwa" or args.mtl=="dwa_inverse":
+                    for i, k in enumerate(balancer.tasks):
+                        wandb.log({"train/balancer_" + k: balancer.batch_weight[epoch,i]})
+        except Exception as e:
+            pass
     plot_results(meta, model, output, args, epoch, "train_")
     del meta, output, loss
     #if epoch==0 and utils.is_main_process():
@@ -836,12 +839,12 @@ def main(args):
         train_time = time.time() - tmp_time
         print(f"Training time of epoch {epoch} of rank {rank}: {time.time() - tmp_time:.3f}")
 
-        #if args.test_hdf5_file is not None:
-        #    tmp_time = time.time()
-        #    metric = evaluate(model, data_loader_test, scaler, args, epoch, len(dataset_test))
-        #    if model_ema:
-        #        metric = evaluate(model_ema, data_loader_test, scaler, args, epoch, len(dataset_test))
-        #    print(f"Testing time of epoch {epoch} of rank {rank}: {time.time() - tmp_time:.3f}")
+        if args.test_hdf5_file is not None:
+            tmp_time = time.time()
+            metric = evaluate(model, data_loader_test, scaler, args, epoch, len(dataset_test))
+            if model_ema:
+                metric = evaluate(model_ema, data_loader_test, scaler, args, epoch, len(dataset_test))
+            print(f"Testing time of epoch {epoch} of rank {rank}: {time.time() - tmp_time:.3f}")
 
         tmp_time = time.time()
         checkpoint = {
