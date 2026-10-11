@@ -1111,7 +1111,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
         else:
             return self._data_len
     
-    @func_timeout(20)
+    #@func_timeout(60)
     def _read_training_h5(self, event_id, hdf5_fp, max_stations_ratio=None):
         if event_id in self.ill_event_ids:
             return None
@@ -1514,7 +1514,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
         
         return meta
 
-    @func_timeout(120)
+    #@func_timeout(120)
     def sample_train(self, data_list):
         if self.format == "h5":
             hdf5_fp = h5py.File(self.hdf5_file, "r", libver="latest", swmr=True, locking=False)
@@ -2067,7 +2067,7 @@ class SeismicNetworkIterableDataset(IterableDataset):
 if __name__ == "__main__":
     import matplotlib.pyplot as plt
 
-    dataset = SeismicNetworkIterableDataset(hdf5_file="/Users/weiqiang/Research/EQNet/quakeflow_dataset/NC/waveform_train.h5",
+    dataset = SeismicNetworkIterableDataset(hdf5_file="/pscratch/sd/w/whaoyu/quakeflow_dataset/NC/waveform_train.h5",
                                             stack_event=True,
                                             concatenate_event=True)
     for x in dataset:

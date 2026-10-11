@@ -3,7 +3,6 @@ import json
 import os
 import sys
 import re
-import h5py
 import errno
 import pickle
 import argparse
@@ -12,7 +11,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
-import obspy
 from collections import OrderedDict
 from tqdm import tqdm
 import itertools
@@ -20,19 +18,10 @@ from collections import defaultdict, deque, Counter
 from sklearn.cluster import DBSCAN
 from pyproj import Transformer
 
-import datasets
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 
 sns.set_theme(style="whitegrid")
-
-lat0, lon0 = 37.866, -122.2515  # Center point for berkeley case
-transformer = Transformer.from_crs(
-    f"+proj=latlong +datum=WGS84",
-    f"+proj=tmerc +lat_0={lat0} +lon_0={lon0} +k=1 +x_0=0 +y_0=0 +datum=WGS84",
-    always_xy=True
-)
 
 # %%
 class EventMetric:
@@ -461,6 +450,8 @@ parser.add_argument('--gpu', action='store_true', help='use gpu')
 parser.add_argument('--num_workers', type=int, default=16, help='number of workers')
 parser.add_argument('--test_only', action='store_true', help='test only')
 parser.add_argument('--use_depth', action='store_true', help='use depth during matching')
+parser.add_argument('--lat0', type=float, default=37.866, help='latitude of the center point for tmerc projection')
+parser.add_argument('--lon0', type=float, default=-122.2515, help='longitude of the center point for tmerc projection')
 
 args = parser.parse_args()
 if args.num_workers > 1:
@@ -506,6 +497,13 @@ sample_rate = 100
 feature_scale = 16
 degree2km = 111.19492664455873
 
+lat0, lon0 = args.lat0, args.lon0
+transformer = Transformer.from_crs(
+    f"+proj=latlong +datum=WGS84",
+    f"+proj=tmerc +lat_0={lat0} +lon_0={lon0} +k=1 +x_0=0 +y_0=0 +datum=WGS84",
+    always_xy=True
+)
+
 # %%
 def average_location(locations):
     # 将经纬度从度数转换为弧度
@@ -537,7 +535,6 @@ stations['station_id'] = stations.index
 stations.reset_index(drop=True, inplace=True)
 
 if not args.test_only:
-    # 获取csv_dir下所有的CSV文件的路径
     pick_files = [os.path.join(pick_dir, f) for f in os.listdir(pick_dir) if f.endswith(".csv")]
     event_files = [os.path.join(event_dir, f) for f in os.listdir(event_dir) if f.endswith(".csv")]
 
@@ -561,58 +558,6 @@ if not args.test_only:
             continue
         df = pd.read_csv(pick)
         events.append(df)
-        #df = df[df["event_score"] >= args.score_threshold]
-        #if len(df) == 0:
-        #    ridgecrest_metric.empty_files += 1
-        #    continue
-        #
-        #stations = df["station_id"].values
-        #time_stamps = pd.to_datetime(df["event_time"])
-        #assert type(time_stamps) == pd.core.series.Series
-        #hypoparameters = np.zeros((len(df),9))
-        #hypoparameters[:,0] = df["event_index"].values
-        #hypoparameters[:,1] = df["event_location_x"].values
-        #hypoparameters[:,2] = df["event_location_y"].values
-        #hypoparameters[:,3] = df["event_location_z"].values
-        #hypoparameters[:,4] = df["event_longitude"].values
-        #hypoparameters[:,5] = df["event_latitude"].values
-        #hypoparameters[:,6] = df["epicentral_distance"].values
-        #hypoparameters[:,7] = df["azimuth"].values
-        #hypoparameters[:,8] = df["magnitude"].values
-        #
-        #raw_picks.append(df[['event_longitude', 'event_latitude', 'event_location_x', 'event_location_y', 'event_location_z', 'magnitude']])
-        #
-        #labels = dbscan.fit_predict(hypoparameters[:,:4]*np.array(time_space_weight)[None,:]) # weighted
-        #classes, counts = np.unique(labels, return_counts=True)
-        #if len(df) > 5 and len(classes) > 1:
-        #    if classes[0] == -1:
-        #        classes = classes[1:]
-        #        counts = counts[1:]
-        #    classes = classes[counts>1]
-        #    
-        #for c in classes:
-        #    cluster_picks = hypoparameters[labels==c]
-        #    time_stamp = time_stamps[labels==c]
-        #    time_stamp = time_stamp.iloc[np.argsort(cluster_picks[:,6])][:30]
-        #    cluster_picks = cluster_picks[np.argsort(cluster_picks[:,6])][:80]
-        #    info = {}
-        #    info["event_id"] = f'{ridgecrest_metric.num_event_picks}'
-        #    info["time"] = time_stamp.median()
-        #    info["magnitude"] = np.median(cluster_picks[:10,8])
-        #    #avg_center = average_location(cluster_picks[:,4:6])
-        #    avg_center = np.median(cluster_picks[:10,4:6], axis=0)
-        #    x_pred = avg_center[0]*np.cos(np.radians(avg_center[1])) * degree2km
-        #    y_pred = avg_center[1] * degree2km
-        #    z_pred = np.median(cluster_picks[:10,3])
-        #    info["latitude"] = avg_center[1]
-        #    info["longitude"] = avg_center[0]
-        #    info["depth_km"] = z_pred
-        #    info["x_km"] = x_pred
-        #    info["y_km"] = y_pred
-        #    info["z_km"] = z_pred
-        #    
-        #    events.append(pd.DataFrame(info, index=[0]))
-        #    ridgecrest_metric.num_event_picks += 1
 
     picks = pd.concat(picks, ignore_index=True)
     events = pd.concat(events, ignore_index=True)
@@ -951,23 +896,6 @@ if not args.test_only:
     events.to_csv(catalog_pred_dir.replace('catalog', 'event_picks'), index=False)
 
 # %%
-
-# 绘制直方图
-# plt.figure(figsize=(9, 6), dpi=300)
-# plt.bar(counts_pred.index.strftime('%Y-%m-%d-%H'), counts_pred.values, color='C0', label='Prediction')
-# plt.bar(counts_catalog.index.strftime('%Y-%m-%d-%H'), counts_catalog.values, color='C3', label='SCSN')
-# plt.xlim(left=4, right=len(counts_catalog))
-# plt.xticks(ticks=np.arange(4, len(counts_catalog), 1), labels=[idx[2:] if idx.endswith('00') else '' for idx in counts_catalog.index.strftime('%Y-%m-%d-%H')[4:len(counts_catalog)]],
-#            rotation=30, fontsize=8)
-# plt.xlabel('Date')
-# plt.ylabel('Frequency')
-# plt.legend()
-# if save_path is not None:
-#     plt.savefig(save_path+f'catalog{suffix}.png')
-# else:
-#     plt.show()
-
-# %%
 catalog = pd.read_csv(catalog_dir)
 catalog_pred = pd.read_csv(catalog_pred_dir.replace('catalog', 'events') if not args.test_only else catalog_pred_dir)
 
@@ -992,39 +920,6 @@ catalog_pred['x_km'], catalog_pred['y_km'] = transformer.transform(catalog_pred[
 catalog_pred['x_km'] = catalog_pred['x_km'].apply(lambda x: x / 1000)  # convert to km
 catalog_pred['y_km'] = catalog_pred['y_km'].apply(lambda x: x / 1000)  # convert to km
 catalog_pred['z_km'] = catalog_pred['depth_km']
-
-# select rows with 'ci' in 'event_id'
-# catalog = catalog[catalog['event_id'].str.contains('ci')]
-
-# %%
-#iterrows_pred = catalog_pred.iterrows()
-#
-#for _, row in catalog.iterrows():
-#    while True:
-#        try:
-#            index, row_pred = next(iterrows_pred)
-#            time_diff = (row_pred['time'].timestamp() - row['time'].timestamp())
-#            if time_diff > event_dt_bar:
-#                # undo the next() call
-#                iterrows_pred = itertools.chain([(index, row_pred)], iterrows_pred)
-#                break
-#            else:
-#                x_diff = row_pred['x_km'] - row['proj_x']
-#                y_diff = row_pred['y_km'] - row['proj_y']
-#                z_diff = row_pred['z_km'] - row['z_km']
-#                lon_diff = row_pred['longitude'] - row['longitude']
-#                lat_diff = row_pred['latitude'] - row['latitude']
-#                magnitude_diff = row_pred['magnitude'] - row['magnitude']
-#                if np.isnan(magnitude_diff):
-#                    print(row_pred['magnitude'], row['magnitude'], row['event_id'], index)
-#                if (abs(time_diff)<=event_dt_bar) and (abs(x_diff)<30) and (abs(y_diff)<30) and (abs(z_diff)<10):
-#                    ridgecrest_metric.update_matched_picks([time_diff], [x_diff], [y_diff], [z_diff],
-#                                                            [row_pred['x_km']], [row_pred['y_km']], [row_pred['z_km']],
-#                                                            [row['magnitude']], [row_pred['magnitude']],[],[],[],
-#                                                            [row_pred['longitude']], [row_pred['latitude']], [row_pred['longitude'] - row['longitude']], [row_pred['latitude'] - row['latitude']])
-#                    break
-#        except StopIteration:
-#            break
 
 event_time_stamp0 = min(catalog['time'].min(), catalog_pred['time'].min()) - pd.Timedelta(seconds=10)
 print(f"event_time_stamp0: {event_time_stamp0}, min_time: {catalog['time'].min()}, min_time_pred: {catalog_pred['time'].min()}")
@@ -1324,19 +1219,6 @@ axes[0].set_xticks(ticks=np.arange(4, len(counts_catalog), 1), labels=[idx[2:] i
 axes[0].set_xlabel('Date')
 axes[0].set_ylabel('Frequency')
 axes[0].legend()
-
-# axes[1].hist(catalog_pred['magnitude'], bins=26, range=(-0.5, 7), color='C0', label='Prediction', log=True)
-# axes[1].hist(catalog['magnitude'], bins=26, range=(-0.5, 7), color='C3', label='SCSN', log=True)
-# axes[1].hist(catalog_pred['magnitude'][catalog_pred['magnitude']>=1.81], bins=26, range=(-0.5, 7), color='C0', label='Prediction', log=True)
-# 
-# axes[1].set_xlabel('Magnitude')
-# axes[1].set_ylabel('Frequency')
-# axes[1].legend()
-# 
-# axes[2].hist(res_event_time, bins=11, range=(-3, 3))
-# axes[2].set_xlabel('Original Time residual (s)')
-# axes[2].set_ylabel('Frequency')
-# 假设df1和df2是两个DataFrame，每个DataFrame都有'time'和'magnitude'两列
 
 labels = ['SCSN', 'Prediction']
 heats=[]
