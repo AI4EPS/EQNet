@@ -274,6 +274,20 @@ def extract_events(
                             s_amp = torch.max(waveform_cut) if waveform_cut.numel() > 0 else torch.tensor(0.0)
                             event_dict["sp_ratio"] = s_amp.item() / p_amp.item() if (p_amp > 0 and s_amp > 0) else np.nan
 
+                            ## optional amp / noise for S/P screening: peak vector amplitude in the P and S windows and the
+                            ## RMS vector amplitude of a pre-P noise window of the same length as the P window. Downstream
+                            ## (run_event_association.py carries them when present, run_skhash.py hands SKHASH amp and noise)
+                            ## screens the ratios at amp / noise >= ratmin, matching the template path in
+                            ## measure_polarity_sp_ratio.py. noise_p = noise_s (one pre-P noise level per detection).
+                            noise_len = p_before + p_after
+                            noise_end = max(itp - p_before, 0)
+                            noise_cut = waveform_amp[i, max(noise_end - noise_len, 0) : noise_end, k]
+                            noise_amp = torch.sqrt(torch.mean(noise_cut ** 2)) if noise_cut.numel() > 0 else torch.tensor(float("nan"))
+                            event_dict["amp_p"] = p_amp.item() if p_amp > 0 else np.nan
+                            event_dict["amp_s"] = s_amp.item() if s_amp > 0 else np.nan
+                            event_dict["noise_p"] = noise_amp.item()
+                            event_dict["noise_s"] = noise_amp.item()
+
                             ## calculate event amplitude
                             # event_amp = torch.max(torch.abs(waveform[i, :, itp : its + (its - itp), k]))
                             waveform_cut = waveform[i, :, itp : its + (its - itp), k]
