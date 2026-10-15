@@ -139,36 +139,47 @@ def spectrogram(
     """
     with torch.set_grad_enabled(grad):
         window = window_fn(n_fft).to(x.device)
-        stft = torch.stft(
+        stft_complex = torch.stft(
             x,
             n_fft=n_fft,
             window=window,
             hop_length=hop_length,
             center=True,
-            return_complex=False,
+            return_complex=True,
         )
-        stft = stft[..., : x.shape[-1] // hop_length, :]
+        # Original code truncated the time dimension after STFT. Replicate this.
+        stft_complex = stft_complex[..., : x.shape[-1] // hop_length]
+
         if discard_zero_freq:
-            stft = stft.narrow(dim=-3, start=1, length=stft.shape[-3] - 1)
+            # Frequency dimension is now -2 for complex tensor
+            stft_complex = stft_complex.narrow(dim=-2, start=1, length=stft_complex.shape[-2] - 1)
         if select_freq:
             dt = kwargs["dt"]
             fmax = 1 / 2 / dt
             freq = torch.linspace(0, fmax, n_fft)
             idx = torch.arange(n_fft)[(freq > kwargs["fmin"]) & (freq < kwargs["fmax"])]
-            stft = stft.narrow(dim=-3, start=idx[0].item(), length=idx.numel())
+            # Frequency dimension is now -2 for complex tensor
+            stft_complex = stft_complex.narrow(dim=-2, start=idx[0].item(), length=idx.numel())
+
         if magnitude:
-            stft_mag = torch.norm(stft, dim=-1)
+            stft_mag = torch.abs(stft_complex) # Use torch.abs for magnitude from complex tensor
             if log_transform:
                 stft_mag = torch.log(1 + F.relu(stft_mag))
             if phase:
-                components = stft.split(1, dim=-1)
-                stft_phase = torch.atan2(components[1].squeeze(-1), components[0].squeeze(-1))
+                stft_phase = torch.angle(stft_complex) # Use torch.angle for phase from complex tensor
                 stft = torch.stack([stft_mag, stft_phase], dim=-1)
             else:
                 stft = stft_mag
         else:
+            # If magnitude is False, original code returned real/imag parts stacked.
+            # Reconstruct this behavior from the complex tensor.
+            stft_real = stft_complex.real
+            stft_imag = stft_complex.imag
+            stft_combined = torch.stack([stft_real, stft_imag], dim=-1)
             if log_transform:
-                stft = torch.log(1 + F.relu(stft)) - torch.log(1 + F.relu(-stft))
+                stft = torch.log(1 + F.relu(stft_combined)) - torch.log(1 + F.relu(-stft_combined))
+            else:
+                stft = stft_combined
         return stft
 
 
@@ -210,34 +221,45 @@ class Spectrogram:
         """
         with torch.set_grad_enabled(self.grad):
             window = self.window_fn(self.n_fft).to(x.device)
-            stft = torch.stft(
+            stft_complex = torch.stft(
                 x,
                 n_fft=self.n_fft,
                 window=window,
                 hop_length=self.hop_length,
                 center=True,
-                return_complex=False,
+                return_complex=True,
             )
-            stft = stft[..., : x.shape[-1] // self.hop_length, :]
+            # Original code truncated the time dimension after STFT. Replicate this.
+            stft_complex = stft_complex[..., : x.shape[-1] // self.hop_length]
+
             if self.discard_zero_freq:
-                stft = stft.narrow(dim=-3, start=1, length=stft.shape[-3] - 1)
+                # Frequency dimension is now -2 for complex tensor
+                stft_complex = stft_complex.narrow(dim=-2, start=1, length=stft_complex.shape[-2] - 1)
             if self.select_freq:
                 dt = self.kwargs["dt"]
                 fmax = 1 / 2 / dt
                 freq = torch.linspace(0, fmax, self.n_fft)
                 idx = torch.arange(self.n_fft)[(freq > self.kwargs["fmin"]) & (freq < self.kwargs["fmax"])]
-                stft = stft.narrow(dim=-3, start=idx[0].item(), length=idx.numel())
+                # Frequency dimension is now -2 for complex tensor
+                stft_complex = stft_complex.narrow(dim=-2, start=idx[0].item(), length=idx.numel())
+
             if self.magnitude:
-                stft_mag = torch.norm(stft, dim=-1)
+                stft_mag = torch.abs(stft_complex) # Use torch.abs for magnitude from complex tensor
                 if self.log_transform:
                     stft_mag = torch.log(1 + F.relu(stft_mag))
                 if self.phase:
-                    components = stft.split(1, dim=-1)
-                    stft_phase = torch.atan2(components[1].squeeze(-1), components[0].squeeze(-1))
+                    stft_phase = torch.angle(stft_complex) # Use torch.angle for phase from complex tensor
                     stft = torch.stack([stft_mag, stft_phase], dim=-1)
                 else:
                     stft = stft_mag
             else:
+                # If magnitude is False, original code returned real/imag parts stacked.
+                # Reconstruct this behavior from the complex tensor.
+                stft_real = stft_complex.real
+                stft_imag = stft_complex.imag
+                stft_combined = torch.stack([stft_real, stft_imag], dim=-1)
                 if self.log_transform:
-                    stft = torch.log(1 + F.relu(stft)) - torch.log(1 + F.relu(-stft))
+                    stft = torch.log(1 + F.relu(stft_combined)) - torch.log(1 + F.relu(-stft_combined))
+                else:
+                    stft = stft_combined
             return stft

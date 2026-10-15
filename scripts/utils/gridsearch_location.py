@@ -7,7 +7,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import pyproj
+from pyproj import CRS, Transformer, TransformDirection
 from gamma.seismic_ops import initialize_eikonal, traveltime
 from sklearn.cluster import DBSCAN
 from tqdm.auto import tqdm
@@ -56,11 +56,23 @@ if __name__ == "__main__":
     stations["id"] = stations["index"]
     y0 = stations["latitude"].mean()
     x0 = stations["longitude"].mean()
-    proj = pyproj.Proj(f"+proj=aeqd +lon_0={x0} +lat_0={y0} +units=km")
-    xlim_km = proj(xlim_degree[0], y0)[0], proj(xlim_degree[1], y0)[0]
-    ylim_km = proj(x0, ylim_degree[0])[1], proj(x0, ylim_degree[1])[1]
+    crs_wgs84 = CRS("EPSG:4326")
+    crs_target = CRS(f"+proj=aeqd +lon_0={x0} +lat_0={y0} +units=km")
+    transformer_forward = Transformer.from_crs(crs_wgs84, crs_target, always_xy=True)
+    transformer_inverse = Transformer.from_crs(crs_target, crs_wgs84, always_xy=True)
+    xlim_km_min_x, _ = transformer_forward.transform(xlim_degree[0], y0)
+    xlim_km_max_x, _ = transformer_forward.transform(xlim_degree[1], y0)
+    xlim_km = xlim_km_min_x, xlim_km_max_x
+    _, ylim_km_min_y = transformer_forward.transform(x0, ylim_degree[0])
+    _, ylim_km_max_y = transformer_forward.transform(x0, ylim_degree[1])
+    ylim_km = ylim_km_min_y, ylim_km_max_y
+    
+    def transform_lonlat_to_xy(row, transformer):
+        x_km, y_km = transformer.transform(row.longitude, row.latitude)
+        return pd.Series({'x(km)': x_km, 'y(km)': y_km})
+
     stations[["x(km)", "y(km)"]] = stations.apply(
-        lambda x: pd.Series(proj(longitude=x.longitude, latitude=x.latitude)), axis=1
+        lambda x: transform_lonlat_to_xy(x, transformer_forward), axis=1
     )
     if "elevation_m" in stations.columns:
         stations["z(km)"] = stations["elevation_m"].apply(lambda x: -x / 1e3)
@@ -76,7 +88,7 @@ if __name__ == "__main__":
         & (catalog["latitude"] < ylim_degree[1])
     ]
     catalog[["x(km)", "y(km)"]] = catalog.apply(
-        lambda x: pd.Series(proj(longitude=x.longitude, latitude=x.latitude)), axis=1
+        lambda x: transform_lonlat_to_xy(x, transformer_forward), axis=1
     )
     catalog["z(km)"] = catalog["depth_km"]
 
@@ -128,9 +140,12 @@ if __name__ == "__main__":
         ngrid = 50
         xgrid_ = np.linspace(np.floor(config["x(km)"][0]), np.ceil(config["x(km)"][1]), ngrid)
         ygrid_ = np.linspace(np.floor(config["y(km)"][0]), np.ceil(config["y(km)"][1]), ngrid)
-        xgrid_degree_ = proj(xgrid_, np.zeros_like(xgrid_), inverse=True)[0]
-        ygrid_degree_ = proj(np.zeros_like(ygrid_), ygrid_, inverse=True)[1]
-        center_degree = proj(center[0], center[1], inverse=True)
+        lon_xgrid, _ = transformer_inverse.transform(xgrid_, np.zeros_like(xgrid_))
+        xgrid_degree_ = lon_xgrid
+        _, lat_ygrid = transformer_inverse.transform(np.zeros_like(ygrid_), ygrid_)
+        ygrid_degree_ = lat_ygrid
+        center_lon, center_lat = transformer_inverse.transform(center[0], center[1])
+        center_degree = (center_lon, center_lat)
         zgrid_ = np.linspace(config["z(km)"][0], config["z(km)"][1], 10)
         xgrid, ygrid, zgrid = np.meshgrid(xgrid_, ygrid_, zgrid_, indexing="ij")
         xgrid_degree, ygrid_degree, zgrid_degree = np.meshgrid(xgrid_degree_, ygrid_degree_, zgrid_, indexing="ij")
