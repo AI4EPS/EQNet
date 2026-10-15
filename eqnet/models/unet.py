@@ -34,6 +34,9 @@ def moving_normalize(data, filter=1024, stride=128):
         data_ = F.pad(data, (0, 0, padding, padding), mode="reflect")
         # std = (F.lp_pool2d(data_, norm_type=2, kernel_size=(filter, 1), stride=(stride, 1)) / ((filter) ** 0.5))
         std = F.avg_pool2d(torch.abs(data_), kernel_size=(filter, 1), stride=(stride, 1))
+        #channel_count = torch.any(std!=0, dim=(2,), keepdim=True).sum(dim=(1,), keepdim=True)
+        #std = std.sum(dim=(1,), keepdim=True)/channel_count
+        std = torch.mean(std, dim=(1,), keepdim=True)
         std = F.interpolate(std, scale_factor=(stride, 1), mode="bilinear", align_corners=False)[:, :, :nt, :nx]
         std[std == 0.0] = 1.0
         data = data / std
@@ -42,6 +45,48 @@ def moving_normalize(data, filter=1024, stride=128):
 
     return data
 
+def moving_normalize_channel(data, filter=1024, stride=128):
+    nb, nch, nt, nx = data.shape
+    
+    # if nt % stride == 0:
+    #     pad = max(filter - stride, 0)
+    # else:
+    #     pad = max(filter - (nt % stride), 0)
+    # pad1 = pad // 2
+    # pad2 = pad - pad1
+    padding = filter // 2
+
+    with torch.no_grad():
+        recorded = torch.any(data!=0, dim=2, keepdim=True)
+        recorded = torch.where(torch.all(recorded == 0, dim=1, keepdim=True).repeat(1, nch, 1, 1), 
+                               torch.ones_like(recorded), recorded)
+        
+        # data_ = F.pad(data, (0, 0, pad1, pad2), mode="reflect")
+        data_ = F.pad(data, (0, 0, padding, padding), mode="reflect")
+        mean = F.avg_pool2d(data_, kernel_size=(filter, 1), stride=(stride, 1))
+        mean = F.interpolate(mean, scale_factor=(stride, 1), mode="bilinear", align_corners=False)[:, :, :nt, :nx]
+        #print(f"mean:{mean.shape}")
+        mean = torch.sum(mean*recorded, dim=1, keepdim=True)/torch.sum(recorded, dim=1, keepdim=True)*recorded
+        #print(f"allclose:{torch.allclose(mean, mean1)}")
+        data -= mean
+        #assert not torch.any(torch.isnan(data)), f"NaN in data after mean subtraction: {data}"
+        
+        # data_ = F.pad(data, (0, 0, pad1, pad2), mode="reflect")
+        data_ = F.pad(data, (0, 0, padding, padding), mode="reflect")
+        # std = (F.lp_pool2d(data_, norm_type=2, kernel_size=(filter, 1), stride=(stride, 1)) / ((filter) ** 0.5))
+        std = F.avg_pool2d(torch.abs(data_), kernel_size=(filter, 1), stride=(stride, 1))
+        std = F.interpolate(std, scale_factor=(stride, 1), mode="bilinear", align_corners=False)[:, :, :nt, :nx]
+        std = torch.sum(std*recorded, dim=1, keepdim=True)/torch.sum(recorded, dim=1, keepdim=True)*recorded
+        #print(f"allclose:{torch.allclose(std, std1)}")
+        std[std <= 1e-8] = 1.0
+        #assert not torch.any(torch.isnan(std)), f"NaN in std after std calculation: {std}"
+        #print(f"std:{std.shape}")
+        data = data / std
+        #assert not torch.any(torch.isnan(data)), f"NaN in data after std division: {data}"
+
+        # data = log_transform(data)
+
+    return data
 
 def spectrogram(
     x,
@@ -125,18 +170,6 @@ class UNet(nn.Module):
         self.add_stft = add_stft
         self.moving_norm = moving_norm
         self.log_scale = log_scale
-        if self.add_polarity:
-            self.encoder1_polarity = self.encoder_block(
-                1, features, kernel_size=kernel_size, stride=init_stride, padding=padding, name="enc1_polarity"
-            )
-            self.decoder1_polarity = self.encoder_block(
-                features * 3,
-                features,
-                kernel_size=kernel_size,
-                stride=init_stride,
-                padding=padding,
-                name="dec1_polarity",
-            )
 
         self.input_conv = self.encoder_block(
             in_channels, features, kernel_size=kernel_size, stride=init_stride, padding=padding, name="enc1"
@@ -216,6 +249,30 @@ class UNet(nn.Module):
                 ]
             )
         )
+
+        if self.add_polarity:
+            self.encoder_polarity = self.encoder_block(
+                1, features, kernel_size=kernel_size, stride=stride, padding=padding, name="enc1_polarity"
+            )
+            self.output_polarity = nn.Sequential(
+                OrderedDict(
+                    [
+                        (
+                            "output_polarity_conv",
+                            nn.Conv2d(
+                                in_channels=features * 5,
+                                out_channels=features,
+                                kernel_size=kernel_size,
+                                padding=padding,
+                                bias=False,
+                            ),
+                        ),
+                        ("output_polarity_norm", nn.BatchNorm2d(num_features=features)),
+                        ("output_polarity_relu", nn.ReLU(inplace=True)),
+                    ]
+                )
+            )
+
         if self.add_event:
             self.output_event = nn.Sequential(
                 OrderedDict(
@@ -235,6 +292,7 @@ class UNet(nn.Module):
                     ]
                 )
             )
+
         if (init_stride[0] > 1) or (init_stride[1] > 1):
             self.output_upsample = nn.Upsample(scale_factor=init_stride, mode="bilinear", align_corners=False)
         else:
@@ -256,7 +314,8 @@ class UNet(nn.Module):
         #             x = sgram
 
         if self.add_polarity:
-            enc1_polarity = self.encoder1_polarity(x[:, -1:, :, :])  ## last channel is vertical component
+            enc_polarity = self.encoder_polarity(x[:, -1:, :, :])  ## last channel is vertical component
+
         enc1 = self.input_conv(x)
         enc2 = self.encoder12(enc1)
         enc3 = self.encoder23(enc2)
@@ -275,14 +334,17 @@ class UNet(nn.Module):
         out_phase = self.output_conv(dec1)
         if self.output_upsample is not None:
             out_phase = self.output_upsample(out_phase)
-        out_phase = out_phase[:, :, :nt, :nx]
+        # TODO: Check AGAIN if these part is needed.
+        # out_phase = out_phase[:, :, :nt, :nx]
 
         if self.add_polarity:
-            dec1_polarity = torch.cat((dec1, enc1_polarity), dim=1)
-            out_polarity = self.decoder1_polarity(dec1_polarity)
+            dec_polarity = torch.cat((dec2, enc_polarity), dim=1)
+            out_polarity = self.output_polarity(dec_polarity)
             if self.output_upsample is not None:
                 out_polarity = self.output_upsample(out_polarity)
-            out_polarity = out_polarity[:, :, :nt, :nx]
+            #     out_polarity = out_polarity[:, :, :nt, :nx]
+            # else:
+            #     out_polarity = out_polarity[:, :, : nt // 4, :nx]
         else:
             out_polarity = None
 
@@ -290,7 +352,9 @@ class UNet(nn.Module):
             out_event = self.output_event(dec3)
             if self.output_upsample is not None:
                 out_event = self.output_upsample(out_event)
-            out_event = out_event[:, :, :nt, :nx]
+                # out_event = out_event[:, :, : nt // 4, :nx]
+            # else:
+            #     out_event = out_event[:, :, : nt // 16, :nx]
         else:
             out_event = None
 

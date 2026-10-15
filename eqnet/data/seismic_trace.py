@@ -1,6 +1,7 @@
 import logging
 import os
 import random
+import time
 from collections import defaultdict
 from datetime import datetime, timedelta
 from glob import glob
@@ -15,6 +16,7 @@ import torch
 import torch.nn.functional as F
 from scipy import signal
 from torch.utils.data import Dataset, IterableDataset
+from tqdm import tqdm
 
 # import warnings
 # warnings.filterwarnings("error")
@@ -44,12 +46,11 @@ def padding(data, min_nt=1024, min_nx=1):
     return data
 
 
-def generate_label(
-    phase_list,
+def generate_phase_label(
+    phase_list,  # [[P1, P2, ...], [S1, S2, ...]]
     label_width=[100],
     nt=8192,
     mask_width=None,
-    return_mask=True,
 ):
     target = np.zeros([len(phase_list) + 1, nt], dtype=np.float32)
     mask = np.zeros([nt], dtype=np.float32)
@@ -59,8 +60,8 @@ def generate_label(
     if mask_width is None:
         mask_width = [int(x * 1.5) for x in label_width]
     else:
-        width = mask_width
-        mask_width = [min(int(x * 1.5), width) for x in label_width]
+        # mask_width = [min(int(x * 1.5), mask_width) for x in label_width]
+        mask_width = [mask_width] * len(label_width)
 
     for i, (picks, w, m) in enumerate(zip(phase_list, label_width, mask_width)):
         for phase_time in picks:
@@ -72,10 +73,37 @@ def generate_label(
 
     target[0:1, :] = np.maximum(0, 1 - np.sum(target[1:, :], axis=0, keepdims=True))
 
-    if return_mask:
-        return target, mask
+    return target, mask
+
+
+def generate_event_label(
+    reference_center,
+    event_time,
+    label_width=[100],
+    nt=8192,
+    mask_width=None,
+):
+    target_center = np.zeros(nt, dtype=np.float32)
+    target_time = np.zeros(nt, dtype=np.float32)
+    mask = np.zeros(nt, dtype=np.float32)
+
+    if len(label_width) == 1:
+        label_width = label_width * len(reference_center)
+    if mask_width is None:
+        mask_width = [int(x * 1.5) for x in label_width]
     else:
-        return target
+        mask_width = [min(int(x * 1.5), label_width) for x in label_width]
+
+    for i, (c0, t0, w, m) in enumerate(zip(reference_center, event_time, label_width, mask_width)):
+        t = np.arange(nt) - c0
+        gaussian = np.exp(-(t**2) / (2 * (w / 6) ** 2))
+        gaussian[gaussian < 0.05] = 0.0
+        target_center += gaussian
+        mask[int(c0) - m : int(c0) + m] = 1.0
+        t = np.arange(nt) - t0
+        target_time[int(c0) - m : int(c0) + m] = t[int(c0) - m : int(c0) + m]
+
+    return target_center, target_time, mask
 
 
 def stack_event(
@@ -91,8 +119,8 @@ def stack_event(
     phase_mask2 = meta2["phase_mask"].copy()
     event_center1 = meta1["event_center"].copy()
     event_center2 = meta2["event_center"].copy()
-    event_location1 = meta1["event_location"].copy()
-    event_location2 = meta2["event_location"].copy()
+    event_time1 = meta1["event_time"].copy()
+    event_time2 = meta2["event_time"].copy()
     event_mask1 = meta1["event_mask"].copy()
     event_mask2 = meta2["event_mask"].copy()
     polarity1 = meta1["polarity"].copy()
@@ -121,7 +149,7 @@ def stack_event(
             t0, t1 = meta2["duration"][i, j]
             duration_mask2[t0:t1, i] = 1
 
-    max_tries = 30
+    max_tries = 5
     # while random.random() < 0.5:
     for i in range(random.randint(1, 10)):
         tries = 0
@@ -149,9 +177,11 @@ def stack_event(
             waveform2_ = np.roll(waveform2, shift, axis=1)
             phase_pick2_ = np.roll(phase_pick2, shift, axis=1)
             phase_mask2_ = np.roll(phase_mask2, shift, axis=0)
+            event_time2_ = np.roll(event_time2, shift, axis=0)
             event_center2_ = np.roll(event_center2, shift, axis=0)
             event_mask2_ = np.roll(event_mask2, shift, axis=0)
-            polarity2_ = np.roll(polarity2, shift, axis=0)
+            # polarity2_ = np.roll(polarity2, shift, axis=0)
+            polarity2_ = np.roll(polarity2, shift, axis=1)
             polarity_mask2_ = np.roll(polarity_mask2, shift, axis=0)
             duration_mask2_ = np.roll(duration_mask2, shift, axis=0)
 
@@ -167,13 +197,21 @@ def stack_event(
             phase_pick1 = phase_pick
 
             phase_mask1 = np.minimum(1.0, phase_mask1 + phase_mask2_)
-            event_location = np.zeros_like(event_location1)
-            event_location[:, event_mask1 >= 1.0] = event_location1[:, event_mask1 >= 1.0]
-            event_location[:, event_mask2_ >= 1.0] = event_location2[:, event_mask2_ >= 1.0]
-            event_location1 = event_location
+            tmp_time = np.zeros_like(event_time1)
+            tmp_time[event_mask1 >= 1.0] = event_time1[event_mask1 >= 1.0]
+            tmp_time[event_mask2_ >= 1.0] = event_time2_[event_mask2_ >= 1.0]
+            event_time1 = tmp_time
             event_center1 = event_center1 + event_center2_
             event_mask1 = np.minimum(1.0, event_mask1 + event_mask2_)
-            polarity1 = ((polarity1 - 0.5) + (polarity2_ - 0.5) * flip) + 0.5
+            # polarity1 = ((polarity1 - 0.5) + (polarity2_ - 0.5) * flip) + 0.5
+            polarity = np.zeros_like(polarity1)
+            if flip > 0:
+                polarity[1:, :] = polarity1[1:, :, :] + polarity2_[1:, :, :]
+            else:
+                polarity[1:, :] = polarity1[1:, :, :] + polarity2_[[0, 2, 1]][1:, :, :]
+            polarity[0, :] = np.maximum(0, 1.0 - np.sum(polarity[1:, :, :], axis=0, keepdims=True))
+            polarity1 = polarity
+
             polarity_mask1 = np.minimum(1.0, polarity_mask1 + polarity_mask2_)
             duration_mask1 = np.minimum(1.0, duration_mask1 + duration_mask2_)
             break
@@ -186,7 +224,7 @@ def stack_event(
         "phase_pick": phase_pick1,
         "phase_mask": phase_mask1,
         "event_center": event_center1,
-        "event_location": event_location1,
+        "event_time": event_time1,
         "event_mask": event_mask1,
         "polarity": polarity1,
         "polarity_mask": polarity_mask1,
@@ -214,9 +252,9 @@ def cut_data(meta, nt=1024 * 4, min_point=200):
     phase_pick = np.roll(meta["phase_pick"], -it, axis=1)[:, :nt, :]
     phase_mask = np.roll(meta["phase_mask"], -it, axis=0)[:nt, :]
     event_center = np.roll(meta["event_center"], -it, axis=0)[:nt, :]
-    event_location = np.roll(meta["event_location"], -it, axis=1)[:, :nt, :]
+    event_time = np.roll(meta["event_time"], -it, axis=0)[:nt, :]
     event_mask = np.roll(meta["event_mask"], -it, axis=0)[:nt, :]
-    polarity = np.roll(meta["polarity"], -it, axis=0)[:nt, :]
+    polarity = np.roll(meta["polarity"], -it, axis=1)[:, :nt, :]
     polarity_mask = np.roll(meta["polarity_mask"], -it, axis=0)[:nt, :]
 
     return {
@@ -224,7 +262,7 @@ def cut_data(meta, nt=1024 * 4, min_point=200):
         "phase_pick": phase_pick,
         "phase_mask": phase_mask,
         "event_center": event_center,
-        "event_location": event_location,
+        "event_time": event_time,
         "event_mask": event_mask,
         "polarity": polarity,
         "polarity_mask": polarity_mask,
@@ -233,8 +271,10 @@ def cut_data(meta, nt=1024 * 4, min_point=200):
 
 
 def flip_polarity(meta):
-    meta["waveform"] *= -1
-    meta["polarity"] = 1 - meta["polarity"]
+    meta["waveform"] *= -1.0
+    # meta["polarity"] = 1.0 - meta["polarity"]
+    # swap 1 and 2 axis: U and D
+    meta["polarity"] = meta["polarity"][[0, 2, 1], :, :]  # [nch, nt, nsta]
     return meta
 
 
@@ -260,8 +300,10 @@ def drop_channel(meta):
 class SeismicTraceIterableDataset(IterableDataset):
     degree2km = 111.32
     nt = 4096  ## 8992
-    feature_scale = 16
-    feature_nt = nt // feature_scale
+    event_feature_scale = 16
+    polarity_feature_scale = 1
+    event_feature_nt = nt // event_feature_scale
+    polarity_feature_nt = nt // polarity_feature_scale
 
     def __init__(
         self,
@@ -274,9 +316,9 @@ class SeismicTraceIterableDataset(IterableDataset):
         phases=["P", "S"],
         training=False,
         ## for training
-        phase_width=[50],
-        polarity_width=[50],
-        event_width=[100],
+        phase_width=[40],
+        polarity_width=[20],
+        event_width=[150],
         min_snr=3.0,
         stack_event=False,
         flip_polarity=False,
@@ -284,8 +326,9 @@ class SeismicTraceIterableDataset(IterableDataset):
         resample_time=False,
         ## for prediction
         sampling_rate=100,
+        response_path=None,
         response_xml=None,
-        highpass_filter=False,
+        highpass_filter=0.0,
         rank=0,
         world_size=1,
         cut_patch=False,
@@ -298,17 +341,27 @@ class SeismicTraceIterableDataset(IterableDataset):
         super().__init__()
         self.rank = rank
         self.world_size = world_size
-        self.hdf5_fp = None
         if hdf5_file is not None:
-            fp = h5py.File(hdf5_file, "r")
-            self.hdf5_fp = fp
-            tmp_hdf5_keys = f"/tmp/{hdf5_file.split('/')[-1]}.txt"
-            if not os.path.exists(tmp_hdf5_keys):
-                self.data_list = [event + "/" + station for event in fp.keys() for station in list(fp[event].keys())]
-                with open(tmp_hdf5_keys, "w") as f:
-                    for x in self.data_list:
-                        f.write(x + "\n")
+            tmp_hdf5_keys = f"/tmp/{'_'.join(hdf5_file.split('/'))}.txt"
+            if not os.path.exists(tmp_hdf5_keys) and (rank == 0):
+                with h5py.File(hdf5_file, "r", libver="latest", swmr=True) as fp:
+                    self.data_list = []
+                    for event in tqdm(list(fp.keys()), desc="Caching HDF5 keys"):
+                        for station in list(fp[event].keys()):
+                            if training:
+                                attrs = dict(fp[event][station].attrs)
+                                if ("component" in attrs) and ("snr" in attrs):
+                                    if (attrs["component"] == "ENZ") and (max(attrs["snr"]) > 2.0):  ## filtering
+                                        self.data_list.append(event + "/" + station)
+                            else:
+                                self.data_list.append(event + "/" + station)
+                    with open(tmp_hdf5_keys, "w") as f:
+                        f.write("\n".join(self.data_list))
+                    print(f"Saved {tmp_hdf5_keys}")
             else:
+                while not os.path.exists(tmp_hdf5_keys):
+                    time.sleep(1)
+                print(f"Reading {tmp_hdf5_keys}")
                 self.data_list = pd.read_csv(tmp_hdf5_keys, header=None, names=["trace_id"])["trace_id"].values.tolist()
         elif data_list is not None:
             with open(data_list, "r") as f:
@@ -323,7 +376,10 @@ class SeismicTraceIterableDataset(IterableDataset):
 
         self.data_path = data_path
         self.hdf5_file = hdf5_file
+        if (hdf5_file is not None) and (not training):
+            self.hdf5_fp = h5py.File(hdf5_file, "r", libver="latest", swmr=True)
         self.phases = phases
+        self.response_path = response_path
         self.response_xml = response_xml
         self.sampling_rate = sampling_rate
         self.highpass_filter = highpass_filter
@@ -450,8 +506,9 @@ class SeismicTraceIterableDataset(IterableDataset):
     #         picks_.append(tmp)
     #     return data_, picks_, noise_
 
-    def _read_training_h5(self, trace_id):
-        if self.hdf5_fp is None:
+    def read_training_h5(self, trace_id, hdf5_fp=None):
+        close_hdf5 = False
+        if hdf5_fp is None:
             hdf5_fp = h5py.File(os.path.join(self.data_path, trace_id), "r")
             event_id = "data"
             sta_ids = list(hdf5_fp["data"].keys())
@@ -464,14 +521,13 @@ class SeismicTraceIterableDataset(IterableDataset):
                 tmp_max = np.max(np.abs(waveform), axis=1)
                 if np.all(tmp_max > 0):  ## three component data
                     break
+            close_hdf5 = True
         else:
-            hdf5_fp = self.hdf5_fp
             event_id, sta_id = trace_id.split("/")
             waveform = hdf5_fp[trace_id][:, :]
             if waveform.shape[1] == 3:
                 waveform = waveform.T  # [3, Nt]
 
-        # waveform = hdf5_fp[trace_id][:, :].T  # [3, Nt]
         waveform = normalize(waveform)
         nch, nt = waveform.shape
 
@@ -490,41 +546,64 @@ class SeismicTraceIterableDataset(IterableDataset):
             return None
 
         ## phase arrival labels
-        phase_pick, phase_mask = generate_label(picks, nt=nt, label_width=self.phase_width, return_mask=True)
+        phase_pick, phase_mask = generate_phase_label(picks, nt=nt, label_width=self.phase_width)
 
         ## phase polarity
-        up = attrs["phase_index"][attrs["phase_polarity"] == "U"]
-        dn = attrs["phase_index"][attrs["phase_polarity"] == "D"]
-        ## assuming having both P and S picks
-        mask_width = (
-            attrs["phase_index"][attrs["phase_type"] == "S"] - attrs["phase_index"][attrs["phase_type"] == "P"]
-        ) // 2
-        mask_width = int(min(mask_width))
-        phase_up, mask_up = generate_label(
-            [up], nt=nt, label_width=self.polarity_width, mask_width=mask_width, return_mask=True
+        if "phase_polarity" in attrs:
+            up = attrs["phase_index"][attrs["phase_polarity"] == "U"]
+            dn = attrs["phase_index"][attrs["phase_polarity"] == "D"]
+        else:
+            up, dn = [], []
+        ## using the minimum P-S
+        # mask_width = np.min(
+        #     attrs["phase_index"][attrs["phase_type"] == "S"][:, np.newaxis]
+        #     - attrs["phase_index"][attrs["phase_type"] == "P"][np.newaxis, :]
+        # )
+        # mask_width = min(500, int(mask_width / 2.0))
+        # mask_width = 300
+        # phase_up, mask_up = generate_phase_label([up], nt=nt, label_width=self.polarity_width, mask_width=mask_width)
+        # phase_dn, mask_dn = generate_phase_label([dn], nt=nt, label_width=self.polarity_width, mask_width=mask_width)
+        # # phase_up, mask_up = generate_label([up], nt=nt, label_width=self.polarity_width, return_mask=True)
+        # # phase_dn, mask_dn = generate_label([dn], nt=nt, label_width=self.polarity_width, return_mask=True)
+        # polarity = ((phase_up[1, :] - phase_dn[1, :]) + 1.0) / 2.0
+        # polarity_mask = mask_up + mask_dn
+
+        polarity, polarity_mask = generate_phase_label(
+            [up, dn], nt=nt, label_width=self.polarity_width  # , mask_width=mask_width
         )
-        phase_dn, mask_dn = generate_label(
-            [dn], nt=nt, label_width=self.polarity_width, mask_width=mask_width, return_mask=True
-        )
-        # phase_up, mask_up = generate_label([up], nt=nt, label_width=self.polarity_width, return_mask=True)
-        # phase_dn, mask_dn = generate_label([dn], nt=nt, label_width=self.polarity_width, return_mask=True)
-        polarity = ((phase_up[1, :] - phase_dn[1, :]) + 1.0) / 2.0
-        polarity_mask = mask_up + mask_dn
-        # polarity_mask = phase_mask
+        # polarity = ((polarity[1:2, :] - polarity[2:, :]) + 1.0) / 2.0
 
         ## P/S center time
         event_ids = set(attrs["event_id"])
-        c0 = []
+        c0 = []  # event center list
+        t0 = []  # event time index list
         duration = []
+        event_time0 = datetime.fromisoformat(hdf5_fp[event_id].attrs["event_time"])
         for e in event_ids:
-            c0.append(np.mean(attrs["phase_index"][attrs["event_id"] == e]).item())
             # duration.append([np.min(attrs["phase_index"][attrs["event_id"] == e]).item(), np.max(attrs["phase_index"][attrs["event_id"] == e]).item()])
             tmp_min = np.min(attrs["phase_index"][attrs["event_id"] == e]).item()
             tmp_max = np.max(attrs["phase_index"][attrs["event_id"] == e]).item()
-            duration.append([tmp_min, tmp_max + 2 * (tmp_max - tmp_min)])
+            duration.append([tmp_min, max(tmp_min + 3, tmp_max + 2 * (tmp_max - tmp_min))])
+
+            if str(e) not in hdf5_fp:
+                continue
+            if len(attrs["phase_index"][attrs["event_id"] == e]) <= 1:  # need both P and S
+                continue
+            c0.append(np.mean(attrs["phase_index"][attrs["event_id"] == e]).item())
+            shift_t0 = (
+                int(
+                    round(
+                        (datetime.fromisoformat(hdf5_fp[str(e)].attrs["event_time"]) - event_time0).total_seconds()
+                        / attrs["dt_s"]
+                    )
+                )
+                if e != event_id
+                else 0
+            )
+            t0.append(hdf5_fp[str(e)].attrs["event_time_index"] + shift_t0)
+
         duration = np.array([duration])  # for one station and multiple events
-        event_center, event_mask = generate_label([c0], nt=nt, label_width=self.event_width, return_mask=True)
-        event_center = event_center[1, :]
+        event_center, event_time, event_mask = generate_event_label(c0, t0, nt=nt, label_width=self.event_width)
 
         ## station location
         station_location = np.array(
@@ -550,12 +629,9 @@ class SeismicTraceIterableDataset(IterableDataset):
             2,
         )
         dz = round(hdf5_fp[event_id].attrs["depth_km"] + attrs["elevation_m"] / 1e3, 2)
-        event_location = np.zeros([4, nt], dtype=np.float32)
-        event_location[0, :] = np.arange(nt) - hdf5_fp[event_id].attrs["event_time_index"]
-        # event_location[0, :] = np.arange(nt) - hdf5_fp[event_id].attrs["time_index"]
-        event_location[1:, event_mask >= 1.0] = np.array([dx, dy, dz])[:, np.newaxis]
+        event_location = np.array([dx, dy, dz])[:, np.newaxis]
 
-        if self.hdf5_fp is None:
+        if close_hdf5:
             hdf5_fp.close()
 
         return {
@@ -564,9 +640,10 @@ class SeismicTraceIterableDataset(IterableDataset):
             "phase_mask": phase_mask[:, np.newaxis],
             "event_center": event_center[:, np.newaxis],
             "event_location": event_location[:, :, np.newaxis],
+            "event_time": event_time[:, np.newaxis],
             "event_mask": event_mask[:, np.newaxis],
             "station_location": station_location[:, np.newaxis],
-            "polarity": polarity[:, np.newaxis],
+            "polarity": polarity[:, :, np.newaxis],
             "polarity_mask": polarity_mask[:, np.newaxis],
             ## used for stack events
             "snr": snr,
@@ -577,11 +654,11 @@ class SeismicTraceIterableDataset(IterableDataset):
         }
 
     def sample_train(self, data_list):
+        hdf5_fp = h5py.File(self.hdf5_file, "r", libver="latest", swmr=True)
         while True:
             trace_id = np.random.choice(data_list)
-            # if True:
             try:
-                meta = self._read_training_h5(trace_id)
+                meta = self.read_training_h5(trace_id, hdf5_fp)
             except Exception as e:
                 print(f"Error reading {trace_id}:\n{e}")
                 continue
@@ -591,10 +668,9 @@ class SeismicTraceIterableDataset(IterableDataset):
 
             # if self.stack_event and (random.random() < 0.6):
             if self.stack_event:
-                # if True:
                 try:
                     trace_id2 = np.random.choice(self.data_list)
-                    meta2 = self._read_training_h5(trace_id2)
+                    meta2 = self.read_training_h5(trace_id2, hdf5_fp)
                     if meta2 is not None:
                         meta = stack_event(meta, meta2)
                 except Exception as e:
@@ -620,11 +696,15 @@ class SeismicTraceIterableDataset(IterableDataset):
             # waveform = normalize(waveform)
             phase_pick = meta["phase_pick"]
             phase_mask = meta["phase_mask"][np.newaxis, ::]
-            event_center = meta["event_center"][np.newaxis, :: self.feature_scale]
-            polarity = meta["polarity"][np.newaxis, ::]
+            event_center = meta["event_center"][np.newaxis, :: self.event_feature_scale]
+            # polarity = meta["polarity"][np.newaxis, :: self.polarity_feature_scale]
+            # polarity_mask = meta["polarity_mask"][np.newaxis, :: self.polarity_feature_scale]
+            # polarity = meta["polarity"][:, :: self.polarity_feature_scale, :]
+            # polarity_mask = meta["polarity_mask"][:: self.polarity_feature_scale, :]
+            polarity = meta["polarity"][:, :: self.polarity_feature_scale]
             polarity_mask = meta["polarity_mask"][np.newaxis, ::]
-            event_location = meta["event_location"][:, :: self.feature_scale]
-            event_mask = meta["event_mask"][np.newaxis, :: self.feature_scale]
+            event_time = meta["event_time"][np.newaxis, :: self.event_feature_scale]
+            event_mask = meta["event_mask"][np.newaxis, :: self.event_feature_scale]
             station_location = meta["station_location"]
 
             yield {
@@ -632,23 +712,33 @@ class SeismicTraceIterableDataset(IterableDataset):
                 "phase_pick": torch.from_numpy(phase_pick).float(),
                 "phase_mask": torch.from_numpy(phase_mask).float(),
                 "event_center": torch.from_numpy(event_center).float(),
-                "event_location": torch.from_numpy(event_location).float(),
+                "event_time": torch.from_numpy(event_time).float(),
                 "event_mask": torch.from_numpy(event_mask).float(),
                 "station_location": torch.from_numpy(station_location).float(),
                 "polarity": torch.from_numpy(polarity).float(),
                 "polarity_mask": torch.from_numpy(polarity_mask).float(),
             }
 
+        hdf5_fp.close()
+
     def taper(stream):
         for tr in stream:
             tr.taper(max_percentage=0.05, type="cosine")
         return stream
 
-    def read_mseed(self, fname, response_xml=None, highpass_filter=False, sampling_rate=100):
+    def read_mseed(self, fname, response_path=None, response_xml=None, highpass_filter=False, sampling_rate=100):
         try:
-            stream = obspy.read(fname)
+            stream = obspy.Stream()
+            for tmp in fname.split(","):
+                with fsspec.open(tmp, "rb") as fs:
+                    meta = obspy.read(fs, format="MSEED")
+                    if response_path is not None:
+                        inv = obspy.read_inventory(os.path.join(response_path, meta[0].id[:-1]) + ".xml")
+                        meta = meta.remove_sensitivity(inv)
+                    stream += meta
+                # stream += obspy.read(tmp)
             stream = stream.merge(fill_value="latest")
-            if response_xml is not None:
+            if (response_path is None) and (response_xml is not None):
                 response = obspy.read_inventory(response_xml)
                 stream = stream.remove_sensitivity(response)
         except Exception as e:
@@ -678,8 +768,9 @@ class SeismicTraceIterableDataset(IterableDataset):
             #     trace = trace.detrend("demean")
 
             ## highpass filtering > 1Hz
-            if highpass_filter:
-                trace = trace.filter("highpass", freq=1.0)
+            if highpass_filter > 0.0:
+                # trace = trace.filter("highpass", freq=1.0)
+                trace = trace.filter("highpass", freq=highpass_filter)
 
             tmp_stream.append(trace)
 
@@ -728,7 +819,7 @@ class SeismicTraceIterableDataset(IterableDataset):
             "dt_s": 1 / sampling_rate,
         }
 
-    def read_segy(self, fname, highpass_filter=False, sampling_rate=2000, channels=[2, 1, 0]):
+    def read_segy(self, fname, highpass_filter=0.0, sampling_rate=2000, channels=[2, 1, 0]):
         try:
             stream = obspy.read(fname, format="SEGY")
         except Exception as e:
@@ -771,7 +862,7 @@ class SeismicTraceIterableDataset(IterableDataset):
             if waveform.shape[1] == 3:
                 waveform = waveform.T  # [3, Nt]
             waveform = waveform[:, :, np.newaxis]
-            meta["waveform"] = waveform.astype(np.float32)
+            meta["waveform"] = torch.from_numpy(waveform.astype(np.float32))
             meta["station_id"] = [sta_id]
             meta["begin_time"] = hdf5_fp[event_id].attrs["begin_time"]
             meta["dt_s"] = hdf5_fp[trace_id].attrs["dt_s"]
@@ -839,10 +930,12 @@ class SeismicTraceIterableDataset(IterableDataset):
             if self.format == "mseed":
                 meta = self.read_mseed(
                     fname,
+                    response_path=self.response_path,
                     response_xml=self.response_xml,
                     highpass_filter=self.highpass_filter,
                     sampling_rate=self.sampling_rate,
                 )
+                fname = fname.split(",")[0]  ##E,N,Z
             elif (self.format == "h5") and (self.dataset == "seismic_trace"):
                 meta = self.read_hdf5(fname)
             elif (self.format == "h5") and (self.dataset == "das"):

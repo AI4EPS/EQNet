@@ -3,13 +3,26 @@ import datetime
 import errno
 import hashlib
 import os
+import psutil
 import time
-from collections import defaultdict, deque, OrderedDict
+from collections import OrderedDict, defaultdict, deque
 from typing import List, Optional, Tuple
 
+import numpy as np
 import torch
 import torch.distributed as dist
 
+_proc = psutil.Process(os.getpid())
+
+def cpu_ram_tree_mb() -> float:
+    """主进程 + 所有子进程 RSS 总和（MiB）"""
+    rss = _proc.memory_info().rss
+    for child in _proc.children(recursive=True):
+        try:
+            rss += child.memory_info().rss
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+    return rss / (1024 ** 2)
 
 class SmoothedValue:
     """Track a series of values and provide access to smoothed values over a
@@ -117,6 +130,7 @@ class MetricLogger:
                     "time: {time}",
                     "data: {data}",
                     "max mem: {memory:.0f}",
+                    "cpu mem: {cpu_mem:.1f}",
                     "{datetime}",
                 ]
             )
@@ -129,6 +143,7 @@ class MetricLogger:
                     "{meters}",
                     "time: {time}",
                     "data: {data}",
+                    "cpu mem: {cpu_mem:.1f}",
                     "{datetime}",
                 ]
             )
@@ -150,7 +165,8 @@ class MetricLogger:
                             time=str(iter_time),
                             data=str(data_time),
                             memory=torch.cuda.max_memory_allocated() / MB,
-                            datetime=time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime()),
+                            cpu_mem=cpu_ram_tree_mb(),
+                            datetime=datetime.datetime.now().strftime("%m-%dT%H:%M:%S"),
                         )
                     )
                 else:
@@ -162,7 +178,8 @@ class MetricLogger:
                             meters=str(self),
                             time=str(iter_time),
                             data=str(data_time),
-                            datetime=time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime()),
+                            cpu_mem=cpu_ram_tree_mb(),
+                            datetime=datetime.datetime.now().strftime("%m-%dT%H:%M:%S"),
                         )
                     )
             i += 1
@@ -227,6 +244,21 @@ def setup_for_distributed(is_master):
             builtin_print(*args, **kwargs)
 
     __builtin__.print = print
+    
+    
+def setup_for_distributed_debugging(rank):
+    """
+    This function disables printing when not in master process
+    """
+    import builtins as __builtin__
+
+    builtin_print = __builtin__.print
+
+    def print(*args, **kwargs):
+        builtin_print(f'[Rank {rank}]: ', end='')
+        builtin_print(*args, **kwargs)
+
+    __builtin__.print = print
 
 
 def is_dist_avail_and_initialized():
@@ -273,16 +305,21 @@ def init_distributed_mode(args):
         args.distributed = False
         return
 
-    args.distributed = True
+    if args.device == "cpu":
+        args.distributed = False
+    else:
+        args.distributed = True
 
-    torch.cuda.set_device(args.gpu)
-    args.dist_backend = "nccl"
-    print(f"| distributed init (rank {args.rank}): {args.dist_url}", flush=True)
-    torch.distributed.init_process_group(
-        backend=args.dist_backend, init_method=args.dist_url, world_size=args.world_size, rank=args.rank
-    )
-    torch.distributed.barrier()
-    setup_for_distributed(args.rank == 0)
+        torch.cuda.set_device(args.gpu)
+        args.dist_backend = "nccl"
+        print(f"| distributed init (rank {args.rank}): {args.dist_url}", flush=True)
+        torch.distributed.init_process_group(
+            backend=args.dist_backend, init_method=args.dist_url, world_size=args.world_size, rank=args.rank,
+            timeout=datetime.timedelta(seconds=60*args.timeout)
+        )
+        torch.distributed.barrier()
+        setup_for_distributed(args.rank == 0)
+        #setup_for_distributed_debugging(args.rank)
 
 
 def average_checkpoints(inputs):
@@ -303,8 +340,7 @@ def average_checkpoints(inputs):
     for fpath in inputs:
         with open(fpath, "rb") as f:
             state = torch.load(
-                f,
-                map_location=(lambda s, _: torch.serialization.default_restore_location(s, "cpu")),
+                f, map_location=(lambda s, _: torch.serialization.default_restore_location(s, "cpu")), weights_only=True
             )
         # Copies over the settings from the first checkpoint
         if new_state is None:
@@ -383,7 +419,7 @@ def store_model_weights(model, checkpoint_path, checkpoint_key="model", strict=T
 
     # Deep copy to avoid side effects on the model object.
     model = copy.deepcopy(model)
-    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
 
     # Load the weights to the model to validate that everything works
     # and remove unnecessary weights (such as auxiliaries, etc.)
@@ -455,18 +491,26 @@ def set_weight_decay(
         for name, p in module.named_parameters(recurse=False):
             if not p.requires_grad:
                 continue
+            
+            if len(p.shape) == 1 and 'bias' in custom_keys:
+                params["bias"].append(p)
+                #params["bias"].append(name)
+                continue    
             is_custom_key = False
             for key in custom_keys:
                 target_name = f"{prefix}.{name}" if prefix != "" and "." in key else name
                 if key == target_name:
                     params[key].append(p)
+                    #params[key].append(name)
                     is_custom_key = True
                     break
             if not is_custom_key:
                 if norm_weight_decay is not None and isinstance(module, norm_classes):
                     params["norm"].append(p)
+                    #params["norm"].append(name)
                 else:
                     params["other"].append(p)
+                    #params["other"].append(name)
 
         for child_name, child_module in module.named_children():
             child_prefix = f"{prefix}.{child_name}" if prefix != "" else child_name
@@ -479,3 +523,122 @@ def set_weight_decay(
         if len(params[key]) > 0:
             param_groups.append({"params": params[key], "weight_decay": params_weight_decay[key]})
     return param_groups
+
+
+def MTLBalance(type, tasks, pre_weight, temp, epochs, device):
+    if type == "dwa":
+        return DWA(tasks, pre_weight, temp, epochs, device)
+    elif type == "dwa_inverse":
+        return DWAInverse(tasks, pre_weight, temp, epochs, device)
+    elif type == "constant":
+        return ConstantBalance(tasks, pre_weight, temp, epochs, device)
+    else:
+        return None
+    
+class ConstantBalance:
+    r"""Constant Balance.
+    This method keeps the task weights constant throughout training.
+    """
+    def __init__(self, tasks, pre_weight, temp=1.0, epochs=100, device="cpu"):
+        self.tasks=tasks
+        self.task_num = len(tasks)
+        self.temp = temp
+        self.epochs = epochs
+        self.pre_weight = pre_weight
+        
+    def balance(self, output, **kwargs):
+        loss = 0
+        for i, k in enumerate(self.tasks):
+            if self.pre_weight[i] > 0:
+                loss += output[k]*self.pre_weight[i]
+        
+        return loss
+    
+    def update(self, **kwargs):
+        pass
+    
+class DWA:
+    r"""Dynamic Weight Average (DWA).
+    
+    This method is proposed in `End-To-End Multi-Task Learning With Attention (CVPR 2019) <https://openaccess.thecvf.com/content_CVPR_2019/papers/Liu_End-To-End_Multi-Task_Learning_With_Attention_CVPR_2019_paper.pdf>`_ \
+    and implemented by modifying from the `official PyTorch implementation <https://github.com/lorenmt/mtan>`_. 
+
+    Args:
+        T (float, default=2.0): The softmax temperature.
+
+    """
+    def __init__(self, tasks, pre_weight, temp=2.0, epochs=100, device="cpu"):
+        self.tasks=tasks
+        self.task_num = len(tasks)
+        self.temp = temp
+        self.epochs = epochs
+        self.pre_weight = pre_weight
+        self.train_loss_buffer = torch.zeros((self.task_num, epochs)).to(device)
+        self.batch_weight = torch.ones((epochs, self.task_num)).to(device)
+        
+    def balance(self, output, epoch=0, **kwargs):
+        # output: dict
+        loss = 0
+        for i, k in enumerate(self.tasks):
+            loss += self.batch_weight[epoch,i]*output[k]*self.pre_weight[i]
+            
+        return loss
+    
+    def update(self, meters, epoch, **kwargs):
+        for i, k in enumerate(self.tasks):
+            self.train_loss_buffer[i, epoch] = meters[k].global_avg
+                
+        if epoch > 0:
+            w_i = self.train_loss_buffer[:,epoch]/self.train_loss_buffer[:,epoch-1]
+            self.batch_weight[epoch+1] = self.task_num*torch.nn.functional.softmax(w_i/self.temp, dim=-1)
+
+class DWAInverse:
+    r"""Dynamic Weight Average (DWA).
+    
+    This method is proposed in `End-To-End Multi-Task Learning With Attention (CVPR 2019) <https://openaccess.thecvf.com/content_CVPR_2019/papers/Liu_End-To-End_Multi-Task_Learning_With_Attention_CVPR_2019_paper.pdf>`_ \
+    and implemented by modifying from the `official PyTorch implementation <https://github.com/lorenmt/mtan>`_. 
+
+    Args:
+        T (float, default=1.5): The softmax temperature.
+
+    """
+    def __init__(self, tasks, pre_weight, temp=1.5, epochs=100, device="cpu"):
+        self.tasks=tasks
+        self.task_num = len(tasks)
+        self.temp = temp
+        self.epochs = epochs
+        self.pre_weight = pre_weight
+        self.train_loss_buffer = torch.zeros((self.task_num, epochs)).to(device)
+        self.batch_weight = torch.ones((epochs, self.task_num)).to(device)
+        
+    def balance(self, output, epoch=0, **kwargs):
+        # output: dict
+        loss = 0
+        for i, k in enumerate(self.tasks):
+            loss += self.batch_weight[epoch,i]*output[k]*self.pre_weight[i]
+            
+        return loss
+    
+    def update(self, meters, epoch, delay=['loss_phase', 'loss_event'], **kwargs):
+        for i, k in enumerate(self.tasks):
+            self.train_loss_buffer[i, epoch] = meters[k].global_avg
+                
+        if epoch > 0:
+            w_i = self.train_loss_buffer[:,epoch]/self.train_loss_buffer[:,epoch-1] if torch.all(self.train_loss_buffer[:,epoch-1]>0) else torch.ones_like(self.train_loss_buffer[:,epoch])
+            if epoch==1:
+                self.batch_weight[epoch+1] = 1./(self.task_num*torch.nn.functional.softmax(w_i/2.0, dim=-1))
+                if delay is not None:
+                    if len(delay)>0:
+                        for i, k in enumerate(self.tasks):
+                            if k in delay:
+                                self.batch_weight[epoch+1, i] = 1.0
+            else:
+                self.batch_weight[epoch+1] = 1./(self.task_num*torch.nn.functional.softmax(w_i/self.temp, dim=-1))
+                if (delay is not None) and (epoch > self.epochs//4):
+                    if len(delay)>0:
+                        for i, k in enumerate(self.tasks):
+                            if k in delay:
+                                slope = 0.03 if k=='loss_phase' else 0.02
+                                self.batch_weight[epoch+1, i] = 1 - slope*(epoch/(self.epochs//4))
+            # replace nan with 1.0
+            self.batch_weight[epoch+1] = torch.where(torch.isnan(self.batch_weight[epoch+1]), torch.ones_like(self.batch_weight[epoch+1]), self.batch_weight[epoch+1])

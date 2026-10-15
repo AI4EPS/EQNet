@@ -5,55 +5,94 @@ import random
 import time
 from contextlib import nullcontext
 from glob import glob
+from functools import partial
+from collections import defaultdict
+import pickle
 
 import matplotlib
 import numpy as np
 import torch
+import torch.multiprocessing as mp
+from multiprocessing import Value
+import torch.distributed
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.data
 import wandb
 
 import datasets
+from datasets.fingerprint import Hasher
+from datasets import load_dataset_builder
 import eqnet
 import utils
 from eqnet.data import (
     AutoEncoderIterableDataset,
-    DASDataset,
     DASIterableDataset,
     SeismicNetworkIterableDataset,
     SeismicTraceIterableDataset,
 )
 from eqnet.models.unet import moving_normalize
-from eqnet.utils.station_sampler import StationSampler, create_groups, cut_reorder_keys
+from eqnet.utils.station_sampler import StationSampler, create_groups, cut_reorder_keys, reorder_keys
 
+os.system('export HF_DATASETS_CACHE="/pscratch/sd/w/whaoyu/huggingface"')
 matplotlib.use("agg")
 logger = logging.getLogger("EQNet")
+# mp.set_start_method("spawn", force=True)
+torch.set_num_threads(1)
+torch.set_num_interop_threads(1)
 
 
-def evaluate(model, data_loader, scaler, args, epoch=0, total_sample=1):
+def evaluate(model, data_loader, scaler, args, epoch=0, total_samples=1):
     model.eval()
     metric_logger = utils.MetricLogger(delimiter="  ")
+    if args.model == "phasenet_plus":
+        metric_logger.add_meter("loss_phase", utils.SmoothedValue(window_size=1, fmt="{value}"))
+        metric_logger.add_meter("loss_event_center", utils.SmoothedValue(window_size=1, fmt="{value}"))
+        metric_logger.add_meter("loss_event_time", utils.SmoothedValue(window_size=1, fmt="{value}"))
+        metric_logger.add_meter("loss_polarity", utils.SmoothedValue(window_size=1, fmt="{value}"))
     header = f"Test: "
 
-    num_processed_samples = 0
+    processed_samples = 0
     with torch.inference_mode():
         for meta in metric_logger.log_every(data_loader, args.print_freq, header):
             output = model(meta)
-            loss = output["loss"]
             batch_size = meta["data"].shape[0]
-            metric_logger.meters["loss"].update(loss.item(), n=batch_size)
-            num_processed_samples += batch_size
-            if num_processed_samples > total_sample:
-                break
 
-    plot_results(meta, model, output, args, epoch, "test_")
-    del meta, output, loss
+            metric_logger.meters["loss"].update(output["loss"].item(), n=batch_size)
+            if args.model == "phasenet_plus":
+                metric_logger.meters["loss_phase"].update(output["loss_phase"].item(), n=batch_size)
+                metric_logger.meters["loss_event_center"].update(output["loss_event_center"].item(), n=batch_size)
+                metric_logger.meters["loss_event_time"].update(output["loss_event_time"].item(), n=batch_size)
+                metric_logger.meters["loss_polarity"].update(output["loss_polarity"].item(), n=batch_size)
+            if args.model == "eqnet":
+                for k, v in output.items():
+                    if "loss" in k and k != "loss":
+                        metric_logger.meters[k].update(v.item(), n=batch_size)
+
+            processed_samples += batch_size
+            if processed_samples > total_samples:
+                break
 
     metric_logger.synchronize_between_processes()
     print(f"Test loss = {metric_logger.loss.global_avg:.3e}")
     if args.wandb and utils.is_main_process():
-        wandb.log({"test/test_loss": metric_logger.loss.global_avg, "test/epoch": epoch})
+        log = {
+            "test/test_loss": metric_logger.loss.global_avg,
+            "test/epoch": epoch,
+        }
+        if args.model == "phasenet_plus":
+            log["test/loss_phase"] = metric_logger.loss_phase.global_avg
+            log["test/loss_event_center"] = metric_logger.loss_event_center.global_avg
+            log["test/loss_event_time"] = metric_logger.loss_event_time.global_avg
+            log["test/loss_polarity"] = metric_logger.loss_polarity.global_avg
+        if args.model == "eqnet":
+            for k, v in metric_logger.meters.items():
+                if "loss" in k and k != "loss":
+                    log[f"test/{k}"] = v.global_avg
+        wandb.log(log)
+
+    plot_results(meta, model, output, args, epoch, "test_")
+    del meta, output
 
     return metric_logger
 
@@ -67,110 +106,260 @@ def train_one_epoch(
     scaler,
     args,
     epoch,
-    total_sample,
+    total_samples,
+    balancer=None,
+    freeze_batchnorm=False,
 ):
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter("lr", utils.SmoothedValue(window_size=1, fmt="{value}"))
-    if args.model == "phasenet":
+    if args.model == "phasenet_plus":
+        metric_logger.add_meter("loss_phase", utils.SmoothedValue(window_size=1, fmt="{value}"))
+        metric_logger.add_meter("loss_event_center", utils.SmoothedValue(window_size=1, fmt="{value}"))
+        metric_logger.add_meter("loss_event_time", utils.SmoothedValue(window_size=1, fmt="{value}"))
+        metric_logger.add_meter("loss_polarity", utils.SmoothedValue(window_size=1, fmt="{value}"))
+    if args.model == "eqnet":
         metric_logger.add_meter("loss_phase", utils.SmoothedValue(window_size=1, fmt="{value}"))
         metric_logger.add_meter("loss_event", utils.SmoothedValue(window_size=1, fmt="{value}"))
+        metric_logger.add_meter("loss_offset", utils.SmoothedValue(window_size=1, fmt="{value}"))
+        #metric_logger.add_meter("loss_hypocenter", utils.SmoothedValue(window_size=1, fmt="{value}"))
+        metric_logger.add_meter("loss_origin_time", utils.SmoothedValue(window_size=1, fmt="{value}"))
+        metric_logger.add_meter("loss_x", utils.SmoothedValue(window_size=1, fmt="{value}"))
+        metric_logger.add_meter("loss_y", utils.SmoothedValue(window_size=1, fmt="{value}"))
+        metric_logger.add_meter("loss_depth", utils.SmoothedValue(window_size=1, fmt="{value}"))
+        metric_logger.add_meter("loss_magnitude", utils.SmoothedValue(window_size=1, fmt="{value}"))
         metric_logger.add_meter("loss_polarity", utils.SmoothedValue(window_size=1, fmt="{value}"))
+        if not args.no_prompt:
+            metric_logger.add_meter("loss_focal", utils.SmoothedValue(window_size=1, fmt="{value}")) 
+            metric_logger.add_meter("loss_dice", utils.SmoothedValue(window_size=1, fmt="{value}"))
+            metric_logger.add_meter("loss_iou", utils.SmoothedValue(window_size=1, fmt="{value}"))
+        
     header = f"Epoch: [{epoch}]"
+    
+    if balancer is not None:
+        print(header, end="\t")
+        for i, k in enumerate(balancer.tasks):
+            try:
+                print(f"{k}: {balancer.batch_weight[epoch,i]:.4f}", end="\t")
+            except:
+                print(f"{k}: {balancer.pre_weight[i]:.4f}", end="\t")
+        print()
 
-    # ctx = nullcontext() if scaler is None else torch.amp.autocast(device_type=args.device, dtype=args.ptdtype)
-    ctx = nullcontext() if args.device == "cpu" else torch.amp.autocast(device_type=args.device, dtype=args.ptdtype)
+    ctx = (
+        nullcontext()
+        if args.device in ["cpu", "mps"]
+        else torch.amp.autocast(device_type=args.device, dtype=args.ptdtype)
+    )
     model.train()
-    num_processed_samples = 0
+    if freeze_batchnorm:
+        model.apply(lambda m: m.eval() if isinstance(m, nn.modules.batchnorm._BatchNorm) else None)
+    processed_samples = 0
+    accumulation_counter = 0
+    accumulation_steps = args.grad_accum
+    optimizer.zero_grad()
+    #torch.cuda.nvtx.range_push(f"Training epoch {epoch}")
     for i, meta in enumerate(metric_logger.log_every(data_loader, args.print_freq, header)):
         with ctx:
             output = model(meta)
 
-        loss = output["loss"]
-        optimizer.zero_grad()
+        if balancer is None:
+            loss = output["loss"]
+        else:
+            loss = balancer.balance(model=model, output=output, epoch=epoch)
+
+        #optimizer.zero_grad()
+        loss = loss / accumulation_steps
         if scaler is not None:
             scaler.scale(loss).backward()
-            if args.clip_grad_norm is not None:
-                scaler.unscale_(optimizer)
-                nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad_norm)
-            scaler.step(optimizer)
-            scaler.update()
         else:
             loss.backward()
-            if args.clip_grad_norm is not None:
-                nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad_norm)
-            optimizer.step()
-        lr_scheduler.step()
+        
+        #for name, param in model.named_parameters():
+        #    if param.grad is not None:
+        #        print(f"{name}: param.stride() = {param.stride()}, grad.stride() = {param.grad.stride()}")
+        accumulation_counter += 1
+        if accumulation_counter == accumulation_steps or processed_samples + meta["data"].shape[0] >= total_samples:
+            if scaler is not None:
+                if args.clip_grad_norm is not None:
+                    scaler.unscale_(optimizer)
+                    nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad_norm)
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                # print("Not scaling...")
+                # print("Checking None grads...")
+                # for name, param in model.named_parameters():
+                #     if param.grad is None:
+                #         print(name)
+                if args.clip_grad_norm is not None:
+                    nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad_norm)
+                optimizer.step()
+            optimizer.zero_grad()
+            lr_scheduler.step()
+            accumulation_counter = 0
 
-        if model_ema and i % args.model_ema_steps == 0:
-            model_ema.update_parameters(model)
-            if epoch < args.lr_warmup_epochs:
-                model_ema.n_averaged.fill_(0)
+            if model_ema and i % args.model_ema_steps == 0:
+                model_ema.update_parameters(model)
+                if epoch < args.lr_warmup_epochs:
+                    model_ema.n_averaged.fill_(0)
 
         batch_size = meta["data"].shape[0]
-        num_processed_samples += batch_size
-        if num_processed_samples >= total_sample:
-            break
-        # break
+        processed_samples += batch_size
 
-        metric_logger.update(lr=optimizer.param_groups[0]["lr"], loss=loss.item())
+        metric_logger.update(loss=loss.item()*accumulation_steps, lr=optimizer.param_groups[0]["lr"])
+        if args.model == "phasenet_plus":
+            metric_logger.update(loss_phase=output["loss_phase"].item())
+            metric_logger.update(loss_event_center=output["loss_event_center"].item())
+            metric_logger.update(loss_event_time=output["loss_event_time"].item())
+            metric_logger.update(loss_polarity=output["loss_polarity"].item())
+        if args.model == "eqnet":
+            for k, v in output.items():
+                if "loss" in k and k != "loss":
+                    metric_logger.meters[k].update(v.item())
 
         if args.wandb and utils.is_main_process():
-            wandb.log(
-                {
-                    "train/train_loss": loss.item(),
-                    "train/lr": optimizer.param_groups[0]["lr"],
-                    "train/epoch": epoch,
-                    "train/batch": i,
-                }
-            )
+            log = {
+                "train/train_loss": loss.item(),
+                "train/lr": optimizer.param_groups[0]["lr"],
+                "train/epoch": epoch,
+                "train/batch": i,
+            }
+            if args.model == "phasenet_plus":
+                log["train/loss_phase"] = output["loss_phase"].item()
+                log["train/loss_event_center"] = output["loss_event_center"].item()
+                log["train/loss_event_time"] = output["loss_event_time"].item()
+                log["train/loss_polarity"] = output["loss_polarity"].item()
+            if args.model == "eqnet":
+                for k, v in output.items():
+                    if "loss" in k and k != "loss":
+                        log[f"train/{k}"] = v.item()
+            wandb.log(log)
+
+        if processed_samples >= total_samples:
+            break
 
     model.eval()
+    
+    if balancer is not None:
+        balancer.update(meters=metric_logger.meters, epoch=epoch)
+        try:
+            if args.wandb and utils.is_main_process():
+                if args.mtl=="dwa" or args.mtl=="dwa_inverse":
+                    for i, k in enumerate(balancer.tasks):
+                        wandb.log({"train/balancer_" + k: balancer.batch_weight[epoch,i]})
+        except Exception as e:
+            pass
     plot_results(meta, model, output, args, epoch, "train_")
     del meta, output, loss
+    #if epoch==0 and utils.is_main_process():
+    #    try:
+    #        with open('tmp/ill_event_ids.pkl', 'wb') as f:
+    #            pickle.dump(data_loader.dataset.ill_event_ids, f)
+    #        print('ill event ids saved in /tmp')
+    #    except:
+    #        pass
 
 
 def plot_results(meta, model, output, args, epoch, prefix=""):
     with torch.inference_mode():
         if args.model == "phasenet":
             phase = torch.softmax(output["phase"], dim=1).cpu().float()
-            event = torch.sigmoid(output["event"]).cpu().float()
-            polarity = torch.sigmoid(output["polarity"]).cpu().float()
-            # meta["raw"] = meta["data"].clone()
             meta["data"] = moving_normalize(meta["data"])
             print("Plotting...")
-            eqnet.utils.visualize_phasenet_train(meta, phase, event, polarity, epoch=epoch, figure_dir=args.figure_dir)
-            del phase, event, polarity
+            eqnet.utils.plot_phasenet_train(meta, phase, epoch=epoch, figure_dir=args.figure_dir, prefix=prefix)
+            del phase
 
-        if args.model == "deepdenoiser":
+        elif args.model == "phasenet_plus":
+            phase = torch.softmax(output["phase"], dim=1).cpu().float()
+            event_center = torch.sigmoid(output["event_center"]).cpu().float()
+            event_time = output["event_time"].cpu().float()
+            polarity = torch.sigmoid(output["polarity"]).cpu().float()
+            meta["data"] = moving_normalize(meta["data"])
+            print("Plotting...")
+            eqnet.utils.plot_phasenet_plus_train(
+                meta,
+                phase,
+                polarity=polarity,
+                event_center=event_center,
+                event_time=event_time,
+                epoch=epoch,
+                figure_dir=args.figure_dir,
+                prefix=prefix,
+            )
+            del phase, event_center, polarity
+
+        elif args.model == "deepdenoiser":
             pass
 
         elif args.model == "phasenet_das":
             phase = torch.softmax(output["phase"], dim=1).cpu().float()
             meta["data"] = moving_normalize(meta["data"], filter=2048, stride=256)
             print("Plotting...")
-            eqnet.utils.visualize_das_train(meta, phase, epoch=epoch, figure_dir=args.figure_dir, prefix=prefix)
+            eqnet.utils.plot_das_train(meta, phase, epoch=epoch, figure_dir=args.figure_dir, prefix=prefix)
             del phase
 
         elif args.model == "autoencoder":
             preds = model(meta)
             print("Plotting...")
-            eqnet.utils.visualize_autoencoder_das_train(meta, preds, epoch=epoch, figure_dir=args.figure_dir)
+            eqnet.utils.plot_autoencoder_das_train(meta, preds, epoch=epoch, figure_dir=args.figure_dir)
             del preds
 
         elif args.model == "eqnet":
+            output = model(meta)
             phase = F.softmax(output["phase"], dim=1).cpu().float()
-            event = torch.sigmoid(output["event"]).cpu().float()
+            try:
+                event = torch.sigmoid(output["event"]).cpu().float()
+                if output["polarity"].shape[1] == 3:
+                    polarity = torch.softmax(output["polarity"], dim=1).cpu().float()
+                else:
+                    cut_scale = 20
+                    cutpoints = (torch.arange(3-1).float()*cut_scale/(3-2) - cut_scale / 2)[None, :, None, None].detach()
+                    sigmoids = torch.sigmoid(cutpoints.to(output["polarity"].device) - output["polarity"])
+                    link_mat = sigmoids[:, 1:] - sigmoids[:, :-1]
+                    link_mat = torch.cat((
+                            sigmoids[:, [0]],
+                            link_mat,
+                            (1 - sigmoids[:, [-1]])
+                        ),
+                        dim=1
+                    )
+                    eps = 1e-15
+                    polarity = torch.clamp(link_mat, eps, 1 - eps)[:, [1,2,0]].cpu().float() # DNU -> NUD
+            except Exception as e:
+                print(f"Error occurred while processing event: {e}")
+                event = None
+                polarity = None
+            try:
+                association = torch.sigmoid(output["association"]).cpu().float() if ("association" in output and output["association"] is not None) else None
+            except Exception as e:
+                print(f"Error occurred while processing association: {e}")
+                association = None
+            try:
+                offset = output["offset"].cpu().float()
+                hypocenter = output["hypocenter"].cpu().float()
+            except:
+                offset = None
+                hypocenter = None
             print("Plotting...")
-            eqnet.utils.visualize_eqnet_train(meta, phase, event, epoch=epoch, figure_dir=args.figure_dir)
-            del phase, event
+            eqnet.utils.plot_eqnet_train(meta, phase, event, polarity, association, epoch=epoch, figure_dir=args.figure_dir, prefix=prefix, offset=offset, hypocenter=hypocenter)
+            del output, phase, event, polarity, offset, hypocenter, association
 
 
 def main(args):
+    # mp.set_start_method('spawn', force=True)
     if args.output_dir:
         utils.mkdir(args.output_dir)
         figure_dir = os.path.join(args.output_dir, "figures")
         args.figure_dir = figure_dir
         utils.mkdir(figure_dir)
+        
+    if args.huggingface_cache is not None:
+        torch.set_num_threads(1)
+        data_path = f"{os.path.dirname(args.hdf5_file)}/waveform_h5"
+        code_dir = os.path.dirname(os.path.abspath(__file__))
+        script_dir = os.path.join(code_dir, "eqnet/data/quakeflow_nc.py")
+        print(f"loading huggingface dataset from {data_path} with script {script_dir}")
+        dataset_builder = load_dataset_builder(script_dir, name='event_custom', cache_dir=args.huggingface_cache, data_files={"train": sorted(glob(f"{data_path}/**", recursive=False))}, trust_remote_code=True)
+        dataset_builder.download_and_prepare(file_format="arrow", num_proc=16)
 
     utils.init_distributed_mode(args)
     print(args)
@@ -178,26 +367,30 @@ def main(args):
     if args.distributed:
         rank = utils.get_rank()
         world_size = utils.get_world_size()
+        print(f"Rank: {rank}, World size: {world_size}")
     else:
         rank, world_size = 0, 1
 
     torch.manual_seed(1337 + rank)
     random.seed(1337 + rank)
     np.random.seed(1337 + rank)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(1337 + rank)
 
     device = torch.device(args.device)
-    dtype = "bfloat16" if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else "float16"
+    dtype = "bfloat16" if (torch.cuda.is_available() and torch.cuda.is_bf16_supported()) else "float16"
     ptdtype = {"float32": torch.float32, "bfloat16": torch.bfloat16, "float16": torch.float16}[dtype]
+    scaler = torch.amp.GradScaler('cuda', enabled=((dtype == "float16") & torch.cuda.is_available()))
     args.dtype, args.ptdtype = dtype, ptdtype
     torch.backends.cuda.matmul.allow_tf32 = True  # allow tf32 on matmul
     torch.backends.cudnn.allow_tf32 = True  # allow tf32 on cudnn
     if args.use_deterministic_algorithms:
         torch.backends.cudnn.benchmark = False
-        torch.use_deterministic_algorithms(True)
+        torch.use_deterministic_algorithms(True, warn_only=True)
     else:
         torch.backends.cudnn.benchmark = True
 
-    if args.model == "phasenet":
+    if args.model in ["phasenet", "phasenet_plus"]:
         dataset = SeismicTraceIterableDataset(
             data_path=args.data_path,
             data_list=args.data_list,
@@ -211,7 +404,18 @@ def main(args):
             world_size=world_size,
         )
         train_sampler = None
-        dataset_test = dataset
+        dataset_test = SeismicTraceIterableDataset(
+            data_path=args.test_data_path,
+            data_list=args.test_data_list,
+            hdf5_file=args.test_hdf5_file,
+            format="h5",
+            training=True,
+            stack_event=False,
+            flip_polarity=False,
+            drop_channel=False,
+            rank=rank,
+            world_size=world_size,
+        )
         test_sampler = None
     elif args.model == "phasenet_das":
         dataset = DASIterableDataset(
@@ -265,18 +469,53 @@ def main(args):
         test_sampler = None
     elif args.model == "eqnet":
         if args.huggingface_dataset:
-            try:
-                # Get the directory of the train.py
-                code_dir = os.path.dirname(os.path.abspath(__file__))
-                script_dir = os.path.join(code_dir, "eqnet/data/quakeflow_nc.py")
-                dataset = datasets.load_dataset(script_dir, split="train", name="NCEDC_full_size")
-            except:
-                dataset = datasets.load_dataset("AI4EPS/quakeflow_nc", split="train", name="NCEDC_full_size")
-
+            # Get the directory of the train.py
+            code_dir = os.path.dirname(os.path.abspath(__file__))
+            script_dir = os.path.join(code_dir, "eqnet/data/quakeflow_nc.py")
+            # dataset_builder = load_dataset_builder(script_dir, name=args.dataset_config, cache_dir="/data/cache/huggingface")
+            # dataset_builder.download_and_prepare(file_format="arrow", num_proc=min(args.workers, 16))
+            # dataset = dataset_builder.as_dataset(split="train")
+            # dataset_test = dataset_builder.as_dataset(split="test")
+            dataset = datasets.load_dataset(script_dir, split="train", name=args.dataset_config, cache_dir="/data/cache/huggingface", num_proc=min(args.workers, 16))
+            dataset_test = datasets.load_dataset(script_dir, split="test", name=args.dataset_config, cache_dir="/data/cache/huggingface", num_proc=1)
             dataset = dataset.with_format("torch")
-            dataset_dict = dataset.train_test_split(test_size=0.2, shuffle=False)
-            dataset = dataset_dict["train"]
-            dataset_test = dataset_dict["test"]
+            dataset_test = dataset_test.with_format("torch")
+            if args.distributed and world_size > 1:
+                torch.set_num_threads(1) # fix the multi-processing bug
+                if args.gpu > 0:
+                    print(f"Rank {args.rank}: Gpu {args.gpu} waiting for main process to perform the filtering", force=True)
+                    torch.distributed.barrier()
+                # we discard the samples with less than 5 stations
+                dataset = dataset.filter(lambda x: x["num_stations"] >= 5, num_proc=args.workers)
+                # dataset_test = dataset_test.map(lambda x: reorder_keys(x), num_proc=args.workers, desc="reorder_keys")
+                if args.gpu == 0:
+                    print("Filtering finished, loading results from main process")
+                    torch.distributed.barrier()
+            else:
+                torch.set_num_threads(1) # fix the multi-processing bug
+                print("Filtering dataset")
+                # we discard the samples with less than 5 stations
+                dataset = dataset.filter(lambda x: x["num_stations"] >= 5, num_proc=args.workers)
+            
+            group_ids = create_groups(dataset, args.num_stations_list, is_pad=True)
+            cut_reorder_keys_group = partial(cut_reorder_keys, num_stations_list=args.num_stations_list)
+            if args.distributed and world_size > 1:
+                torch.set_num_threads(1) # fix the multi-processing bug
+                if args.gpu > 0:
+                    print(f"Rank {args.rank}: Gpu {args.gpu} waiting for main process to perform the mapping", force=True)
+                    torch.distributed.barrier()
+                print(f"Rank {args.rank}: Gpu {args.gpu} cut_reorder_keys fingerprint {Hasher.hash(lambda x: cut_reorder_keys_group(x, is_pad=True))}", force=True)
+                dataset = dataset.map(lambda x: cut_reorder_keys_group(x, is_pad=True), num_proc=args.workers, desc="cut_reorder_keys")#, new_fingerprint=Hasher.hash(lambda x: cut_reorder_keys(x, num_stations_list=num_stations_list, is_pad=True, is_train=True)))
+                dataset_test = dataset_test.map(lambda x: cut_reorder_keys_group(x, is_pad=True), num_proc=args.workers, desc="cut_reorder_keys")#, new_fingerprint=Hasher.hash(lambda x: cut_reorder_keys(x, num_stations_list=num_stations_list, is_pad=True, is_train=False)))
+                # dataset_test = dataset_test.map(lambda x: reorder_keys(x), num_proc=args.workers, desc="reorder_keys")
+                if args.gpu == 0:
+                    print("Mapping finished, loading results from main process")
+                    torch.distributed.barrier()
+            else:
+                torch.set_num_threads(1) # fix the multi-processing bug
+                print("Mapping dataset")
+                dataset = dataset.map(lambda x: cut_reorder_keys(x, num_stations_list=args.num_stations_list, is_pad=True), desc="cut_reorder_keys", num_proc=args.workers)
+                dataset_test = dataset_test.map(lambda x: cut_reorder_keys(x, num_stations_list=args.num_stations_list, is_pad=True), desc="cut_reorder_keys", num_proc=args.workers)
 
             if args.distributed:
                 train_sampler = torch.utils.data.distributed.DistributedSampler(dataset)
@@ -285,17 +524,50 @@ def main(args):
                 train_sampler = torch.utils.data.RandomSampler(dataset)
                 test_sampler = torch.utils.data.SequentialSampler(dataset_test)
 
-            group_ids = create_groups(dataset, args.num_stations_list)
-            dataset = dataset.map(lambda x: cut_reorder_keys(x, num_stations_list=args.num_stations_list))
             train_batch_sampler = StationSampler(train_sampler, group_ids, args.batch_size, args.num_stations_list)
 
         else:
-            dataset = SeismicNetworkIterableDataset(args.dataset)
+            dataset = SeismicNetworkIterableDataset(
+                data_path=args.data_path,
+                data_list=args.data_list,
+                hdf5_file=args.hdf5_file,
+                num_stations=args.num_stations_list[0] if args.num_stations_list is not None else None,
+                format="h5",
+                training=True,
+                stack_event=args.stack_event,
+                concatenate_event=args.cat_event,
+                drop_channel=args.drop_channel,
+                sample_by_magnitude=args.sample_by_magnitude,
+                sample_by_distance=args.sample_by_distance,
+                attribute_cache=args.attr_cache,
+                huggingface_cache=args.huggingface_cache,
+                rank=rank,
+                world_size=world_size,
+            )    
             train_sampler = None
+            dataset_test = SeismicNetworkIterableDataset(
+                data_path=args.test_data_path,
+                data_list=args.test_data_list,
+                hdf5_file=args.test_hdf5_file,
+                num_stations=args.num_stations_list[0] if args.num_stations_list is not None else None,
+                format="h5",
+                training=True,
+                stack_event=False,
+                drop_channel=False,
+                rank=rank,
+                world_size=world_size,
+            )  
             test_sampler = None
-            dataset_test = dataset
+            
+            negative_mask_ratio = Value("d", 1.0)
+            cat_event_ratio = Value("d", 0.04)
+            def worker_init_fn(negative_mask_ratio, cat_event_ratio, worker_id):
+                info = torch.utils.data.get_worker_info()
+                info.dataset.negative_mask_ratio = negative_mask_ratio
+                info.dataset.cat_event_ratio = cat_event_ratio
+                #print(f"Worker {worker_id} negative_mask_ratio: {negative_mask_ratio}")
     else:
-        raise ("Unknown model")
+        raise NotImplementedError(f"Invalid model {args.model}. Only phasenet, phasenet_das, autoencoder and eqnet are supported.")
 
     if args.huggingface_dataset:
         data_loader = torch.utils.data.DataLoader(
@@ -303,7 +575,6 @@ def main(args):
             batch_sampler=train_batch_sampler,
             num_workers=args.workers,
         )
-
         data_loader_test = torch.utils.data.DataLoader(
             dataset_test,
             batch_size=1,
@@ -322,11 +593,15 @@ def main(args):
             collate_fn=None,
             # shuffle=True,
             drop_last=True,
+            #prefetch_factor=3,
+            #pin_memory=True,
+            persistent_workers=True,
+            worker_init_fn=partial(worker_init_fn, negative_mask_ratio, cat_event_ratio) if args.model == "eqnet" else None,
         )
 
         data_loader_test = torch.utils.data.DataLoader(
             dataset_test,
-            batch_size=args.batch_size,
+            batch_size=1,
             sampler=test_sampler,
             num_workers=args.workers,
             collate_fn=None,
@@ -337,10 +612,10 @@ def main(args):
         backbone=args.backbone,
         in_channels=1,
         out_channels=(len(args.phases) + 1),
-        ## phasenet-das
-        reg=args.reg,
-        ## phasenet
-        polarity_loss_weight=args.polarity_loss_weight,
+        ## eqnet
+        head=args.head,
+        use_station_location=args.use_station_location,
+        add_prompt=(not args.no_prompt),
     )
     logger.info("Model:\n{}".format(model))
 
@@ -357,12 +632,16 @@ def main(args):
     # logging
     if args.wandb and utils.is_main_process():
         wandb.init(
-            project=args.wandb_project, name=args.wandb_name, entity=args.wandb_group, dir=args.wandb_dir, config=args
+            project=args.wandb_project if args.wandb_project else args.model,
+            name=args.wandb_name,
+            entity=args.wandb_group,
+            dir=args.wandb_dir,
+            config=args,
         )
         if args.wandb_watch:
             wandb.watch(model, log="all", log_freq=args.print_freq)
 
-    if args.resume:
+    if args.resume_wandb:
         if utils.is_main_process():
             if args.model == "phasenet_das":
                 model_url = "ai4eps/model-registry/PhaseNet-DAS:latest"
@@ -370,21 +649,22 @@ def main(args):
                 artifact_dir = artifact.download()
                 checkpoint = torch.load(glob(os.path.join(artifact_dir, "*.pth"))[0], map_location="cpu")
                 model.load_state_dict(checkpoint["model"], strict=True)
-                # if model_ema:
-                #     model_ema.load_state_dict(checkpoint["model_ema"])
-                # if not args.test_only:
-                #     optimizer.load_state_dict(checkpoint["optimizer"])
-                #     lr_scheduler.load_state_dict(checkpoint["lr_scheduler"])
-                # args.start_epoch = checkpoint["epoch"] + 1
-                # if scaler:
-                #     scaler.load_state_dict(checkpoint["scaler"])
 
     custom_keys_weight_decay = []
     if args.bias_weight_decay is not None:
         custom_keys_weight_decay.append(("bias", args.bias_weight_decay))
-    if args.transformer_embedding_decay is not None:
-        for key in ["class_token", "position_embedding", "relative_position_bias_table"]:
-            custom_keys_weight_decay.append((key, args.transformer_embedding_decay))
+    if args.custom_weight_decay is not None:
+        #NOTE: actually no weight decay
+        assert isinstance(args.custom_weight_decay, float), f'use same weight decay for all custom keys or hack this code'
+        if hasattr(model, 'no_weight_decay'):
+            skip_list = model.no_weight_decay()
+            for k in skip_list:
+                custom_keys_weight_decay.append((k, args.custom_weight_decay))
+        if hasattr(model, 'no_weight_decay_keywords'):
+            skip_list = model.no_weight_decay_keywords()
+            for k in skip_list:
+                custom_keys_weight_decay.append((k, args.custom_weight_decay))
+    
     parameters = utils.set_weight_decay(
         model,
         args.weight_decay,
@@ -409,9 +689,6 @@ def main(args):
         optimizer = torch.optim.AdamW(parameters, lr=args.lr, weight_decay=args.weight_decay)
     else:
         raise RuntimeError(f"Invalid optimizer {args.opt}. Only SGD, RMSprop and AdamW are supported.")
-
-    # scaler = torch.cuda.amp.GradScaler() if args.amp else None
-    scaler = torch.cuda.amp.GradScaler(enabled=(dtype == "float16"))
 
     iters_per_epoch = len(data_loader)
     args.lr_scheduler = args.lr_scheduler.lower()
@@ -453,10 +730,37 @@ def main(args):
         )
     else:
         lr_scheduler = main_lr_scheduler
+        
+    if args.mtl is not None:
+        if args.mtl == "dwa" or args.mtl == "dwa_inverse":
+            if args.model == "eqnet":
+                tasks = ["loss_phase", "loss_event", "loss_offset", "loss_origin_time", "loss_x", "loss_y", "loss_depth", "loss_magnitude", "loss_polarity"]
+                    # pre_weight = args.pre_weight
+                pre_weight = model.phase_picker.weights+model.event_detector.weights+model.polarity_picker.weights
+                
+                if not args.no_prompt:
+                    tasks += ["loss_focal", "loss_dice", "loss_iou"]
+                    pre_weight += list(model.phase_associator.weights.values())
+                print(f"{args.model}: {args.mtl} pre_weight: ", end="\t")
+                for i, k in enumerate(tasks):
+                    print(f"{k}: {pre_weight[i]:.4f}", end="\t")
+                print()
+        
+        balancer = utils.MTLBalance(args.mtl, tasks, pre_weight, args.temp, args.epochs+1, device)
 
     model_without_ddp = model
+    # print parameter number
+    #print("Number of parameters: ", sum(p.numel() for p in model_without_ddp.parameters() if p.requires_grad))
+    backbone_params = sum(p.numel() for p in model_without_ddp.backbone.parameters() if p.requires_grad)
+    total_params = sum(p.numel() for p in model_without_ddp.parameters() if p.requires_grad)
+    print(f"Toal parameters: {total_params}, backbone parameters: {backbone_params}, other parameters: {total_params - backbone_params}")
+    # for name, param in model.named_parameters():
+    #     if param.grad is None:
+    #         print(name)
     if args.distributed:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
+        model = torch.nn.parallel.DistributedDataParallel(
+            model, device_ids=[args.gpu]
+        )  # , find_unused_parameters=True)
         model_without_ddp = model.module
 
     model_ema = None
@@ -466,21 +770,56 @@ def main(args):
         alpha = min(1.0, alpha * adjust)
         model_ema = utils.ExponentialMovingAverage(model_without_ddp, device=device, decay=1.0 - alpha)
 
-    # if args.resume:
-    #     checkpoint = torch.load(args.resume, map_location="cpu")
-    #     model_without_ddp.load_state_dict(checkpoint["model"])
-    #     if not args.test_only:
-    #         optimizer.load_state_dict(checkpoint["optimizer"])
-    #         lr_scheduler.load_state_dict(checkpoint["lr_scheduler"])
-    #     args.start_epoch = checkpoint["epoch"] + 1
-    #     if model_ema:
-    #         model_ema.load_state_dict(checkpoint["model_ema"])
-    #     if scaler:
-    #         scaler.load_state_dict(checkpoint["scaler"])
+    if args.pretrained:
+        pretrained = None
+        if os.path.isfile(args.pretrained):
+            print(f"Loading pretrained model from '{args.pretrained}'")
+            pretrained = torch.load(args.pretrained, map_location="cpu", weights_only=False)
+        elif os.path.isfile(args.output_dir + "/pretrained.pth"):
+            print(f"Loading pretrained model from '{args.output_dir}/pretrained.pth'")
+            pretrained = torch.load(args.output_dir + "/pretrained.pth", map_location="cpu", weights_only=False)
+        else:
+            print(f"No pretrained model found")
+
+        if pretrained is not None:
+            if "model" in pretrained:
+                model_without_ddp.load_state_dict(pretrained["model"], strict=False)
+            else:
+                model_without_ddp.load_state_dict(pretrained, strict=False)
+
+    if args.resume:
+        checkpoint = None
+        if isinstance(args.resume, str) and os.path.isfile(args.resume):
+            print(f"Loading model and optimizer from checkpoint '{args.resume}'")
+            checkpoint = torch.load(args.resume, map_location="cpu", weights_only=False)
+        elif os.path.isfile(args.output_dir + "/checkpoint.pth"):
+            print(f"Loading model and optimizer from checkpoint '{args.output_dir}/checkpoint.pth'")
+            checkpoint = torch.load(args.output_dir + "/checkpoint.pth", map_location="cpu", weights_only=False)
+        else:
+            print(f"No checkpoint found")
+        if checkpoint is not None:
+            model_without_ddp.load_state_dict(checkpoint["model"])
+            optimizer.load_state_dict(checkpoint["optimizer"])
+            lr_scheduler.load_state_dict(checkpoint["lr_scheduler"])
+            args.start_epoch = checkpoint["epoch"] + 1
+            if model_ema:
+                model_ema.load_state_dict(checkpoint["model_ema"])
+            if scaler:
+                scaler.load_state_dict(checkpoint["scaler"])
 
     start_time = time.time()
     best_loss = float("inf")
     for epoch in range(args.start_epoch, args.epochs):
+        #if args.resume and (args.start_epoch < 32):
+        #    break # avoid long time training when resume from old checkpoints
+        if epoch%5==0 and epoch >= 5 and args.model == "eqnet" and not args.huggingface_dataset:
+            #negative_mask_ratio = max(1.0 - 0.03 * epoch, 0.3)
+            with negative_mask_ratio.get_lock():
+                negative_mask_ratio.value = max(1.0 - 0.006 * epoch, 0.83)
+        if epoch>args.epochs//3 and args.model == "eqnet" and not args.huggingface_dataset:
+            with cat_event_ratio.get_lock():
+                cat_event_ratio.value = 0.04#0.08 if epoch<2*args.epochs//3 else 0.16
+                #cat_event_ratio.value = 0.08 if epoch<2*args.epochs//3 else 0.16
         if args.distributed and (train_sampler is not None):
             train_sampler.set_epoch(epoch)
 
@@ -495,18 +834,21 @@ def main(args):
             args,
             epoch,
             len(dataset),
+            balancer=None if args.mtl is None else balancer,
         )
-        print(f"Training time of epoch {epoch} of rank {args.rank}: {time.time() - tmp_time:.3f}")
+        train_time = time.time() - tmp_time
+        print(f"Training time of epoch {epoch} of rank {rank}: {time.time() - tmp_time:.3f}")
 
-        tmp_time = time.time()
-        metric = evaluate(model, data_loader_test, scaler, args, epoch, len(dataset_test))
-        if model_ema:
-            metric = evaluate(model_ema, data_loader_test, scaler, args, epoch, len(dataset_test))
-        print(f"Testing time of epoch {epoch} of rank {args.rank}: {time.time() - tmp_time:.3f}")
+        if args.test_hdf5_file is not None:
+            tmp_time = time.time()
+            metric = evaluate(model, data_loader_test, scaler, args, epoch, len(dataset_test))
+            if model_ema:
+                metric = evaluate(model_ema, data_loader_test, scaler, args, epoch, len(dataset_test))
+            print(f"Testing time of epoch {epoch} of rank {rank}: {time.time() - tmp_time:.3f}")
 
         tmp_time = time.time()
         checkpoint = {
-            "model": model_without_ddp.state_dict(),
+            "model": getattr(model_without_ddp, '_orig_mod', model_without_ddp).state_dict(),
             "optimizer": optimizer.state_dict(),
             "lr_scheduler": lr_scheduler.state_dict(),
             "epoch": epoch,
@@ -518,17 +860,18 @@ def main(args):
             checkpoint["scaler"] = scaler.state_dict()
 
         utils.save_on_master(checkpoint, os.path.join(args.output_dir, f"model_{epoch}.pth"))
+        utils.save_on_master(checkpoint, os.path.join(args.output_dir, "checkpoint.pth"))
         if utils.is_main_process() and metric.loss.global_avg < best_loss:
             best_loss = metric.loss.global_avg
-            utils.save_on_master(checkpoint, os.path.join(args.output_dir, "checkpoint.pth"))
-            if args.wandb:
-                best_model = wandb.Artifact(
-                    f"{args.wandb_name}",
-                    type="model",
-                    metadata=dict(epoch=epoch, loss=best_loss),
-                )
-                best_model.add_file(os.path.join(args.output_dir, "checkpoint.pth"))
-                wandb.log_artifact(best_model)
+            torch.save(checkpoint, os.path.join(args.output_dir, "model_best.pth"))
+            #if args.wandb:
+            #    best_model = wandb.Artifact(
+            #        f"{args.wandb_name}",
+            #        type="model",
+            #        metadata=dict(epoch=epoch, loss=best_loss),
+            #    )
+            #    best_model.add_file(os.path.join(args.output_dir, "model_best.pth"))
+            #    wandb.log_artifact(best_model)
 
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
@@ -553,9 +896,13 @@ def get_args_parser(add_help=True):
     parser.add_argument("--test-label-path", default="+", type=None, help="test label path")
     parser.add_argument("--test-label-list", default="+", type=None, help="test label path")
     parser.add_argument("--test-noise-list", default="+", type=None, help="test noise list")
+    parser.add_argument("--test-hdf5-file", default=None, type=str, help="hdf5 file for testing")
     parser.add_argument("--dataset", default="", type=str, help="dataset name")
     parser.add_argument("--model", default="phasenet_das", type=str, help="model name")
     parser.add_argument("--backbone", default="unet", type=str, help="model backbone")
+    parser.add_argument("--head", default="simple", type=str, help="model head")
+    parser.add_argument("--use-station-location", action="store_true", help="use station location")
+    parser.add_argument("--no-prompt", action="store_true", help="remove prompt")
     parser.add_argument(
         "--device",
         default="cuda",
@@ -574,9 +921,10 @@ def get_args_parser(add_help=True):
         type=int,
         help="images per gpu, the total batch size is $NGPU x batch_size",
     )
+    parser.add_argument("--grad-accum", default=1, type=int, help="gradient accumulation steps")
     parser.add_argument(
         "--epochs",
-        default=100,
+        default=33,
         type=int,
         metavar="N",
         help="number of total epochs to run",
@@ -616,7 +964,7 @@ def get_args_parser(add_help=True):
         help="weight decay for bias parameters of all layers (default: None, same value as --wd)",
     )
     parser.add_argument(
-        "--transformer-embedding-decay",
+        "--custom-weight-decay",
         default=None,
         type=float,
         help="weight decay for embedding parameters for vision transformer models (default: None, same value as --wd)",
@@ -652,7 +1000,9 @@ def get_args_parser(add_help=True):
     parser.add_argument("--lr-min", default=0.0, type=float, help="minimum lr of lr schedule (default: 0.0)")
     parser.add_argument("--print-freq", default=10, type=int, help="print frequency")
     parser.add_argument("--output-dir", default="./output", type=str, help="path to save outputs")
-    parser.add_argument("--resume", default="", type=str, help="path of checkpoint")
+    parser.add_argument("--resume", default="", type=str, help="resume from checkpoint")
+    parser.add_argument("--resume_wandb", action="store_true", help="resume from wandb")
+    parser.add_argument("--pretrained", default="", type=str, help="path to pre-trained model")
     parser.add_argument("--start-epoch", default=0, type=int, metavar="N", help="start epoch")
     parser.add_argument(
         "--sync-bn",
@@ -694,6 +1044,7 @@ def get_args_parser(add_help=True):
         type=str,
         help="url used to set up distributed training",
     )
+    parser.add_argument("--timeout", default=30, type=int, help="timeout for distributed barrier")
 
     # Mixed precision training parameters
     parser.add_argument(
@@ -701,27 +1052,34 @@ def get_args_parser(add_help=True):
         action="store_true",
         help="Use torch.cuda.amp for mixed precision training",
     )
+    
+    # MTL training strategy
+    parser.add_argument("--mtl", default=None, type=str, help="type of mtl training strategy")
+    parser.add_argument("--pre-weight", default=None, type=float, nargs="+", help="pre-factor weight of mtl loss")
+    parser.add_argument("--temp", default=1.5, type=float, help="temperature of dwa")
 
     ## Data Augmentation
     parser.add_argument("--phases", default=["P", "S"], type=str, nargs="+", help="phases to use")
-    parser.add_argument("--reg", default=0.0, type=float, help="laplace regularization for phasenet-das")
     parser.add_argument("--nt", default=1024 * 3, type=int, help="number of time samples")
     parser.add_argument("--nx", default=1024 * 5, type=int, help="number of space samples")
+    parser.add_argument("--attr-cache", default=None, type=str, help="attribute cache path")
     parser.add_argument("--stack-noise", action="store_true", help="Stack noise")
     parser.add_argument("--stack-event", action="store_true", help="Stack event")
+    parser.add_argument("--cat-event", action="store_true", help="Concatenate event")
     parser.add_argument("--flip-polarity", action="store_true", help="Flip polarity")
     parser.add_argument("--drop-channel", action="store_true", help="Drop channel")
+    parser.add_argument("--sample-by-magnitude", action="store_true", help="Sample by magnitude")
+    parser.add_argument("--sample-by-distance", action="store_true", help="Sample by distance")
     parser.add_argument("--resample-space", action="store_true", help="Resample space resolution")
-    parser.add_argument("--resample-time", action="store_true", help="Resample time  resolution")
+    parser.add_argument("--resample-time", action="store_true", help="Resample time resolution")
     parser.add_argument("--masking", action="store_true", help="Masking of the input data")
-    parser.add_argument("--polarity-loss-weight", default=1.0, type=float, help="Polarity loss weight")
     parser.add_argument("--random-crop", action="store_true", help="Random size")
     parser.add_argument("--crop-nt", default=1024, type=int, help="Crop time samples")
     parser.add_argument("--crop-nx", default=1024, type=int, help="Crop space samples")
 
     # wandb
     parser.add_argument("--wandb", action="store_true", help="use wandb")
-    parser.add_argument("--wandb-project", default="phasenet-das", type=str, help="wandb project name")
+    parser.add_argument("--wandb-project", default=None, type=str, help="wandb project name")
     parser.add_argument("--wandb-name", default=None, type=str, help="wandb run name")
     parser.add_argument("--wandb-group", default=None, type=str, help="wandb group name")
     parser.add_argument("--wandb-dir", default="./", type=str, help="wandb dir")
@@ -729,8 +1087,10 @@ def get_args_parser(add_help=True):
 
     # huggingface dataset
     parser.add_argument("--huggingface-dataset", action="store_true", help="use huggingface dataset")
+    parser.add_argument("--huggingface-cache", default=None, type=str, help="huggingface cache dir")
+    parser.add_argument("--dataset-config", default="event", type=str, help="huggingface dataset config name")
     parser.add_argument(
-        "--num-stations-list", default=[5, 10, 20], type=int, nargs="+", help="possible stations number of the dataset"
+        "--num-stations-list", default=None, type=int, nargs="+", help="possible stations number of the dataset"
     )
 
     return parser

@@ -17,8 +17,7 @@ import torch.nn.functional as F
 from scipy.interpolate import interp1d
 from torch.utils.data import Dataset, IterableDataset
 
-mp.set_start_method("spawn", force=True)
-
+# mp.set_start_method("spawn", force=True)
 
 def normalize(data: torch.Tensor):
     """channel-wise normalization
@@ -502,6 +501,7 @@ class DASIterableDataset(IterableDataset):
         resample_space=False,
         skip_existing=False,
         pick_path="./",
+        folder_depth=1,  # parent folder depth of pick_path
         num_patch=2,
         masking=False,
         highpass_filter=0.0,
@@ -594,6 +594,7 @@ class DASIterableDataset(IterableDataset):
         self.resample_time = resample_time
         self.skip_existing = skip_existing
         self.pick_path = pick_path
+        self.folder_depth = folder_depth
         self.num_patch = num_patch
         self.masking = masking
         self.highpass_filter = highpass_filter
@@ -620,14 +621,19 @@ class DASIterableDataset(IterableDataset):
                 with fsspec.open(self.data_list[0], "rb") as fs:
                     with h5py.File(fs, "r") as meta:
                         if self.system == "optasense":
-                            nx, nt = meta["Data"].shape
-                            attrs = dict(meta["Data"].attrs)
-                            if "fs" in attrs:
-                                attrs["dt_s"] = 1.0 / attrs["fs"]
-                            if "dt" in attrs:
-                                attrs["dt_s"] = attrs["dt"]
+                            attrs = {}
+                            if "Data" in meta:
+                                nx, nt = meta["Data"].shape
+                                attrs["dt_s"] = meta["Data"].attrs["dt"]
+                                attrs["dx_m"] = meta["Data"].attrs["dCh"]
+                            else:
+                                nx, nt = meta["Acquisition/Raw[0]/RawData"].shape
+                                dx = meta["Acquisition"].attrs["SpatialSamplingInterval"]
+                                fs = meta["Acquisition/Raw[0]"].attrs["OutputDataRate"]
+                                attrs["dx_m"] = dx
+                                attrs["dt_s"] = 1.0 / fs
                         else:
-                            nt, nx = meta["data"].shape
+                            nx, nt = meta["data"].shape
                             attrs = dict(meta["data"].attrs)
                 if self.resample_time and ("dt_s" in attrs):
                     if (attrs["dt_s"] != 0.01) and (int(round(1.0 / attrs["dt_s"])) % 100 == 0):
@@ -790,6 +796,12 @@ class DASIterableDataset(IterableDataset):
 
     def sample(self, file_list):
         for file in file_list:
+            if not self.cut_patch:
+                existing = self.check_existing(file)
+                if self.skip_existing and existing:
+                    print(f"Skip existing file {file}")
+                    continue
+
             sample = {}
 
             if self.format == "npz":
@@ -819,20 +831,30 @@ class DASIterableDataset(IterableDataset):
             elif (self.format == "h5") and (self.system == "optasense"):
                 with fsspec.open(file, "rb") as fs:
                     with h5py.File(fs, "r") as fp:
-                        dataset = fp["Data"]
-                        nx, nt = dataset.shape
-                        if "startTime" in dataset.attrs:
+                        # dataset = fp["Data"]
+                        if "Data" in fp:  # converted format by Ettore Biondi
+                            dataset = fp["Data"]
                             sample["begin_time"] = datetime.fromisoformat(dataset.attrs["startTime"].rstrip("Z"))
-                        if "dt" in dataset.attrs:
                             sample["dt_s"] = dataset.attrs["dt"]
-                        if "dCh" in dataset.attrs:
                             sample["dx_m"] = dataset.attrs["dCh"]
+                        else:
+                            dataset = fp["Acquisition/Raw[0]/RawData"]
+                            dx = fp["Acquisition"].attrs["SpatialSamplingInterval"]
+                            fs = fp["Acquisition/Raw[0]"].attrs["OutputDataRate"]
+                            begin_time = dataset.attrs["PartStartTime"].decode()
+
+                            sample["dx_m"] = dx
+                            sample["dt_s"] = 1.0 / fs
+                            sample["begin_time"] = datetime.fromisoformat(begin_time.rstrip("Z"))
+
+                        nx, nt = dataset.shape
                         sample["nx"] = nx
                         sample["nt"] = nt
 
                         ## check existing
                         existing = self.check_existing(file, sample)
                         if self.skip_existing and existing:
+                            print(f"Skip existing file {file}")
                             continue
 
                         data = dataset[()]  # (nx, nt)
@@ -879,7 +901,8 @@ class DASIterableDataset(IterableDataset):
                     "data": data,
                     "nt": nt,
                     "nx": nx,
-                    "file_name": os.path.splitext(file.split("/")[-1])[0],
+                    # "file_name": os.path.splitext(file.split("/")[-1])[0],
+                    "file_name": file,
                     "begin_time": sample["begin_time"].isoformat(timespec="milliseconds"),
                     "begin_time_index": 0,
                     "begin_channel_index": 0,
@@ -911,7 +934,8 @@ class DASIterableDataset(IterableDataset):
                             "data": data_patch,
                             "nt": nt_,
                             "nx": nx_,
-                            "file_name": os.path.splitext(file.split("/")[-1])[0] + f"_{i:04d}_{j:04d}",
+                            # "file_name": os.path.splitext(file.split("/")[-1])[0] + f"_{i:04d}_{j:04d}",
+                            "file_name": os.path.splitext(file)[0] + f"_{i:04d}_{j:04d}",
                             "begin_time": (sample["begin_time"] + timedelta(seconds=i * sample["dt_s"])).isoformat(
                                 timespec="milliseconds"
                             ),
@@ -921,22 +945,32 @@ class DASIterableDataset(IterableDataset):
                             "dx_m": sample["dx_m"] if "dx_m" in sample else self.dx,
                         }
 
-    def check_existing(self, file, sample):
-        nx, nt = sample["nx"], sample["nt"]
-        if self.resample_time:
-            if (sample["dt_s"] != 0.01) and (int(round(1.0 / sample["dt_s"])) % 100 == 0):
-                nt = int(nt / round(0.01 / sample["dt_s"]))
+    def check_existing(self, file, sample=None):
+        parent_dir = "/".join(file.split("/")[-self.folder_depth : -1])
         existing = True
-        if self.cut_patch:
+        if not self.cut_patch:
+            if not os.path.exists(
+                os.path.join(
+                    os.path.join(self.pick_path, parent_dir, os.path.splitext(file.split("/")[-1])[0] + ".csv")
+                )
+            ):
+                existing = False
+        else:
+            nx, nt = sample["nx"], sample["nt"]
+            if self.resample_time:
+                if (sample["dt_s"] != 0.01) and (int(round(1.0 / sample["dt_s"])) % 100 == 0):
+                    nt = int(nt / round(0.01 / sample["dt_s"]))
             for i in list(range(0, nt, self.nt)):
                 for j in list(range(0, nx, self.nx)):
                     if not os.path.exists(
                         os.path.join(
                             self.pick_path,
+                            parent_dir,
                             os.path.splitext(file.split("/")[-1])[0] + f"_{i:04d}_{j:04d}.csv",
                         )
                     ):
                         existing = False
+
         return existing
 
 
